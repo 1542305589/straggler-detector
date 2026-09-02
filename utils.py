@@ -26,7 +26,7 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
 
     # 始终包含所有已知类别（即使为空），并集上实际检测出的键（覆盖动态类别）
     known_cats = ["KERNEL_AICORE", "comm", "cpu", "npu_bubble", "memcpy_async", "kernel_aivec",
-                  "host_duration", "step_duration", "xp_count"]
+                  "host_duration", "step_duration"]
     all_cats = known_cats + [c for c in final_result.keys() if c not in known_cats]
     for default_cat in all_cats:
         output_data[default_cat] = []
@@ -40,7 +40,7 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
 
         is_bubble = (category == "npu_bubble")
         # 组键类别（每个 key 是一组 rank，如 "0,1,2"），显示时带域名称
-        is_group_category = category in ("comm", "step_duration", "xp_count")
+        is_group_category = category in ("comm", "step_duration")
 
         # bubble 升序（小值异常），其余降序（大值异常）
         if is_bubble:

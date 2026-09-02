@@ -229,7 +229,6 @@ def _detection_summary(
         "memcpy_async": "内存搬运 (memcpy_async)",
         "comm": "慢通信 (comm)",
         "step_duration": "Step时长 (step_duration)",
-        "xp_count": "通信计数 (xp_count)",
         "cpu": "慢CPU (cpu)",
         "host_duration": "Host耗时 (host_duration)",
         "npu_bubble": "Bubble (npu_bubble)",

@@ -45,14 +45,25 @@ CATEGORY_LABELS = {
     "memcpy_async": "内存搬运(MEMCPY_ASYNC)",
     "comm": "慢通信域(comm)",
     "step_duration": "Step时长(step_duration)",
-    "xp_count": "通信计数(xp_count)",
     "cpu": "慢CPU卡(cpu)",
     "host_duration": "Host耗时(host_duration)",
     "npu_bubble": "NPU空泡(npu_bubble)",
 }
 
+# 类别短标签（用于最终输出汇总表的第一列）
+SHORT_CATEGORY_LABELS = {
+    "KERNEL_AICORE": "慢计算卡",
+    "kernel_aivec": "矢量计算",
+    "memcpy_async": "内存搬运",
+    "comm": "慢通信域",
+    "step_duration": "Step时长",
+    "cpu": "慢CPU卡",
+    "host_duration": "Host耗时",
+    "npu_bubble": "NPU空泡",
+}
+
 # 类别 -> step_data 中对应的单卡指标列（用于展示全部卡值）
-# comm / step_duration / xp_count 为组键类别（域），单独处理
+# comm / step_duration 为组键类别（域），单独处理
 CATEGORY_METRIC = {
     "KERNEL_AICORE": "KERNEL_AICORE",
     "kernel_aivec": "KERNEL_AIVEC",
@@ -226,14 +237,14 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
     lines.append(f"{prefix} 输出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"{prefix} ---------- 一、各列检测结果汇总 ----------")
 
-    group_categories = ("comm", "step_duration", "xp_count")
+    group_categories = ("comm", "step_duration")
     # 单卡类别集合：CATEGORY_METRIC 中映射到指标列且非组键类别
     single_card_categories = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration", "npu_bubble")
 
     # 动态类别集合：优先展示已知/存在的类别，同时覆盖动态类别
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "step_duration", "xp_count", "cpu", "host_duration", "npu_bubble",
+        "comm", "step_duration", "cpu", "host_duration", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -333,3 +344,194 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
             sys.stdout.write(report_content.encode("ascii", errors="replace").decode("ascii"))
 
     return report_path
+
+
+# ---- 最终输出汇总表（渲染到调用 skill 的 agent 的 stdout，不进任何 log 文件） ----
+
+# 计算/IO/Host 类（倍率 = 1 + degradation）与通信域类（倍率 = 1 + 5*degradation）的类别集合
+COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration")
+COMM_GROUP_CATEGORIES = ("comm", "step_duration")
+
+
+def _fmt_ns(value: float) -> str:
+    """将纳秒格式化为可读单位（与 markdown_viz._fmt_ns 逻辑一致）"""
+    if value >= 1e9:
+        return f"{value/1e9:.2f}s"
+    elif value >= 1e6:
+        return f"{value/1e6:.2f}ms"
+    elif value >= 1e3:
+        return f"{value/1e3:.2f}us"
+    else:
+        return f"{value:.0f}ns"
+
+
+def _cell_metric_summary(metric_col: str, abnormal_ranks, step_data) -> str:
+    """
+    数据要点：对某指标列，展示异常卡的值、其他卡范围与倍数。
+    例：rank0=1.76ms，其他≈568~574us（约 2.9 倍）
+    """
+    ranks_map = {}
+    if step_data:
+        ranks_map = step_data.get(metric_col) or {}
+    # 过滤无效值（-99999 / <=0），key 转 int
+    valid = {}
+    for r, v in ranks_map.items():
+        try:
+            ri = int(r)
+        except (TypeError, ValueError):
+            continue
+        if v != -99999 and v > 0:
+            valid[ri] = v
+    if not valid:
+        return "无详细数据"
+
+    anom_set = set(abnormal_ranks)
+    anom_vals = [(r, valid[r]) for r in sorted(anom_set) if r in valid]
+    normal_vals = [v for r, v in valid.items() if r not in anom_set]
+
+    parts = [f"rank{r}={_fmt_ns(v)}" for r, v in anom_vals]
+    if normal_vals:
+        nmin, nmax = min(normal_vals), max(normal_vals)
+        parts.append(f"其他≈{_fmt_ns(nmin)}~{_fmt_ns(nmax)}"
+                     if nmin != nmax else f"其他≈{_fmt_ns(nmin)}")
+
+    text = "，".join(parts)
+    if anom_vals and normal_vals:
+        max_anom = max(v for _, v in anom_vals)
+        normal_avg = sum(normal_vals) / len(normal_vals)
+        mult = max_anom / normal_avg if normal_avg > 0 else 0.0
+        text += f"（约 {mult:.1f} 倍）"
+    return text or "无详细数据"
+
+
+def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
+    """通信域类别的数据要点：优先用域时长列（如 tp_Duration）展示，否则兜底。"""
+    domain_metric = None
+    if parallels:
+        for domain_name in parallels.keys():
+            col = f"{domain_name}_Duration"
+            if step_data and step_data.get(col):
+                domain_metric = col
+                break
+    if not domain_metric:
+        return "无详细数据"
+    abnormal_ranks = []
+    for key in items:
+        abnormal_ranks.extend(_parse_ranks_from_key(key))
+    return _cell_metric_summary(domain_metric, abnormal_ranks, step_data)
+
+
+def _disp_len(text: str) -> int:
+    """估算字符串在终端中的显示宽度（CJK/全角字符按 2 列计）。"""
+    return sum(2 if 0x2E80 <= ord(ch) <= 0x9FFF or 0xFF00 <= ord(ch) <= 0xFFEF else 1
+               for ch in text)
+
+
+def _disp_ljust(text: str, width: int) -> str:
+    """按显示宽度左填充空格，保证 CJK 与 ASCII 在终端中对齐。"""
+    pad = width - _disp_len(text)
+    return text + " " * max(pad, 0)
+
+
+def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
+    """渲染 Unicode 框线表格（┌─┬─┐），按列自动对齐（考虑 CJK 显示宽度）。"""
+    all_rows = [headers] + rows
+    ncols = len(headers)
+    widths = [0] * ncols
+    for row in all_rows:
+        for i, cell in enumerate(row):
+            widths[i] = max(widths[i], _disp_len(cell))
+
+    def _line(left, mid, right, fill="─"):
+        return left + mid.join(fill * w for w in widths) + right
+
+    top = _line("┌", "┬", "┐")
+    mid = _line("├", "┼", "┤")
+    bot = _line("└", "┴", "┘")
+    lines = [top]
+    for idx, row in enumerate(all_rows):
+        cells = "│" + "│".join(" " + _disp_ljust(cell, widths[i]) + " "
+                               for i, cell in enumerate(row)) + "│"
+        lines.append(cells)
+        if idx == 0:
+            lines.append(mid)
+    lines.append(bot)
+    return "\n".join(lines)
+
+
+def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None,
+                        degradation: float = None) -> str:
+    """
+    生成逐类别汇总的 Unicode 框线表格字符串（渲染到调用方 agent 的最终输出，不进任何 log 文件）。
+
+    参数:
+        result: 检测结果 {category: {key: degradation}}
+        parallels: 并行域信息（可选，用于通信域类别的域时长列）
+        step_data: 单 step 快照数据（可选，用于数据要点的各卡值）
+        degradation: 劣化阈值（默认取 config.Degradation，用于计算劣化阈值列）
+
+    返回:
+        Unicode 框线表格字符串；无任何异常时返回标题行 + 表头 + “无异常”提示。
+    """
+    if degradation is None:
+        degradation = config.Degradation
+
+    headers = ["类别", "异常卡", "劣化指数", "劣化阈值", "数据要点"]
+
+    ordered_categories = [
+        "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
+        "comm", "step_duration", "cpu", "host_duration", "npu_bubble",
+    ]
+    known = set(ordered_categories)
+    dynamic = [c for c in result.keys() if c not in known]
+    all_categories = ordered_categories + sorted(dynamic)
+
+    rows = []
+    threshold = {
+        "compute": config.get_compute_multiplier(),
+        "comm": config.get_comm_multiplier(),
+        "bubble": 5000,
+    }
+
+    for category in all_categories:
+        items = result.get(category) or {}
+        if not items:
+            continue
+
+        # 异常卡列：解析出涉及的所有 rank
+        abnormal_ranks = []
+        for key in items:
+            abnormal_ranks.extend(_parse_ranks_from_key(key))
+        abnormal_ranks = sorted(set(abnormal_ranks))
+        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
+
+        # 劣化指数列：该类别的最大劣化值
+        max_deg = max(items.values())
+        deg_str = f"{max_deg:.3f}"
+
+        # 劣化阈值列
+        if category == "npu_bubble":
+            th_str = f"{threshold['bubble']}ns"
+        elif category in COMM_GROUP_CATEGORIES:
+            th_str = f"{threshold['comm']:.3f}"
+        else:
+            th_str = f"{threshold['compute']:.3f}"
+
+        # 类别列
+        label = CATEGORY_LABELS.get(category, category)
+        short = SHORT_CATEGORY_LABELS.get(category)
+        category_str = f"{category}（{short}）" if short else label
+
+        # 数据要点列
+        if category in COMM_GROUP_CATEGORIES:
+            summary = _cell_comm_summary(items, parallels, step_data)
+        else:
+            metric_col = CATEGORY_METRIC.get(category)
+            summary = _cell_metric_summary(metric_col, abnormal_ranks, step_data) if metric_col else "无详细数据"
+
+        rows.append([category_str, cards_str, deg_str, th_str, summary])
+
+    if not rows:
+        return _render_box_table(headers, [["无异常", "-", "-", "-", "该维度全部卡表现正常"]])
+
+    return _render_box_table(headers, rows)

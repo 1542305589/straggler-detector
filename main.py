@@ -117,6 +117,18 @@ def _dir_has_db_directly(path: str) -> bool:
     )
 
 
+def _safe_print(text: str):
+    """向 stdout 打印汇总表（兼容 Windows GBK 等非 UTF-8 控制台，避免 UnicodeEncodeError）"""
+    try:
+        print(text)
+    except UnicodeEncodeError:
+        enc = getattr(sys.stdout, "encoding", None) or "utf-8"
+        try:
+            sys.stdout.write(text.encode(enc, errors="replace").decode(enc))
+        except Exception:
+            sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
+
+
 def _process_single_job(job_path: str, degradation: float, clean_mode: str, output_path: str = None):
     """
     对单个 job 目录执行完整检测流程（解析 → 并行域 → 定界检测 → 结果 → 报告 → 可视化）。
@@ -193,6 +205,14 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
 
     if not result:
         logger.info("未检测到异常节点")
+
+    # === 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout） ===
+    try:
+        summary = joint_analysis.build_summary_table(
+            result, parallels, last_step_data, degradation)
+        _safe_print(summary)
+    except Exception as e:  # 汇总表为附加展示，失败不应中断检测
+        logger.warning(f"生成汇总表失败：{e}")
 
     return result
 
@@ -323,6 +343,14 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
 
     if not result:
         logger.info("未检测到异常节点")
+
+    # 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout）
+    try:
+        summary = joint_analysis.build_summary_table(
+            result, parallels, last_step_data, degradation)
+        _safe_print(summary)
+    except Exception as e:  # 汇总表为附加展示，失败不应中断检测
+        logger.warning(f"生成汇总表失败：{e}")
 
     return result
 

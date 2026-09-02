@@ -14,8 +14,10 @@
 6. 识别异常簇：按原始值均值降序，基线 = 最小均值簇；簇均值 > 基线×倍率 → 该簇异常。
 7. 无异常簇 → 无异常退出。
 8. 逐轮剥离：把本轮异常簇数据**剔除**，对**剩余数据**回到步骤 2（轮数 ≤ MAX_DEPTH）；
-   各轮异常与其当轮基线累积。
-9. 返回全部轮的异常簇（映射回 rank，degradation = value / 当轮基线均值）。
+   各轮按**当轮基线**判断是否异常（剥掉大值后基线单调不增，逐轮可检出更细微的离群点）。
+9. 返回全部轮的异常簇（映射回 rank）。检测判断各用当轮基线；
+   劣化指数统一用**最后一次得到的基线簇**（最严格地板）作为分母，
+   degradation = value / 最后基线均值，使所有轮检出的异常劣化在同一刻度上可比。
 
 纯 Python 实现（仅 math/random），保持模块零依赖、可复现。
 """
@@ -53,6 +55,11 @@ def general_anomaly_detection(
 
     返回:
         (异常 rank 列表, 各异常 rank 的劣化程度列表)
+
+    劣化指数说明：
+        异常判断各轮用当轮基线（剥掉大值后基线单调不增，逐步检出更细微离群点）；
+        但劣化指数统一用“最后一次得到的基线簇”（最严格地板）作为分母，
+        使所有轮检出的异常劣化在同一刻度上可比。
     """
     if not values or len(values) < 2:
         return [], []
@@ -76,17 +83,21 @@ def general_anomaly_detection(
     if not rounds:
         return [], []
 
+    # 劣化指数统一用“最后一次得到的基线簇”（最严格地板）作为分母。
+    # 剥离只删大值簇，各轮基线均值单调不增，故 rounds[-1][0] 即最小、最严格的基线。
+    # 这样所有轮检出的异常劣化都在同一刻度上可比。
+    global_denom = rounds[-1][0]
+    if not global_denom or global_denom <= 0:
+        global_denom = 1.0
+
     anomaly_ranks = []
     degradations = []
-    for baseline_mean, anomaly_indices in rounds:
+    for _, anomaly_indices in rounds:
         for idx in anomaly_indices:
             if 0 <= idx < len(ranks):
                 anomaly_ranks.append(ranks[idx])
                 value = values[idx]
-                if baseline_mean and baseline_mean > 0:
-                    degradations.append(value / baseline_mean)
-                else:
-                    degradations.append(1.0)
+                degradations.append(value / global_denom)
             else:
                 degradations.append(1.0)
 
