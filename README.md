@@ -76,8 +76,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   "kernel_aivec": [...],
   "memcpy_async": [...],
   "host_duration": [...],
-  "step_duration": [...],
-  "xp_count": [...]
+  "step_duration": [...]
 }
 ```
 
@@ -86,13 +85,24 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 - `joint_failure_analysis.log` — 故障联合分析报告（传播链 + 根因 + 条形图）
 - `analysis_result/detection_report.log` — 可视化详情报告
 
-## 检测的 9 类指标
+### 4. 最终输出逐类别汇总表（stdout）
+
+检测结束时在 stdout 打印一张 **Unicode 框线表格**，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`。它渲染到**调用方 agent 的最终输出**，不进任何 log 文件；无异常时打印含"无异常"提示的单行表：
+
+```
+┌───────────────────┬─────────┬────────┬────────┬───────────────────────────────┐
+│ 类别              │ 异常卡   │ 劣化指数 │ 劣化阈值 │ 数据要点                        │
+├───────────────────┼─────────┼────────┼────────┼───────────────────────────────┤
+│ KERNEL_AICORE（慢计算卡）│ rank 0  │ 3.090   │ 1.300   │ rank0=1.76ms，其他≈568~574us（约 3.1 倍）│
+└───────────────────┴─────────┴────────┴────────┴───────────────────────────────┘
+```
+
+## 检测的 8 类指标
 
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
 | `step_duration` | `StepDuration` | 通信域组间对比 |
 | `comm` | `{xp}_Duration` | 通信域组间对比 |
-| `xp_count` | `{xp}_Count` | 通信域组间对比 |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -124,7 +134,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   ├── detection_zp_bubble_data()           → npu_bubble
   ├── get_slow_calculate_ranks()           → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2           → kernel_aivec / memcpy_async
-  ├── detection_all_communication_parallel()→ comm / step_duration / xp_count（有命名域时）
+  ├── detection_all_communication_parallel()→ comm / step_duration（有命名域时）
   ├── get_slow_host_ranks_by_homogenize()  → cpu
   └── _get_slow_host_metric_ranks()        → host_duration
         │
@@ -134,7 +144,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 核心算法（kmeans_detector.py）
 
-`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **逐轮剥离**（剔除异常簇数据后对剩余数据再聚类，轮数 ≤10，各轮异常与当轮基线累积，degradation = 值/当轮基线）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。
+`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **逐轮剥离**（剔除异常簇数据后对剩余数据再聚类，轮数 ≤10，各轮按**当轮基线**判断是否异常；劣化指数统一用**最后一次得到的基线簇**为分母，degradation = 值/最后基线，跨轮劣化同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。
 
 检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤；无命名通信域时退化按 hostUid 物理节点分组（通信域组间指标直接跳过）。
 
@@ -145,4 +155,4 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 版本
 
-2.0.0 - 新核心通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离），9 类指标
+2.0.0 - 新核心通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离），8 类指标

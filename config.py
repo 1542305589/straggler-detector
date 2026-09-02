@@ -16,7 +16,7 @@ Degradation = 0.3            # 劣化阈值基础值（运行时提问，未提�
 
 # 放缩倍数分组：
 # - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec, memcpy_async, cpu, host_duration）→ 倍率 = 1 + degradation
-# - 通信域类指标（step_duration, comm, xp_count）→ 倍率 = 1 + 5*degradation
+# - 通信域类指标（step_duration, comm）→ 倍率 = 1 + 5*degradation
 Utilization_ComputeMultiplier = 0.0   # 计算类倍率 = 1 + 1*degradation（运行时 set_thresholds 计算）
 Utilization_CommMultiplier = 0.0      # 通信类倍率 = 1 + 5*degradation（运行时 set_thresholds 计算）
 CALC_MULTIPLIER_BASE = 1.0    # 计算/IO/Host 类放缩倍数基数
@@ -31,7 +31,7 @@ CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
 IsClusterData = False
 
 # 是否有命名通信域名标志：由 nodelevel_data_handler 在检测时判定。
-# True  → 存在命名通信域，通信域组间指标（comm/step_duration/xp_count）正常检测（情况 B）；
+# True  → 存在命名通信域，通信域组间指标（comm/step_duration）正常检测（情况 B）；
 # False → 无命名通信域，通信域组间指标直接跳过，检测组退化为按 hostUid 的物理节点分组（情况 A）。
 HasNamedDomain = False
 
