@@ -60,9 +60,12 @@ result = main.run_detection("/path/to/data", degradation=0.3, clean="ask")
 
 ### 必须在执行前询问用户
 
-每次执行检测前，**必须先问用户**是否需要删除已有数据（op_metric 等中间文件），等用户给明确答复后再执行，**禁止跳过询问环节**。
-- 用户选"删除" → 加 `clean=yes`
-- 用户选"保留" → 加 `clean=no`
+每次执行检测前，**必须依次询问以下参数**，等用户明确答复后再执行，**禁止跳过询问环节**：
+
+1. **劣化阈值 degradation**（默认 `0.3`，回车/不指定则用默认）：决定异常判定倍率——计算/IO/Host 类倍率 = `1+1×degradation`，通信域类 = `1+5×degradation`，`npu_bubble` 固定阈值 `< 5000ns`。用户给出数值后，命令中加 `degradation=<用户值>`。
+2. **是否删除已有数据**（op_metric 等中间文件）：
+   - 用户选"删除" → 加 `clean=yes`
+   - 用户选"保留" → 加 `clean=no`
 
 ### 清理范围
 
