@@ -405,20 +405,42 @@ def _cell_metric_summary(metric_col: str, abnormal_ranks, step_data) -> str:
 
 
 def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
-    """通信域类别的数据要点：优先用域时长列（如 tp_Duration）展示，否则兜底。"""
-    domain_metric = None
-    if parallels:
-        for domain_name in parallels.keys():
+    """
+    通信域类别的数据要点：按异常组所属域分组，用对应 {domain}_Duration 列展示各卡值。
+    例：tp 域异常 → "rank0=1.10ms，rank1=1.15ms，其他≈80us~85us（约 14.0 倍）"
+    无法定位域时长列时兜底为 "无详细数据"。
+    """
+    abnormal_by_domain = {}
+    for key in items:
+        ranks = _parse_ranks_from_key(key)
+        dom = _domain_of_group(parallels, key)
+        abnormal_by_domain.setdefault(dom, [])
+        abnormal_by_domain[dom].extend(ranks)
+
+    def _find_duration_col(domain_name: str):
+        if domain_name:
             col = f"{domain_name}_Duration"
             if step_data and step_data.get(col):
-                domain_metric = col
-                break
-    if not domain_metric:
+                return col
+        # 兜底：任选一个带时长列的域
+        if parallels:
+            for dn in parallels.keys():
+                col = f"{dn}_Duration"
+                if step_data and step_data.get(col):
+                    return col
+        return None
+
+    texts = []
+    for dom, ranks in abnormal_by_domain.items():
+        col = _find_duration_col(dom)
+        if not col:
+            continue
+        text = _cell_metric_summary(col, sorted(set(ranks)), step_data)
+        if text and text != "无详细数据":
+            texts.append(text)
+    if not texts:
         return "无详细数据"
-    abnormal_ranks = []
-    for key in items:
-        abnormal_ranks.extend(_parse_ranks_from_key(key))
-    return _cell_metric_summary(domain_metric, abnormal_ranks, step_data)
+    return "；".join(texts)
 
 
 def _disp_len(text: str) -> int:
@@ -443,20 +465,49 @@ def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
             widths[i] = max(widths[i], _disp_len(cell))
 
     def _line(left, mid, right, fill="─"):
-        return left + mid.join(fill * w for w in widths) + right
+        # 单元格总宽 = 内容宽 + 左右各 1 空格边距（与数据行 " " + cell + " " 对齐）
+        return left + mid.join(fill * (w + 2) for w in widths) + right
 
     top = _line("┌", "┬", "┐")
     mid = _line("├", "┼", "┤")
     bot = _line("└", "┴", "┘")
+    last_idx = len(all_rows) - 1
     lines = [top]
     for idx, row in enumerate(all_rows):
         cells = "│" + "│".join(" " + _disp_ljust(cell, widths[i]) + " "
                                for i, cell in enumerate(row)) + "│"
         lines.append(cells)
-        if idx == 0:
+        # 表头后、以及非最后一行的数据行后画横线；最后一行直接接底边框，
+        # 避免出现多余的分隔线（底部看起来像空行）
+        if idx < last_idx:
             lines.append(mid)
     lines.append(bot)
     return "\n".join(lines)
+
+
+def _domain_of_group(parallels: dict, ranks_key: str) -> str:
+    """
+    在 parallels 中查找某个 rank 组（如 "0,1"）所属的并行域。
+    用于 comm/step_duration 组类别展示，能区分该通信组是 tp/ep/dp 等哪个域。
+    匹配不到时返回 ""（此时退化为仅展示 rank）。
+    """
+    if not parallels:
+        return ""
+    try:
+        target = sorted(int(r) for r in ranks_key.split(","))
+    except (TypeError, ValueError):
+        return ""
+    for domain_name, groups in parallels.items():
+        if not domain_name:
+            continue
+        for group in groups:
+            try:
+                g = sorted(int(x) for x in group)
+            except (TypeError, ValueError):
+                continue
+            if g == target:
+                return domain_name
+    return ""
 
 
 def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None,
@@ -503,7 +554,18 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         for key in items:
             abnormal_ranks.extend(_parse_ranks_from_key(key))
         abnormal_ranks = sorted(set(abnormal_ranks))
-        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
+
+        # 组键类别（comm/step_duration）：每个异常通信组都带域名展示，如 tp[0, 1]
+        if category in COMM_GROUP_CATEGORIES:
+            group_parts = []
+            for key in items:
+                ranks = _parse_ranks_from_key(key)
+                domain_name = _domain_of_group(parallels, key)
+                inner = ", ".join(str(r) for r in ranks)
+                group_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
+            cards_str = "，".join(group_parts)
+        else:
+            cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
 
         # 劣化指数列：该类别的最大劣化值
         max_deg = max(items.values())
