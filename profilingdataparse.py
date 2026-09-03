@@ -631,6 +631,9 @@ def get_device_op_list(
         return []
 
     placeholders = ",".join("?" * len(group_name_ids))
+    # 注意 SELECT 列顺序：0=opName, 1=startNs, 2=endNs, 3=connectionId,
+    # 4=count, 5=_rowid_, 6=groupName。下面按此顺序取下标，与 Go 版
+    # (rows.Scan(&OpName,&StartNs,&EndNs,&ConnectionID,&Count,&OpStreamIndex,&DomainID)) 保持一致。
     cursor = conn.execute(
         f"""
         SELECT opName, startNs, endNs, connectionId, count, _rowid_, groupName
@@ -648,12 +651,12 @@ def get_device_op_list(
     device_ops = []
     for row in rows:
         device_ops.append(CommunicationOp(
-            start_ns=row[0],
-            end_ns=row[1],
-            connection_id=row[2],
-            count=int(row[3]) if isinstance(row[3], str) else row[3],
-            op_stream_index=row[4],
-            domain_id=row[5],
+            start_ns=row[1],           # startNs
+            end_ns=row[2],             # endNs
+            connection_id=row[3],      # connectionId
+            count=int(row[4]) if isinstance(row[4], str) else row[4],  # count
+            op_stream_index=row[5],    # _rowid_
+            domain_id=row[6],          # groupName
         ))
 
     return device_ops
