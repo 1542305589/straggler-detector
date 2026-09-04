@@ -99,6 +99,24 @@ def data_parsing(folder_path: str):
     start_process(db_files, folder_path)
 
 
+def data_parsing_paths(db_files: list, folder_path: str):
+    """
+    按显式给定的 db 列表解析（verl colocate 场景：某角色世界只解析属于它的 db）。
+
+    db_files 为待解析的 ascend_pytorch_profiler_*.db 绝对路径列表（调用方已按角色分组）。
+    每个角色世界解析前都会清空节点映射，再填充该世界自己的 rank→hostName。
+    """
+    db_files = [f for f in db_files if os.path.getsize(f) > 0] if db_files else []
+    if not db_files:
+        logger.error(f"未指定可用的数据库文件：{folder_path}")
+        return
+
+    # 每个世界独立解析前清空节点映射，避免跨世界 host 分组串扰
+    config.reset_host_rank_map()
+
+    start_process(db_files, folder_path)
+
+
 def start_process(db_files: List[str], output_folder: str):
     """
     并发处理数据库文件
