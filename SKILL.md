@@ -88,6 +88,19 @@ result = main.run_detection("/path/to/data", degradation=0.3, clean="ask")
 └── ...
 ```
 
+### verl colocate（训练 / rollout 混合采集，自动分离检测）
+
+verl 混合部署时，一次采集会在同一节点产出**多组 worker*_ascend_pt 目录**（每组各自独立进程、一个 rank 一个 db）。此时训练（FSDP）与 rollout（vLLM/SGLang）的 rank 编号会重复（如都含 0~3），**绝不能混在一起检测**。
+
+- 传入含同层 `worker*_ascend_pt` 的根目录，检测前会自动用 `classify_role.py` 分层判据（L1 backward 决定性 > L3 行为指纹 > L2 引擎词表）把 worker 分成训练 / rollout 两个"世界"，并做时间窗交叉验证。
+- 每个世界**独立解析 + 独立检测**，结果分开输出：
+  ```
+  <path>/detection_output/training/    # 训练（FSDP）4 rank 完整检测
+  <path>/detection_output/rollout/     # rollout（推理引擎）4 rank 完整检测
+  ```
+- 两世界各含自己的 `op_metric/`，避免 `global_rank_0.csv` 互相覆盖。
+- 非 colocate 的普通数据目录不受影响，走原检测流程。
+
 ## 重要注意事项
 
 - **禁止创建 `_db` / 软链接中转目录**：不要为了分类或去重创建任何中转目录；直接以原始数据目录作为输入。

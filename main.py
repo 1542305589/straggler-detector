@@ -129,22 +129,95 @@ def _safe_print(text: str):
             sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
 
 
-def _process_single_job(job_path: str, degradation: float, clean_mode: str, output_path: str = None):
+def _find_colocate_worlds(input_path: str) -> List[dict]:
+    """
+    探测 verl colocate 输入：root 下同层多个 worker*_ascend_pt（每 worker = 一个 rank db），
+    且角色分类同时出现 training 与 rollout。
+
+    返回满足条件的“世界”列表；不是 colocate 场景时返回 []，走原单/multi-job 流程。
+    """
+    if not input_path or not os.path.isdir(input_path):
+        return []
+    try:
+        import classify_role
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 导入 classify_role 失败，跳过 colocate 分组：{e}")
+        return []
+    try:
+        worlds = classify_role.build_role_worlds(input_path)
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] colocate 角色分组失败：{e}")
+        return []
+    if not worlds:
+        return []
+    roles = {w["role"] for w in worlds}
+    if len(roles) < 2:
+        # 只有一种角色，不是训练/rollout 混合场景，走原流程
+        return []
+    if any(len(w["ranks"]) < 2 for w in worlds):
+        logger.warning("[SLOWNODE ALGO] colocate 世界内 rank 数 <2，无法做跨卡检测，按普通流程处理")
+        return []
+    return worlds
+
+
+def _process_colocate_root(input_path: str, worlds: List[dict], degradation: float,
+                           clean_mode: str, skip_parsing: bool) -> Dict[str, Any]:
+    """
+    verl colocate 场景主流程：训练/rollout 各自一个“世界”，分别解析+检测，
+    结果输出到 <root>/detection_output/training 与 <root>/detection_output/rollout。
+    只在入口确认一次 degradation 与 clean，避免每个世界重复提问。
+    """
+    config.set_file_path(input_path)
+    degradation = utils.confirm_degradation(degradation)
+    config.set_thresholds(degradation)
+
+    if skip_parsing:
+        clean_decision = False
+    elif clean_mode == 'yes':
+        clean_decision = True
+    elif clean_mode == 'no':
+        clean_decision = False
+    else:
+        clean_decision = utils.confirm_clean(input_path)
+
+    results = {}
+    for world in worlds:
+        role = world["role"]
+        out_path = os.path.join(input_path, "detection_output", role)
+        logger.info(f"===== 处理 {role} 世界：{len(world['dbs'])} rank，ranks={world['ranks']} =====")
+        if world.get("note"):
+            logger.warning(f"[SLOWNODE ALGO] {role} 世界备注：{world['note']}")
+        try:
+            results[role] = _process_single_job(
+                input_path, degradation, clean_mode, output_path=out_path,
+                db_files=world["dbs"], skip_confirm=True, clean_decision=clean_decision)
+        except Exception as e:
+            logger.error(f"[SLOWNODE ALGO] {role} 世界检测失败：{e}")
+            results[role] = {}
+    return results
+
+
+def _process_single_job(job_path: str, degradation: float, clean_mode: str, output_path: str = None,
+                        db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     """
     对单个 job 目录执行完整检测流程（解析 → 并行域 → 定界检测 → 结果 → 报告 → 可视化）。
-    对应原 main() 的主体逻辑，供多 job 场景逐个调用。
+    对应原 main() 的主体逻辑，供多 job / colocate 世界场景逐个调用。
 
     参数:
         job_path: 输入数据目录（含原始 db）
         output_path: 检测结果输出目录；为 None 时输出到 job_path 自身（单 job 场景）
+        db_files: 显式指定待解析的 db 列表（colocate 场景按角色世界传入）；None 时递归 job_path
+        skip_confirm: True 时不重复提问 degradation（调用方已确认一次）
+        clean_decision: 已确定的清理结果（True=清理重解析 / False=保留）；None 时按 clean_mode 处理
     """
     # 设置全局配置（含 job 类型检测所需的 FilePath）
     config.set_file_path(job_path)
     if output_path:
         config.set_output_path(output_path)
 
-    # 总是向用户提问劣化阈值 degradation（传入值作为默认/回退）
-    degradation = utils.confirm_degradation(degradation)
+    if not skip_confirm:
+        # 总是向用户提问劣化阈值 degradation（传入值作为默认/回退）
+        degradation = utils.confirm_degradation(degradation)
     config.set_thresholds(degradation)
 
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 劣化阈值：{degradation}")
@@ -153,24 +226,25 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
     # 检测结果清理与输出目录（output_path），而非原始数据目录
     out_path = config.get_output_path()
 
-    # === 步骤 1: 清理/解析（根据 clean 模式） ===
-    if clean_mode == 'yes':
-        logger.info("开始 Profiling 数据解析（clean=yes，强制重新解析）...")
-        utils.clean_detection_outputs(out_path)
-        profilingdataparse.data_parsing(job_path)
-        logger.info("数据解析完成")
-    elif clean_mode == 'no':
-        logger.info("跳过清理和重新解析（clean=no），直接使用已有的 op_metric 数据")
-    else:
-        # clean_mode == 'ask': 交互式询问
-        should_clean = utils.confirm_clean(out_path)
-        if should_clean:
-            logger.info("开始 Profiling 数据解析...")
-            utils.clean_detection_outputs(out_path)
-            profilingdataparse.data_parsing(job_path)
-            logger.info("数据解析完成")
+    # === 步骤 1: 清理/解析（清理决策优先取调用方已确认值） ===
+    if clean_decision is None:
+        if clean_mode == 'yes':
+            clean_decision = True
+        elif clean_mode == 'no':
+            clean_decision = False
         else:
-            logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
+            clean_decision = utils.confirm_clean(out_path)
+
+    if clean_decision:
+        logger.info("开始 Profiling 数据解析（清理旧 op_metric 后重新解析）...")
+        utils.clean_detection_outputs(out_path)
+        if db_files:
+            profilingdataparse.data_parsing_paths(db_files, job_path)
+        else:
+            profilingdataparse.data_parsing(job_path)
+        logger.info("数据解析完成")
+    else:
+        logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
     # === 步骤 2: 获取并行域和有效 ranks ===
     parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path)
@@ -250,6 +324,13 @@ def main():
     elif degradation > 1:
         logger.warning("[WARN] Degradation threshold is greater than 1. Please verify if this is intentional.")
 
+    # === verl colocate：同层多 worker*_ascend_pt 且含训练+rollout，先分组再分开检测 ===
+    colocate_worlds = _find_colocate_worlds(input_path)
+    if colocate_worlds:
+        logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
+                    f"{[w['role'] for w in colocate_worlds]}")
+        return _process_colocate_root(input_path, colocate_worlds, degradation, clean_mode, False)
+
     # === 判断是否为“父目录含多 job 子目录”场景 ===
     sub_jobs = _find_job_subdirs(input_path)
     parent_has_db = _dir_has_db_directly(input_path)
@@ -287,6 +368,13 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
+    # === verl colocate：同层多 worker*_ascend_pt 且含训练+rollout，先分组再分开检测 ===
+    colocate_worlds = _find_colocate_worlds(input_path)
+    if colocate_worlds:
+        logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
+                    f"{[w['role'] for w in colocate_worlds]}")
+        return _process_colocate_root(input_path, colocate_worlds, degradation, clean, skip_parsing)
+
     # 设置全局配置（先设置，后续步骤可能用到）
     config.set_file_path(input_path)
     # 总是向用户提问劣化阈值 degradation（传入值作为默认/回退）
