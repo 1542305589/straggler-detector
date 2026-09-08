@@ -13,6 +13,7 @@ from typing import Dict, List, Optional
 from collections import defaultdict
 
 import markdown_viz
+import html_viz
 
 logger = logging.getLogger("[VISUALIZER]")
 
@@ -191,6 +192,20 @@ def run_visualization(
         degradation=degradation,
     )
 
+    # 生成 HTML 报告（内嵌 matplotlib 图表；matplotlib 缺失时降级为纯表格）
+    try:
+        html_path = html_viz.write_html_report(
+            step_data, parallels, valid_ranks, result_dir,
+            detection_result=detection_result,
+            input_path=data_path,
+            degradation=degradation,
+        )
+    except Exception as e:  # HTML 报告为附加产物，失败不应中断主流程
+        logger.warning(f"HTML 报告生成失败：{e}")
+        html_path = ""
+
     logger.info(f"可视化完成，报告已保存至: {report_path}")
     print(f"可视化完成，报告已保存至: {report_path}")
+    if html_path:
+        print(f"HTML 报告已保存至: {html_path}")
     return report_path

@@ -116,7 +116,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 3. `straggler_detection_result.json` — 检测结果（含全部类别）
 4. `joint_failure_analysis.log` — 故障联合分析报告
 5. `analysis_result/detection_report.log` — 可视化详情报告
-6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 Unicode 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`；无异常时打印含"无异常"提示的单行表。
+6. `analysis_result/detection_report.html` — 自包含 HTML 报告（内嵌 matplotlib 柱状图，异常卡标红；matplotlib 未安装时降级为纯表格，不报错）
+7. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 Unicode 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
 
