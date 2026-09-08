@@ -75,18 +75,36 @@ def _sep_line(title: str = "", width: int = 70) -> str:
 def _metric_section(
     metric_name: str,
     data: Dict[int, float],
-    abnormal_ranks: Optional[List[int]] = None,
+    abnormal_map: Optional[Dict[str, float]] = None,
 ) -> str:
-    """生成单个指标的排序柱状图（纯文本）"""
+    """生成单个指标的排序柱状图（纯文本）。
+
+    柱状图的"相对倍数"列以**组内最小耗时**为基准（最快的卡=1.00x，其余为相对其倍数，
+    与排序天然单调）。该列是直观的组内对比量，**不**混同于检测的劣化指数
+    （后者以最后一次基线簇均值为分母，见摘要/汇总表）。
+    """
     filtered = _filter_valid(data)
     if not filtered:
         return f"\n[{metric_name}] 无有效数据\n"
 
-    abnormal_set = set(abnormal_ranks or [])
+    abnormal_set = set()
+    if abnormal_map:
+        try:
+            abnormal_set = {int(rk) for rk in abnormal_map.keys()}
+        except ValueError:
+            abnormal_set = set()
+
     sorted_items = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
     values = [v for _, v in sorted_items]
     max_value = values[0] if values else 1
-    mean_val = sum(values) / len(values)
+
+    # 基准 = 组内最小耗时（最快卡），该卡显示 1.00x
+    baseline = min(values) if values else 0
+
+    sorted_vals = sorted(values)
+    n = len(values)
+    median_val = sorted_vals[n // 2] if n % 2 == 1 else \
+        (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2
 
     lines = []
     lines.append("")
@@ -104,8 +122,8 @@ def _metric_section(
 
     top_max = sorted_items[0][1] if sorted_items else 1
 
-    # 列头
-    lines.append(f"  {'#':>3}  {'Rank':>6}  {'耗时':>10}  {'劣化指数':>8}  柱状图")
+    # 列头（相对倍数 = 该卡耗时 / 组内最小耗时，最快卡为 1.00x）
+    lines.append(f"  {'#':>3}  {'Rank':>6}  {'耗时':>10}  {'相对倍数':>8}  柱状图")
     lines.append(f"  {'---':>3}  {'------':>6}  {'----------':>10}  {'--------':>8}  -------")
 
     idx = 0
@@ -118,7 +136,7 @@ def _metric_section(
         rank, val = item
         idx += 1
         bar = _bar(val, top_max)
-        ratio = val / mean_val if mean_val > 0 else 1
+        ratio = val / baseline if baseline > 0 else 1
         is_abnormal = rank in abnormal_set
         marker = " ***" if is_abnormal else ""
         lines.append(f"  {idx:>3}  {rank:>6}  {_fmt_ns(val):>10}  {ratio:>7.2f}x  {bar}{marker}")
@@ -127,14 +145,13 @@ def _metric_section(
     if abnormal_set:
         lines.append("")
         lines.append("  *** = 异常卡")
+    lines.append("")
+    lines.append(f"  相对倍数 = 耗时 / 组内最小耗时（最快卡=1.00x；与检测劣化指数口径不同）")
 
     # 统计信息
     lines.append("")
     lines.append(f"  {'-- 统计信息':-<40}")
-    sorted_vals = sorted(values)
-    n = len(values)
-    median_val = sorted_vals[n // 2] if n % 2 == 1 else \
-        (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2
+    mean_val = sum(values) / len(values)
     max_val = sorted_vals[-1]
     min_val = sorted_vals[0]
     lines.append(f"    总卡数:      {n}")
@@ -421,14 +438,11 @@ def generate_report(
             logger.warning(f"{metric_name} 所有数据均无效，跳过")
             continue
 
-        abnormal_ranks = []
+        abnormal_map = {}
         if detection_result and cat in detection_result:
-            try:
-                abnormal_ranks = [int(rk) for rk in detection_result[cat].keys()]
-            except ValueError:
-                pass
+            abnormal_map = detection_result[cat]
 
-        sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_ranks))
+        sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_map))
 
     # Part 1.5: 总通信耗时排序（各域通信耗时求和）
     if parallels:
