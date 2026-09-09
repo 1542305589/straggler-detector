@@ -245,7 +245,6 @@ def _detection_summary(
         "kernel_aivec": "矢量计算 (kernel_aivec)",
         "memcpy_async": "内存搬运 (memcpy_async)",
         "comm": "慢通信 (comm)",
-        "step_duration": "Step时长 (step_duration)",
         "cpu": "慢CPU (cpu)",
         "host_duration": "Host耗时 (host_duration)",
         "npu_bubble": "Bubble (npu_bubble)",

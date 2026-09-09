@@ -17,11 +17,10 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 - 识别慢计算卡、慢通信域、慢 CPU 卡
 - 看各卡在通信类 / 计算类 / IO 类指标下的耗时分布与异常
 
-## 检测的 8 类指标
+## 检测的 7 类指标
 
 | 类别 | 指标列 | 检测方式 |
 |---|---|---|
-| `step_duration` | `StepDuration` | 通信域组间对比 |
 | `comm` | `{xp}_Duration` | 通信域组间对比 |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
@@ -106,7 +105,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 - **禁止创建 `_db` / 软链接中转目录**：不要为了分类或去重创建任何中转目录；直接以原始数据目录作为输入。
 - **输入与输出目录分离**：纯结果目录只放检测产物，绝不混入 db 原始数据。
 - **空 / master db 处理**：部分 `master_*` 目录下有空的 master db（无 `STEP_TIME`/`PYTORCH_API`/`TASK` 表），应跳过，仅用含核心表的 rank db。
-- **无通信域名时（情况 A，group_name 全空）的检测退化**：按 `HOST_INFO.hostUid` 物理节点分组（相同 hostUid 的 rank 为一组）作为检测组，检测计算/IO/通信单卡类指标；通信域组间指标（`comm`/`step_duration`，`HasNamedDomain=False` 时）**直接跳过**（无域名无法解释对应 tp/ep）。Host 维持节点间拉齐，Bubble 维持固定阈值。
+- **无通信域名时（情况 A，group_name 全空）的检测退化**：按 `HOST_INFO.hostUid` 物理节点分组（相同 hostUid 的 rank 为一组）作为检测组，检测计算/IO/通信单卡类指标；通信域组间指标（`comm`，`HasNamedDomain=False` 时）**直接跳过**（无域名无法解释对应 tp/ep）。Host 维持节点间拉齐，Bubble 维持固定阈值。
 - **有命名域但未命中检测优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标**仍然检测**（`HasNamedDomain=True`），检出慢通信组时可带域名。
 
 ## 输出

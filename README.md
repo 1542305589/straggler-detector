@@ -75,8 +75,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   "npu_bubble": [...],
   "kernel_aivec": [...],
   "memcpy_async": [...],
-  "host_duration": [...],
-  "step_duration": [...]
+  "host_duration": [...]
 }
 ```
 
@@ -97,11 +96,10 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 └───────────────────┴─────────┴────────┴────────┴───────────────────────────────┘
 ```
 
-## 检测的 8 类指标
+## 检测的 7 类指标
 
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
-| `step_duration` | `StepDuration` | 通信域组间对比 |
 | `comm` | `{xp}_Duration` | 通信域组间对比 |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
@@ -134,7 +132,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   ├── detection_zp_bubble_data()           → npu_bubble
   ├── get_slow_calculate_ranks()           → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2           → kernel_aivec / memcpy_async
-  ├── detection_all_communication_parallel()→ comm / step_duration（有命名域时）
+  ├── detection_all_communication_parallel()→ comm（有命名域时）
   ├── get_slow_host_ranks_by_homogenize()  → cpu
   └── _get_slow_host_metric_ranks()        → host_duration
         │
@@ -155,4 +153,4 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 版本
 
-2.0.0 - 新核心通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离），8 类指标
+2.1.0 - 移除 step_duration 指标（7 类），通信域组间仅保留 comm
