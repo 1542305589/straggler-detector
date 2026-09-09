@@ -10,7 +10,7 @@ HTML 报告生成模块 - 为慢节点检测结果生成自包含 HTML 报告（
     不影响 skill 主流程与零依赖承诺（仅在用户显式要求图形报告时才使用）。
 
 功能:
-    1. 概览卡片（有效 Rank、劣化阈值、异常类别/卡数、Job 类型）
+    1. 概览卡片（有效 Rank、劣化阈值基数、异常类别/异常项数、Job 类型）
     2. 检测结果摘要表
     3. 各单卡指标排序柱状图（异常卡标红）
     4. 总通信耗时排序柱状图
@@ -211,6 +211,20 @@ def _type_names():
     return names
 
 
+def _category_threshold(category: str) -> str:
+    """返回某检测类别对应的劣化阈值显示文本。
+
+    - 计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3）
+    - 通信类（comm） → 倍率 = 1 + 5×基数（如 0.3 → 2.5）
+    - npu_bubble → 固定硬阈值 <5000ns
+    """
+    if category == "npu_bubble":
+        return "<5000ns"
+    if category == "comm":
+        return f"{config.get_comm_multiplier():g}×"
+    return f"{config.get_compute_multiplier():g}×"
+
+
 def _abnormal_rank_set(detection_result: Dict, category: str) -> set:
     items = (detection_result or {}).get(category) or {}
     out = set()
@@ -271,7 +285,7 @@ def generate_html_report(
 
     cards = [
         ("有效 Rank 数", f"{len(valid_ranks)}", ""),
-        ("劣化阈值", f"{degradation}", ""),
+        ("劣化阈值基数", f"{degradation}", ""),
         ("Job 类型", config.get_job_type(), ""),
         ("异常类别", f"{len(abnormal_categories)}", "bad" if abnormal_categories else "good"),
         ("异常项数", f"{abnormal_items_total}", "bad" if abnormal_items_total else "good"),
@@ -290,21 +304,22 @@ def generate_html_report(
         body.append('<div class="empty">未检测到异常节点</div>')
     else:
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
-                    '<th>异常项数</th><th>劣化指数</th></tr></thead><tbody>')
+                    '<th>异常项数</th><th>劣化阈值</th><th>劣化指数</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
                  "cpu", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
         for key in order:
             items = detection_result.get(key) or {}
             name = type_names.get(key, key)
+            th = _category_threshold(key)
             if items:
                 details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'
                                     for rk, v in sorted(items.items(), key=lambda x: -x[1]))
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag bad">异常</span></td>'
-                            f'<td>{len(items)}</td><td>{details}</td></tr>')
+                            f'<td>{len(items)}</td><td>{_esc(th)}</td><td>{details}</td></tr>')
             else:
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag ok">正常</span></td>'
-                            f'<td>0</td><td>-</td></tr>')
+                            f'<td>0</td><td>{_esc(th)}</td><td>-</td></tr>')
         body.append("</tbody></table>")
     body.append("</section>")
 

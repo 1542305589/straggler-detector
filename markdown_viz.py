@@ -236,6 +236,20 @@ def _comm_section(
     return "\n".join(lines)
 
 
+def _category_threshold(category: str) -> str:
+    """返回某检测类别对应的劣化阈值显示文本（与 html_viz 保持一致）。
+
+    - 计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3）
+    - 通信类（comm） → 倍率 = 1 + 5×基数（如 0.3 → 2.5）
+    - npu_bubble → 固定硬阈值 <5000ns
+    """
+    if category == "npu_bubble":
+        return "<5000ns"
+    if category == "comm":
+        return f"{config.get_comm_multiplier():g}×"
+    return f"{config.get_compute_multiplier():g}×"
+
+
 def _detection_summary(
     detection_result: Dict[str, Dict[str, float]],
     valid_ranks: List[int],
@@ -261,18 +275,19 @@ def _detection_summary(
 
     for key, name in type_names.items():
         items = detection_result.get(key) or {}
+        th = _category_threshold(key)
         if items:
             details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
             if len(details) > 80:
                 details = details[:77] + "..."
             lines.append(f"  {name}")
-            lines.append(f"      状态: 异常    异常项数: {len(items)}    详情: {details}")
+            lines.append(f"      状态: 异常    异常项数: {len(items)}    劣化阈值: {th}    详情: {details}")
         else:
             lines.append(f"  {name}")
-            lines.append(f"      状态: 正常    异常项数: 0    详情: -")
+            lines.append(f"      状态: 正常    异常项数: 0    劣化阈值: {th}    详情: -")
 
     lines.append("")
-    lines.append(f"  总 Rank 数: {len(valid_ranks)}  |  劣化阈值: {degradation}")
+    lines.append(f"  总 Rank 数: {len(valid_ranks)}  |  劣化阈值基数: {degradation}")
     return "\n".join(lines)
 
 
