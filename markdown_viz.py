@@ -34,7 +34,6 @@ CATEGORY_METRIC = {
     "kernel_aivec": "KERNEL_AIVEC",
     "memcpy_async": "MEMCPY_ASYNC",
     "cpu": "ZP_Host",
-    "host_duration": "HostDuration",
     "npu_bubble": "ZP_Bubble",
 }
 
@@ -249,7 +248,6 @@ def _detection_summary(
         "memcpy_async": "内存搬运 (memcpy_async)",
         "comm": "慢通信 (comm)",
         "cpu": "慢CPU (cpu)",
-        "host_duration": "Host耗时 (host_duration)",
         "npu_bubble": "Bubble (npu_bubble)",
     }
     # 覆盖动态类别
@@ -430,7 +428,7 @@ def generate_report(
         sections.append(_detection_summary(detection_result, valid_ranks, degradation))
         sections.append("")
 
-    # Part 1: 单卡指标排序柱状图（KERNEL_AICORE/kernel_aivec/memcpy_async/cpu/host_duration/npu_bubble）
+    # Part 1: 单卡指标排序柱状图（KERNEL_AICORE/kernel_aivec/memcpy_async/cpu/npu_bubble）
     cat_to_metric = dict(CATEGORY_METRIC)
     rendered_metric_cols = set()
     for cat, metric_name in cat_to_metric.items():

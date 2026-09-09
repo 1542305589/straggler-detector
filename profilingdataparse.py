@@ -66,7 +66,7 @@ class PerformanceMetrics:
     zp_kernel: int = 0
     memcpy_async: int = 0
     kernel_aivec: int = 0
-    host_duration: int = 0      # 指标12：通信算子侧 Host 执行耗时均值
+    host_duration: int = 0      # HostDuration 列：通信算子侧 Host 执行耗时均值（仅 CSV 展示，不参与检测）
     data_loader: int = 0
     durations: Dict[str, int] = field(default_factory=dict)
     counts: Dict[str, int] = field(default_factory=dict)
@@ -588,7 +588,7 @@ def time_diff_for_step(
     all_host_durations = host_durations + kernel_host_durations
     metrics.zp_host = calculate_mean(all_host_durations)
     metrics.zp_bubble = calculate_mean(bubble_durations)
-    # 指标12：HostDuration = 通信算子侧 host 执行耗时均值（不含 kernel，区别于 zp_host）
+    # HostDuration 列 = 通信算子侧 host 执行耗时均值（不含 kernel，区别于 zp_host；仅 CSV 展示，不参与检测）
     metrics.host_duration = calculate_mean(host_durations)
 
     # 计算通信总时长

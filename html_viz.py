@@ -206,7 +206,6 @@ def _type_names():
         "memcpy_async": "内存搬运 (memcpy_async)",
         "comm": "慢通信 (comm)",
         "cpu": "慢CPU (cpu)",
-        "host_duration": "Host耗时 (host_duration)",
         "npu_bubble": "Bubble (npu_bubble)",
     }
     return names
@@ -293,7 +292,7 @@ def generate_html_report(
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
                     '<th>异常项数</th><th>劣化指数</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
-                 "cpu", "host_duration", "npu_bubble"]
+                 "cpu", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
         for key in order:
             items = detection_result.get(key) or {}
@@ -315,7 +314,6 @@ def generate_html_report(
         "kernel_aivec": ("KERNEL_AIVEC", "矢量计算"),
         "memcpy_async": ("MEMCPY_ASYNC", "内存搬运"),
         "cpu": ("ZP_Host", "慢CPU"),
-        "host_duration": ("HostDuration", "Host耗时"),
         "npu_bubble": ("ZP_Bubble", "NPU空泡"),
     }
     rendered_cols = set()

@@ -15,7 +15,7 @@ ZP_BUBBLE_ABNORMAL_BOUNDARY = 50000  # 50us
 Degradation = 0.3            # 劣化阈值基础值（运行时提问，未提问时用默认 0.3）
 
 # 放缩倍数分组：
-# - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec, memcpy_async, cpu, host_duration）→ 倍率 = 1 + degradation
+# - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec, memcpy_async, cpu）→ 倍率 = 1 + degradation
 # - 通信域类指标（comm）→ 倍率 = 1 + 5*degradation
 Utilization_ComputeMultiplier = 0.0   # 计算类倍率 = 1 + 1*degradation（运行时 set_thresholds 计算）
 Utilization_CommMultiplier = 0.0      # 通信类倍率 = 1 + 5*degradation（运行时 set_thresholds 计算）

@@ -17,7 +17,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 - 识别慢计算卡、慢通信域、慢 CPU 卡
 - 看各卡在通信类 / 计算类 / IO 类指标下的耗时分布与异常
 
-## 检测的 7 类指标
+## 检测的 6 类指标
 
 | 类别 | 指标列 | 检测方式 |
 |---|---|---|
@@ -26,7 +26,6 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
 | `npu_bubble` | `ZP_Bubble` | 单阈值 < 5000ns |
-| `host_duration` | `HostDuration` | 节点对齐 + 通用算法 |
 | `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
 
 ## 使用方法
