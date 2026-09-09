@@ -76,6 +76,7 @@ def _metric_section(
     metric_name: str,
     data: Dict[int, float],
     abnormal_map: Optional[Dict[str, float]] = None,
+    note: str = "",
 ) -> str:
     """生成单个指标的排序柱状图（纯文本）。
 
@@ -109,6 +110,8 @@ def _metric_section(
     lines = []
     lines.append("")
     lines.append(_sep_line(f"{metric_name} 耗时排序", 70))
+    if note:
+        lines.append(f"  {note}")
     lines.append(f"  展示 Top {TOP_N} 最慢 + Bottom {BOTTOM_N} 最快")
     lines.append("")
 
@@ -336,7 +339,7 @@ def _comm_total_section(
     lines.append("")
     lines.append(_sep_line("总通信耗时排序", 70))
     lines.append(f"  {subtitle}")
-    lines.append("  注：仅展示总通信耗时分布，不参与检测；通信异常检测以通信组（tp_Duration）为单位")
+    lines.append("  仅展示总通信耗时分布，不参与检测，通信异常检测以通信组({xp}_Duration)为单位")
     lines.append(f"  展示 Top {TOP_N} 最慢 + Bottom {BOTTOM_N} 最快")
     lines.append("")
 
@@ -503,6 +506,7 @@ def generate_report(
                 duration_key,
                 step_data[duration_key],
                 list(abnormal_comm_ranks) if abnormal_comm_ranks else None,
+                note=f"仅展示{domain_name}通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位",
             ))
 
     sections.append(_sep_line("", 70))
