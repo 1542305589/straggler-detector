@@ -337,6 +337,7 @@ def _comm_total_section(
     lines.append("")
     lines.append(_sep_line("总通信耗时排序", 70))
     lines.append(f"  {subtitle}")
+    lines.append("  注：仅展示总通信耗时分布，不参与检测；通信异常检测以通信组（tp_Duration）为单位")
     lines.append(f"  展示 Top {TOP_N} 最慢 + Bottom {BOTTOM_N} 最快")
     lines.append("")
 

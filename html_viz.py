@@ -442,7 +442,9 @@ def _comm_total_html(step_data, parallels, detection_result) -> str:
     svg = _bar_chart_svg(ranks, vals, "总通信耗时排序", abnormal)
     fig_html = (f'<div class="figure">{svg}</div>' if svg
                 else '<div class="note">（matplotlib 不可用，图表省略）</div>')
-    html = (f'<section><h2>总通信耗时排序</h2><p class="note">{_esc(subtitle)}</p>'
+    note = (f"仅展示，不参与检测；通信异常检测以通信组（tp_Duration）为单位"
+            + (f" · {_esc(subtitle)}" if subtitle else ""))
+    html = (f'<section><h2>总通信耗时排序</h2><p class="note">{note}</p>'
             + fig_html + "</section>")
     return html
 
