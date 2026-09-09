@@ -32,7 +32,6 @@ ppParallelDomainName = "pp"
 cpuDegradationPercent = 2.0
 memcpyAsyncColumn = "MEMCPY_ASYNC"
 kernelAivecColumn = "KERNEL_AIVEC"
-stepDurationColumn = "StepDuration"  # 指标1：DB 数据总时间间隔
 hostDurationColumn = "HostDuration"  # 指标12：Host 端执行耗时均值
 
 # 通用检测（指标4-10）使用"选定的检测组"运行的指标列 → 类别映射
@@ -91,14 +90,14 @@ def delimit_detection(
         get_slow_metric_ranks(cal_detection_group, step_data, column, category, local_result)
         logger.info(f"  - {column} -> {category}")
 
-    # ===== 指标 1/2：通信域组间对比（step_duration / comm） =====
+    # ===== 通信域组间对比（comm） =====
     # 无命名通信域（情况 A）时，通信域指标无法向用户解释对应 tp/ep，直接跳过；
     # 否则正常检测（情况 B / 正常数据）。
     if config.get_has_named_domain():
         logger.info("\n通信域组间对比检测:")
         detection_all_communication_parallel(parallels, cal_detection_group, valid_ranks, step_data, local_result)
     else:
-        logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测（comm/step_duration）")
+        logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测（comm）")
 
     # ===== 指标 12 + 兼容：HostDuration / ZP_Host，集群整体拉齐 =====
     logger.info("\nCPU / Host 资源卡检测（集群整体拉齐）:")
@@ -607,7 +606,7 @@ def _detect_comm_group_metric(
     category: str,
 ):
     """
-    对单个通信组间指标（指标 1/2：StepDuration / {xp}_Duration）做通信域组间对比。
+    对单个通信组间指标（{xp}_Duration）做通信域组间对比。
 
     规则：
     - 对每个并行域，取其各分组中"代表卡"（组内该指标值最小的有效卡），再跨组做通用检测，
@@ -660,7 +659,7 @@ def _collect_metric_data(
 ) -> Dict[int, float]:
     """
     收集通信组间检测所用指标数据：{rank: value}。
-    取 metric_column（StepDuration / {xp}_Duration）并按 -99999、0 过滤无效值。
+    取 metric_column（{xp}_Duration）并按 -99999、0 过滤无效值。
     """
     ret = {}
     col_data = all_data.get(metric_column, {})
@@ -680,10 +679,9 @@ def detection_all_communication_parallel(
     local_result: config.DegradationData
 ) -> bool:
     """
-    对所有通信域做组间对比检测，覆盖指标 1/2：
-    - 指标2：{xp}_Duration → comm（慢通信域，沿用旧类别名）
-    - 指标1：StepDuration → step_duration
-    对应 Go 代码中的 detectionAllCommunicationParallel 函数（扩展到 2 个指标）。
+    对所有通信域做组间对比检测，覆盖指标：
+    - {xp}_Duration → comm（慢通信域）
+    对应 Go 代码中的 detectionAllCommunicationParallel 函数。
     """
     if not parallels:
         return True
@@ -693,7 +691,7 @@ def detection_all_communication_parallel(
         logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测")
         return True
 
-    # 指标2：{xp}_Duration → comm
+    # {xp}_Duration → comm
     for name in parallels:
         if not name:
             continue
@@ -701,12 +699,6 @@ def detection_all_communication_parallel(
             {name: parallels[name]}, cal_detection_group, valid_ranks, data,
             local_result, f"{name}_Duration", "comm",
         )
-
-    # 指标1：StepDuration → step_duration
-    _detect_comm_group_metric(
-        parallels, cal_detection_group, valid_ranks, data,
-        local_result, stepDurationColumn, "step_duration",
-    )
 
     return True
 

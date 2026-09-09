@@ -44,7 +44,6 @@ CATEGORY_LABELS = {
     "kernel_aivec": "矢量计算(KERNEL_AIVEC)",
     "memcpy_async": "内存搬运(MEMCPY_ASYNC)",
     "comm": "慢通信域(comm)",
-    "step_duration": "Step时长(step_duration)",
     "cpu": "慢CPU卡(cpu)",
     "host_duration": "Host耗时(host_duration)",
     "npu_bubble": "NPU空泡(npu_bubble)",
@@ -56,21 +55,19 @@ SHORT_CATEGORY_LABELS = {
     "kernel_aivec": "矢量计算",
     "memcpy_async": "内存搬运",
     "comm": "慢通信域",
-    "step_duration": "Step时长",
     "cpu": "慢CPU卡",
     "host_duration": "Host耗时",
     "npu_bubble": "NPU空泡",
 }
 
 # 类别 -> step_data 中对应的单卡指标列（用于展示全部卡值）
-# comm / step_duration 为组键类别（域），单独处理
+# comm 为组键类别（域），单独处理
 CATEGORY_METRIC = {
     "KERNEL_AICORE": "KERNEL_AICORE",
     "kernel_aivec": "KERNEL_AIVEC",
     "memcpy_async": "MEMCPY_ASYNC",
     "cpu": "ZP_Host",
     "host_duration": "HostDuration",
-    "step_duration": "StepDuration",
     "npu_bubble": "ZP_Bubble",
 }
 
@@ -237,14 +234,14 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
     lines.append(f"{prefix} 输出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"{prefix} ---------- 一、各列检测结果汇总 ----------")
 
-    group_categories = ("comm", "step_duration")
+    group_categories = ("comm",)
     # 单卡类别集合：CATEGORY_METRIC 中映射到指标列且非组键类别
     single_card_categories = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration", "npu_bubble")
 
     # 动态类别集合：优先展示已知/存在的类别，同时覆盖动态类别
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "step_duration", "cpu", "host_duration", "npu_bubble",
+        "comm", "cpu", "host_duration", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -350,7 +347,7 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 
 # 计算/IO/Host 类（倍率 = 1 + degradation）与通信域类（倍率 = 1 + 5*degradation）的类别集合
 COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration")
-COMM_GROUP_CATEGORIES = ("comm", "step_duration")
+COMM_GROUP_CATEGORIES = ("comm",)
 
 
 def _fmt_ns(value: float) -> str:
@@ -488,7 +485,7 @@ def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
 def _domain_of_group(parallels: dict, ranks_key: str) -> str:
     """
     在 parallels 中查找某个 rank 组（如 "0,1"）所属的并行域。
-    用于 comm/step_duration 组类别展示，能区分该通信组是 tp/ep/dp 等哪个域。
+    用于 comm 组类别展示，能区分该通信组是 tp/ep/dp 等哪个域。
     匹配不到时返回 ""（此时退化为仅展示 rank）。
     """
     if not parallels:
@@ -531,7 +528,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "step_duration", "cpu", "host_duration", "npu_bubble",
+        "comm", "cpu", "host_duration", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -555,7 +552,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
             abnormal_ranks.extend(_parse_ranks_from_key(key))
         abnormal_ranks = sorted(set(abnormal_ranks))
 
-        # 组键类别（comm/step_duration）：每个异常通信组都带域名展示，如 tp[0, 1]
+        # 组键类别（comm）：每个异常通信组都带域名展示，如 tp[0, 1]
         if category in COMM_GROUP_CATEGORIES:
             group_parts = []
             for key in items:

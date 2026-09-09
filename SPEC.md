@@ -11,7 +11,7 @@
 
 - 慢计算卡（`KERNEL_AICORE`）
 - 慢矢量/搬运（`kernel_aivec` / `memcpy_async`）
-- 慢通信域（`comm` / `step_duration`）
+- 慢通信域（`comm`）
 - 慢 CPU 卡（`cpu` / `host_duration`）
 - NPU 空泡（`npu_bubble`）
 
@@ -79,7 +79,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── detection_zp_bubble_data()             → npu_bubble
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
-  ├── detection_all_communication_parallel() → comm / step_duration（HasNamedDomain 时）
+  ├── detection_all_communication_parallel() → comm（HasNamedDomain 时）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
   └── _get_slow_host_metric_ranks()          → host_duration
         │
@@ -135,7 +135,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 ### 5.2 异常倍率由 degradation 决定
 
 - 计算/IO/Host 类（`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `cpu`, `host_duration`）→ 倍率 = `1 + degradation`
-- 通信域类（`step_duration`, `comm`）→ 倍率 = `1 + 5×degradation`
+- 通信域类（`comm`）→ 倍率 = `1 + 5×degradation`
 - `npu_bubble` → 固定硬阈值 `< 5000ns`
 - `cpu` 沿用 `cpuDegradationPercent = 2.0`（实际由 config 倍率覆盖）
 
@@ -166,7 +166,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 | 指标（CSV 列） | 生成方式 |
 |----------------|----------|
 | `StepDuration` | DB 数据总时间间隔 |
-| `ZP_Device` | step_duration − 通信总耗时（非通信时长） |
+| `ZP_Device` | `StepDuration` − 通信总耗时（非通信时长） |
 | `ZP_Duration` | 通信算子区间合并总时长 |
 | `ZP_Host` | 通信算子 Host 耗时 + `KERNEL_AICORE` Host 耗时的均值（无通信算子时仍取 Kernel Host） |
 | `ZP_Bubble` | `op.startNs − op.h_endNs`（>0）的均值 |
@@ -228,9 +228,8 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.5 通信域组间对比（detection_all_communication_parallel）
 
-覆盖指标 1/2：
-- 指标2：各域 `{xp}_Duration` → `comm`（沿用旧类别名）
-- 指标1：`StepDuration` → `step_duration`
+覆盖指标：
+- 各域 `{xp}_Duration` → `comm`
 
 **守卫**（双保险，[nodelevel.py:97](nodelevel.py#L97) 与 [nodelevel.py:728](nodelevel.py#L728)）：
 - `config.get_has_named_domain()` 为真 → 正常检测通信域组间指标（情况 B / 正常数据）。
@@ -258,10 +257,10 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   "comm": [{"display_key":"tp[0, 1]","metric_value":1.8,"is_abnormal":true}],
   "cpu": [...], "npu_bubble": [...],
   "kernel_aivec": [...], "memcpy_async": [...],
-  "host_duration": [...], "step_duration": [...]
+  "host_duration": [...]
 }
 ```
-始终包含全部 8 类（空则 `[]`）；非 bubble 降序，bubble 升序；comm/step_duration 的 `display_key` 带域名。
+始终包含全部 7 类（空则 `[]`）；非 bubble 降序，bubble 升序；comm 的 `display_key` 带域名。
 
 ### 9.2 清理（utils）
 
@@ -278,7 +277,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 计算(compute) → 通信(communication) → 等待/空转(wait)
 ```
 - **计算阶段**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`（根因候选起点）
-- **通信阶段**：`comm`, `step_duration`（受慢卡拖累）
+- **通信阶段**：`comm`（受慢卡拖累）
 - **等待/空转**：`cpu`, `host_duration`, `npu_bubble`（下游影响）
 
 ### 10.2 类别与指标映射
@@ -291,7 +290,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 | `cpu` | `ZP_Host` | 单卡 / 大值 |
 | `host_duration` | `HostDuration` | 单卡 / 大值 |
 | `npu_bubble` | `ZP_Bubble` | 单卡 / 小值（固定 <5000ns） |
-| `comm` / `step_duration` | `{xp}_Duration` / `StepDuration` | 通信域组级别 |
+| `comm` | `{xp}_Duration` | 通信域组级别 |
 
 ### 10.3 报告结构（joint_failure_analysis.log，log 格式）
 
@@ -318,7 +317,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 - **类别**：`{code}（{SHORT_CATEGORY_LABELS}）`，如 `KERNEL_AICORE（慢计算卡）`。
 - **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
 - **劣化指数**：该类别的最大劣化值（3 位小数）。
-- **劣化阈值**：`npu_bubble` → `5000ns`；通信域类（comm/step_duration）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
+- **劣化阈值**：`npu_bubble` → `5000ns`；通信域类（comm）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
 - **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；无数据兜底 `无详细数据`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
@@ -347,7 +346,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 逐轮剥离），唯一参数为倍率（由 degradation 决定）。
 5. **逐轮剥离，检测/劣化分离**：每轮剔出异常簇后对剩余数据再聚类，**检测**各用当轮基线（剥掉大值后基线单调不增，逐步检出更细微离群点）；**劣化指数**统一用最后一次得到的基线簇（最严格地板）作分母，跨轮同一刻度可比。
 6. **倍率分组**：计算/IO/Host = `1+degradation`，通信域 = `1+5×degradation`。
-7. **8 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `host_duration`, `comm`, `step_duration`。
+7. **7 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `host_duration`, `comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。
 10. **CPU/节点分组**：使用内存 `config.HostRankMap`（源自 `HOST_INFO.hostUid`），不落盘文件；无映射时回退按 4 卡。
