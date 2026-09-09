@@ -258,7 +258,7 @@ def _detection_summary(
             type_names[key] = key
 
     lines = []
-    lines.append(f"  {'检测类型':<22} {'状态':<10} {'异常卡数':<10} 异常详情")
+    lines.append(f"  {'检测类型':<22} {'状态':<10} {'异常项数':<10} 异常详情")
     lines.append(f"  {'-'*22} {'-'*10} {'-'*10} {'-'*30}")
 
     for key, name in type_names.items():

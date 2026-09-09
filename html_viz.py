@@ -268,21 +268,14 @@ def generate_html_report(
 
     # ---- 概览卡片 ----
     abnormal_categories = [c for c, items in detection_result.items() if items]
-    abnormal_cards = set()
-    for items in detection_result.values():
-        for key in items:
-            for r in key.split(","):
-                try:
-                    abnormal_cards.add(int(r))
-                except ValueError:
-                    pass
+    abnormal_items_total = sum(len(items) for items in detection_result.values())
 
     cards = [
         ("有效 Rank 数", f"{len(valid_ranks)}", ""),
         ("劣化阈值", f"{degradation}", ""),
         ("Job 类型", config.get_job_type(), ""),
         ("异常类别", f"{len(abnormal_categories)}", "bad" if abnormal_categories else "good"),
-        ("异常卡数", f"{len(abnormal_cards)}", "bad" if abnormal_cards else "good"),
+        ("异常项数", f"{abnormal_items_total}", "bad" if abnormal_items_total else "good"),
     ]
     cards_html = "".join(
         f'<div class="card"><div class="k">{_esc(k)}</div>'
@@ -298,7 +291,7 @@ def generate_html_report(
         body.append('<div class="empty">未检测到异常节点</div>')
     else:
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
-                    '<th>异常卡数</th><th>劣化指数</th></tr></thead><tbody>')
+                    '<th>异常项数</th><th>劣化指数</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
                  "cpu", "host_duration", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
