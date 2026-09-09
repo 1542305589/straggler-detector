@@ -225,7 +225,7 @@ def _abnormal_rank_set(detection_result: Dict, category: str) -> set:
 
 
 def _single_metric_section(metric_name: str, data: Dict[int, float],
-                           abnormal: Optional[set], cat_label: str):
+                           abnormal: Optional[set], cat_label: str, note: str = ""):
     filtered = _filter_valid(data)
     if not filtered:
         return ""
@@ -233,6 +233,8 @@ def _single_metric_section(metric_name: str, data: Dict[int, float],
     values = [filtered[r] for r in ranks]
     svg = _bar_chart_svg(ranks, values, f"{cat_label} · {metric_name} 耗时排序", abnormal)
     parts = [f"<section><h2>{_esc(cat_label)} · <code>{_esc(metric_name)}</code> 耗时排序</h2>"]
+    if note:
+        parts.append(f'<p class="note">{_esc(note)}</p>')
     if svg:
         parts.append(f'<div class="figure">{svg}</div>')
     else:
@@ -380,7 +382,8 @@ def generate_html_report(
             if not filtered:
                 continue
             body.append(_single_metric_section(duration_key, filtered, comm_abnormal_ranks,
-                                               f"{domain_name} 通信"))
+                                               f"{domain_name} 通信",
+                                               note=f"仅展示{domain_name}通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位"))
 
     html = f"""<!DOCTYPE html>
 <html lang="zh">
@@ -441,7 +444,7 @@ def _comm_total_html(step_data, parallels, detection_result) -> str:
     svg = _bar_chart_svg(ranks, vals, "总通信耗时排序", abnormal)
     fig_html = (f'<div class="figure">{svg}</div>' if svg
                 else '<div class="note">（matplotlib 不可用，图表省略）</div>')
-    note = (f"仅展示，不参与检测；通信异常检测以通信组（tp_Duration）为单位"
+    note = (f"仅展示总通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位"
             + (f" · {_esc(subtitle)}" if subtitle else ""))
     html = (f'<section><h2>总通信耗时排序</h2><p class="note">{note}</p>'
             + fig_html + "</section>")
