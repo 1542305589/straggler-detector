@@ -333,12 +333,6 @@ def generate_html_report(
         abnormal = _abnormal_rank_set(detection_result, cat)
         body.append(_single_metric_section(col, step_data[col], abnormal, label))
 
-    # ---- 总通信耗时排序 ----
-    if parallels:
-        total_section = _comm_total_html(step_data, parallels, detection_result)
-        if total_section:
-            body.append(total_section)
-
     # ---- 各并行域通信耗时 ----
     if parallels:
         comm_abnormal_ranks = _abnormal_rank_set(detection_result, "comm")
@@ -384,6 +378,12 @@ def generate_html_report(
             body.append(_single_metric_section(duration_key, filtered, comm_abnormal_ranks,
                                                f"{domain_name} 通信",
                                                note=f"仅展示{domain_name}通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位"))
+
+    # ---- 总通信耗时排序（置于最后，仅展示、不参与检测） ----
+    if parallels:
+        total_section = _comm_total_html(step_data, parallels, detection_result)
+        if total_section:
+            body.append(total_section)
 
     html = f"""<!DOCTYPE html>
 <html lang="zh">
