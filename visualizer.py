@@ -125,7 +125,7 @@ def run_visualization(
     os.makedirs(result_dir, exist_ok=True)
 
     # 先打印控制台实时反馈（含新增单卡指标列）
-    for metric_name in ["KERNEL_AICORE", "ZP_Host", "KERNEL_AIVEC", "MEMCPY_ASYNC", "HostDuration"]:
+    for metric_name in ["KERNEL_AICORE", "ZP_Host", "KERNEL_AIVEC", "MEMCPY_ASYNC"]:
         if metric_name in step_data:
             plot_metric_bar(step_data[metric_name], metric_name, "")
 

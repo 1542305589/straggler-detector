@@ -74,8 +74,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   "cpu": [...],
   "npu_bubble": [...],
   "kernel_aivec": [...],
-  "memcpy_async": [...],
-  "host_duration": [...]
+  "memcpy_async": [...]
 }
 ```
 
@@ -96,7 +95,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 └───────────────────┴─────────┴────────┴────────┴───────────────────────────────┘
 ```
 
-## 检测的 7 类指标
+## 检测的 6 类指标
 
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
@@ -105,7 +104,6 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
 | `npu_bubble` | `ZP_Bubble` | 单阈值 < 5000ns |
-| `host_duration` | `HostDuration` | 节点对齐 + 通用算法 |
 | `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
 
 ## 算法流程
@@ -134,7 +132,6 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   ├── get_slow_metric_ranks() ×2           → kernel_aivec / memcpy_async
   ├── detection_all_communication_parallel()→ comm（有命名域时）
   ├── get_slow_host_ranks_by_homogenize()  → cpu
-  └── _get_slow_host_metric_ranks()        → host_duration
         │
         ▼
 输出：straggler_detection_result.json / joint_failure_analysis.log / detection_report.log
@@ -153,4 +150,4 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 版本
 
-2.1.0 - 移除 step_duration 指标（7 类），通信域组间仅保留 comm
+2.2.0 - 移除 host_duration 指标（6 类），Host 侧仅保留 cpu

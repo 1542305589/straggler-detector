@@ -45,7 +45,6 @@ CATEGORY_LABELS = {
     "memcpy_async": "内存搬运(MEMCPY_ASYNC)",
     "comm": "慢通信域(comm)",
     "cpu": "慢CPU卡(cpu)",
-    "host_duration": "Host耗时(host_duration)",
     "npu_bubble": "NPU空泡(npu_bubble)",
 }
 
@@ -56,7 +55,6 @@ SHORT_CATEGORY_LABELS = {
     "memcpy_async": "内存搬运",
     "comm": "慢通信域",
     "cpu": "慢CPU卡",
-    "host_duration": "Host耗时",
     "npu_bubble": "NPU空泡",
 }
 
@@ -67,7 +65,6 @@ CATEGORY_METRIC = {
     "kernel_aivec": "KERNEL_AIVEC",
     "memcpy_async": "MEMCPY_ASYNC",
     "cpu": "ZP_Host",
-    "host_duration": "HostDuration",
     "npu_bubble": "ZP_Bubble",
 }
 
@@ -236,12 +233,12 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 
     group_categories = ("comm",)
     # 单卡类别集合：CATEGORY_METRIC 中映射到指标列且非组键类别
-    single_card_categories = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration", "npu_bubble")
+    single_card_categories = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "npu_bubble")
 
     # 动态类别集合：优先展示已知/存在的类别，同时覆盖动态类别
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "cpu", "host_duration", "npu_bubble",
+        "comm", "cpu", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -346,7 +343,7 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 # ---- 最终输出汇总表（渲染到调用 skill 的 agent 的 stdout，不进任何 log 文件） ----
 
 # 计算/IO/Host 类（倍率 = 1 + degradation）与通信域类（倍率 = 1 + 5*degradation）的类别集合
-COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "host_duration")
+COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu")
 COMM_GROUP_CATEGORIES = ("comm",)
 
 
@@ -528,7 +525,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "cpu", "host_duration", "npu_bubble",
+        "comm", "cpu", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]

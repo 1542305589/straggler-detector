@@ -32,7 +32,6 @@ ppParallelDomainName = "pp"
 cpuDegradationPercent = 2.0
 memcpyAsyncColumn = "MEMCPY_ASYNC"
 kernelAivecColumn = "KERNEL_AIVEC"
-hostDurationColumn = "HostDuration"  # 指标12：Host 端执行耗时均值
 
 # 通用检测（指标4-10）使用"选定的检测组"运行的指标列 → 类别映射
 # 单卡级别检测，进入 kmeans_detector.general_anomaly_detection
@@ -99,10 +98,9 @@ def delimit_detection(
     else:
         logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测（comm）")
 
-    # ===== 指标 12 + 兼容：HostDuration / ZP_Host，集群整体拉齐 =====
-    logger.info("\nCPU / Host 资源卡检测（集群整体拉齐）:")
+    # ===== CPU 资源卡检测（ZP_Host，集群整体拉齐） =====
+    logger.info("\nCPU 资源卡检测（集群整体拉齐）:")
     get_slow_host_ranks_by_homogenize(valid_ranks, step_data.get(zpHostDataColumn, {}), local_result)
-    _get_slow_host_metric_ranks(valid_ranks, step_data.get(hostDurationColumn, {}), "host_duration", local_result)
 
     return dict(local_result)
 
@@ -494,43 +492,6 @@ def get_slow_host_ranks_by_homogenize(
         rank = abnormal_ranks[i]
         degradation = rank_deg_severitys[i]
         local_result.add_single("cpu", rank, degradation)
-
-    return abnormal_ranks
-
-
-def _get_slow_host_metric_ranks(
-    npus: List[int],
-    detection_data: Dict[int, float],
-    category: str,
-    local_result: config.DegradationData
-) -> List[int]:
-    """
-    对某个 host 侧指标列做“集群整体拉齐”检测：
-    先按物理节点分组求组内均值（覆盖组内卡值），再对整个检测列做通用检测。
-    用于指标12 HostDuration 与兼容列 ZP_Host(cpu)。
-    """
-    have_data_ranks = []
-    ranks_data = []
-    for npu in npus:
-        if npu in detection_data:
-            val = detection_data[npu]
-            if val != -99999:
-                have_data_ranks.append(npu)
-                ranks_data.append(val)
-
-    if len(have_data_ranks) < minRanksInGroup:
-        return []
-
-    process_cpu_data_by_node(have_data_ranks, ranks_data)
-
-    abnormal_ranks, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
-        have_data_ranks, ranks_data, config.get_compute_multiplier()
-    )
-
-    for i in range(min(len(abnormal_ranks), len(rank_deg_severitys))):
-        rank = abnormal_ranks[i]
-        degradation = rank_deg_severitys[i]
-        local_result.add_single(category, rank, degradation)
 
     return abnormal_ranks
 

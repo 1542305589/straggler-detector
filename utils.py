@@ -25,8 +25,7 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
     output_data = {}
 
     # 始终包含所有已知类别（即使为空），并集上实际检测出的键（覆盖动态类别）
-    known_cats = ["KERNEL_AICORE", "comm", "cpu", "npu_bubble", "memcpy_async", "kernel_aivec",
-                  "host_duration"]
+    known_cats = ["KERNEL_AICORE", "comm", "cpu", "npu_bubble", "memcpy_async", "kernel_aivec"]
     all_cats = known_cats + [c for c in final_result.keys() if c not in known_cats]
     for default_cat in all_cats:
         output_data[default_cat] = []
