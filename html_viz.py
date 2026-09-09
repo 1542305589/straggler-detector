@@ -201,12 +201,12 @@ def _esc(txt) -> str:
 
 def _type_names():
     names = {
-        "KERNEL_AICORE": "慢计算 (KERNEL_AICORE)",
-        "kernel_aivec": "矢量计算 (kernel_aivec)",
-        "memcpy_async": "内存搬运 (memcpy_async)",
-        "comm": "慢通信 (comm)",
-        "cpu": "慢CPU (cpu)",
-        "npu_bubble": "Bubble (npu_bubble)",
+        "KERNEL_AICORE": "KERNEL_AICORE（所有类型为 KERNEL_AICORE 的算子的平均时间）",
+        "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
+        "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
+        "comm": "comm（各通信域 {xp}_Duration 的通信组间对比）",
+        "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
+        "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
     return names
 

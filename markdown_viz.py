@@ -243,12 +243,12 @@ def _detection_summary(
 ) -> str:
     """生成检测结果摘要"""
     type_names = {
-        "KERNEL_AICORE": "慢计算 (KERNEL_AICORE)",
-        "kernel_aivec": "矢量计算 (kernel_aivec)",
-        "memcpy_async": "内存搬运 (memcpy_async)",
-        "comm": "慢通信 (comm)",
-        "cpu": "慢CPU (cpu)",
-        "npu_bubble": "Bubble (npu_bubble)",
+        "KERNEL_AICORE": "KERNEL_AICORE（所有类型为 KERNEL_AICORE 的算子的平均时间）",
+        "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
+        "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
+        "comm": "comm（各通信域 {xp}_Duration 的通信组间对比）",
+        "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
+        "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
     # 覆盖动态类别
     for key in detection_result:
@@ -256,18 +256,20 @@ def _detection_summary(
             type_names[key] = key
 
     lines = []
-    lines.append(f"  {'检测类型':<22} {'状态':<10} {'异常项数':<10} 异常详情")
-    lines.append(f"  {'-'*22} {'-'*10} {'-'*10} {'-'*30}")
+    lines.append("  检测类型 / 检测口径")
+    lines.append("  " + "-" * 58)
 
     for key, name in type_names.items():
-        if key in detection_result and detection_result[key]:
-            items = detection_result[key]
+        items = detection_result.get(key) or {}
+        if items:
             details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
             if len(details) > 80:
                 details = details[:77] + "..."
-            lines.append(f"  {name:<22} {'异常':<10} {len(items):<10} {details}")
+            lines.append(f"  {name}")
+            lines.append(f"      状态: 异常    异常项数: {len(items)}    详情: {details}")
         else:
-            lines.append(f"  {name:<22} {'正常':<10} {0:<10} -")
+            lines.append(f"  {name}")
+            lines.append(f"      状态: 正常    异常项数: 0    详情: -")
 
     lines.append("")
     lines.append(f"  总 Rank 数: {len(valid_ranks)}  |  劣化阈值: {degradation}")
@@ -445,10 +447,6 @@ def generate_report(
 
         sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_map))
 
-    # Part 1.5: 总通信耗时排序（各域通信耗时求和）
-    if parallels:
-        sections.append(_comm_total_section(step_data, parallels))
-
     # Part 2: 每个并行域的通信耗时
     if parallels:
         comm_abnormal = detection_result.get("comm", {}) if detection_result else {}
@@ -506,6 +504,10 @@ def generate_report(
                 list(abnormal_comm_ranks) if abnormal_comm_ranks else None,
                 note=f"仅展示{domain_name}通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位",
             ))
+
+    # 总通信耗时排序（置于最后，各域通信耗时的汇总展示，仅展示、不参与检测）
+    if parallels:
+        sections.append(_comm_total_section(step_data, parallels))
 
     sections.append(_sep_line("", 70))
     sections.append("")
