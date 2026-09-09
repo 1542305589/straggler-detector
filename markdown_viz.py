@@ -262,7 +262,7 @@ def _detection_summary(
     for key, name in type_names.items():
         if key in detection_result and detection_result[key]:
             items = detection_result[key]
-            details = "; ".join(f"{rk}: {ratio:.2f}x" for rk, ratio in items.items())
+            details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
             if len(details) > 80:
                 details = details[:77] + "..."
             lines.append(f"  {name:<22} {'异常':<10} {len(items):<10} {details}")

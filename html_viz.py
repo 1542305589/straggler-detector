@@ -90,11 +90,13 @@ def _ns_axis_formatter():
     return FuncFormatter(_fmt)
 
 
-def _bar_chart_png(ranks: List, values: List[float], title: str,
+def _bar_chart_svg(ranks: List, values: List[float], title: str,
                    abnormal: Optional[set] = None,
                    xlabel: str = "耗时"):
     """
-    生成一张水平柱状图（按值降序），异常项标红，返回 PNG 的 base64 data URI。
+    生成一张水平柱状图（按值降序），异常项标红，返回内嵌 SVG 的字符串。
+
+    SVG 为矢量格式，任意缩放不模糊（替代原 PNG 位图方案）。
 
     abnormal: 异常标签集合（字符串；单卡图为 rank 字符串，组图为 "0,1" 形式）。
     返回 None 表示 matplotlib 不可用。
@@ -133,9 +135,12 @@ def _bar_chart_png(ranks: List, values: List[float], title: str,
 
     fig.tight_layout()
     buf = io.BytesIO()
-    fig.savefig(buf, format="png", dpi=110, bbox_inches="tight")
+    fig.savefig(buf, format="svg", bbox_inches="tight")
     plt.close(fig)
-    return "data:image/png;base64," + base64.b64encode(buf.getvalue()).decode("ascii")
+    svg = buf.getvalue().decode("utf-8")
+    # 让 SVG 随容器自适应宽度，避免因固定像素尺寸而显示过小/过糊
+    svg = svg.replace("<svg ", '<svg style="max-width:100%;height:auto" ', 1)
+    return svg
 
 
 # ---------------------------------------------------------------------------
@@ -227,10 +232,10 @@ def _single_metric_section(metric_name: str, data: Dict[int, float],
         return ""
     ranks = sorted(filtered.keys(), key=lambda r: filtered[r], reverse=True)
     values = [filtered[r] for r in ranks]
-    img = _bar_chart_png(ranks, values, f"{cat_label} · {metric_name} 耗时排序", abnormal)
+    svg = _bar_chart_svg(ranks, values, f"{cat_label} · {metric_name} 耗时排序", abnormal)
     parts = [f"<section><h2>{_esc(cat_label)} · <code>{_esc(metric_name)}</code> 耗时排序</h2>"]
-    if img:
-        parts.append(f'<div class="figure"><img src="{img}" alt="{_esc(metric_name)}"/></div>')
+    if svg:
+        parts.append(f'<div class="figure">{svg}</div>')
     else:
         parts.append('<div class="note">（matplotlib 不可用，图表省略）</div>')
     parts.append("</section>")
@@ -292,7 +297,7 @@ def generate_html_report(
         body.append('<div class="empty">未检测到异常节点</div>')
     else:
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
-                    '<th>异常卡</th><th>劣化指数</th></tr></thead><tbody>')
+                    '<th>异常卡数</th><th>劣化指数</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
                  "step_duration", "cpu", "host_duration", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
@@ -300,7 +305,7 @@ def generate_html_report(
             items = detection_result.get(key) or {}
             name = type_names.get(key, key)
             if items:
-                details = "，".join(f'<span class="tag bad">{_esc(rk)} × {v:.2f}</span>'
+                details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'
                                     for rk, v in sorted(items.items(), key=lambda x: -x[1]))
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag bad">异常</span></td>'
                             f'<td>{len(items)}</td><td>{details}</td></tr>')
@@ -357,10 +362,10 @@ def generate_html_report(
                 if any(r in comm_abnormal_ranks for r in g):
                     group_abnormal.add(key)
             if group_labels:
-                img = _bar_chart_png(group_labels, group_vals,
+                svg = _bar_chart_svg(group_labels, group_vals,
                                      f"{domain_name} 并行域 · 集合通信耗时（组 min）",
                                      abnormal=group_abnormal)
-                fig_html = (f'<div class="figure"><img src="{img}"/></div>' if img
+                fig_html = (f'<div class="figure">{svg}</div>' if svg
                             else '<div class="note">（matplotlib 不可用，图表省略）</div>')
                 body.append(f'<section><h2>{_esc(domain_name)} 并行域 · 集合通信耗时（组 min）</h2>'
                             + fig_html + "</section>")
@@ -434,8 +439,8 @@ def _comm_total_html(step_data, parallels, detection_result) -> str:
     abnormal = _abnormal_rank_set(detection_result, "comm")
     ranks = sorted(comm_totals.keys(), key=lambda r: comm_totals[r], reverse=True)
     vals = [comm_totals[r] for r in ranks]
-    img = _bar_chart_png(ranks, vals, "总通信耗时排序", abnormal)
-    fig_html = (f'<div class="figure"><img src="{img}"/></div>' if img
+    svg = _bar_chart_svg(ranks, vals, "总通信耗时排序", abnormal)
+    fig_html = (f'<div class="figure">{svg}</div>' if svg
                 else '<div class="note">（matplotlib 不可用，图表省略）</div>')
     html = (f'<section><h2>总通信耗时排序</h2><p class="note">{_esc(subtitle)}</p>'
             + fig_html + "</section>")
