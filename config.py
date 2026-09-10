@@ -39,6 +39,10 @@ HasNamedDomain = False
 # 供 CPU 检测按物理节点分组使用
 HostRankMap = {}
 
+# 物理设备映射：rank -> {"host_name": ..., "npu_id": ...}（内存存储，解析阶段填充）
+# 供报告"物理设备"列展示：hostName:Device{npu_id}
+RankDeviceMap = {}
+
 # Job 类型：training（含优化器更新）/ rollout（不含）
 # 由 profilingdataparse 解析阶段根据 PYTORCH_API 中的优化器更新算子（.step/.zero_grad）判断
 JobType = "unknown"
@@ -57,6 +61,21 @@ def get_host_rank_map() -> dict:
 def reset_host_rank_map():
     """清空节点映射（开始新一次解析前调用）"""
     HostRankMap.clear()
+
+
+def set_rank_device_map(rank, host_name, npu_id):
+    """记录某张卡的物理设备信息：hostName + NPU 设备 id"""
+    RankDeviceMap[str(rank)] = {"host_name": host_name, "npu_id": npu_id}
+
+
+def get_rank_device_map() -> dict:
+    """获取物理设备映射 {rank: {"host_name": ..., "npu_id": ...}}，可能为空"""
+    return RankDeviceMap
+
+
+def reset_rank_device_map():
+    """清空物理设备映射（开始新一次解析前调用）"""
+    RankDeviceMap.clear()
 
 
 def set_job_type(job_type: str):

@@ -225,6 +225,57 @@ def _category_threshold(category: str) -> str:
     return f"{config.get_compute_multiplier():g}×"
 
 
+def _rank_to_device(rank: int) -> str:
+    """把 rank 转成物理设备标识：{hostName}:Device{npu_id}（取自 config.RankDeviceMap）。"""
+    info = config.get_rank_device_map().get(str(rank))
+    if info:
+        hn = info.get("host_name") or "?"
+        nid = info.get("npu_id") or "?"
+        return f"{hn}:Device{nid}"
+    return f"rank{rank}"
+
+
+def _domain_of_group(parallels: dict, ranks_key: str) -> str:
+    """在 parallels 中查找某 rank 组所属的并行域名（如 "tp"），找不到返回 ""。"""
+    if not parallels:
+        return ""
+    try:
+        target = sorted(int(r) for r in ranks_key.split(","))
+    except (TypeError, ValueError):
+        return ""
+    for domain_name, groups in parallels.items():
+        if not domain_name:
+            continue
+        for group in groups:
+            try:
+                g = sorted(int(x) for x in group)
+            except (TypeError, ValueError):
+                continue
+            if g == target:
+                return domain_name
+    return ""
+
+
+def _item_device(category: str, key: str, parallels: dict) -> str:
+    """把一条异常项的 key 转成物理设备文本。
+
+    - 单卡类别：单 rank，显示 {hostName}:Device{npu_id}
+    - 通信组（comm）：显示 {domain}[{hostName}:Device{id}, ...]，组内逐卡转换
+    """
+    if category == "comm":
+        try:
+            ranks = [int(r) for r in key.split(",")]
+        except ValueError:
+            return key
+        domain = _domain_of_group(parallels, key)
+        inner = ", ".join(_rank_to_device(r) for r in ranks)
+        return f"{domain}[{inner}]" if domain else f"[{inner}]"
+    try:
+        return _rank_to_device(int(key))
+    except (TypeError, ValueError):
+        return key
+
+
 def _abnormal_rank_set(detection_result: Dict, category: str) -> set:
     items = (detection_result or {}).get(category) or {}
     out = set()
@@ -304,22 +355,25 @@ def generate_html_report(
         body.append('<div class="empty">未检测到异常节点</div>')
     else:
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
-                    '<th>异常项数</th><th>劣化阈值</th><th>劣化指数</th></tr></thead><tbody>')
+                    '<th>异常项数</th><th>劣化阈值</th><th>劣化指数</th><th>物理设备</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
                  "cpu", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
-        for key in order:
-            items = detection_result.get(key) or {}
-            name = type_names.get(key, key)
-            th = _category_threshold(key)
+        for category in order:
+            items = detection_result.get(category) or {}
+            name = type_names.get(category, category)
+            th = _category_threshold(category)
             if items:
                 details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'
                                     for rk, v in sorted(items.items(), key=lambda x: -x[1]))
+                devices = "，".join(_item_device(category, rk, parallels)
+                                    for rk, _ in sorted(items.items(), key=lambda x: -x[1]))
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag bad">异常</span></td>'
-                            f'<td>{len(items)}</td><td>{_esc(th)}</td><td>{details}</td></tr>')
+                            f'<td>{len(items)}</td><td>{_esc(th)}</td><td>{details}</td>'
+                            f'<td>{_esc(devices)}</td></tr>')
             else:
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag ok">正常</span></td>'
-                            f'<td>0</td><td>{_esc(th)}</td><td>-</td></tr>')
+                            f'<td>0</td><td>{_esc(th)}</td><td>-</td><td>-</td></tr>')
         body.append("</tbody></table>")
     body.append("</section>")
 

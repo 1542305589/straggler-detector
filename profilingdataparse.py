@@ -95,6 +95,7 @@ def data_parsing(folder_path: str):
 
     # 清空节点映射，开始新一轮解析填充
     config.reset_host_rank_map()
+    config.reset_rank_device_map()
 
     start_process(db_files, folder_path)
 
@@ -113,6 +114,7 @@ def data_parsing_paths(db_files: list, folder_path: str):
 
     # 每个世界独立解析前清空节点映射，避免跨世界 host 分组串扰
     config.reset_host_rank_map()
+    config.reset_rank_device_map()
 
     start_process(db_files, folder_path)
 
@@ -357,21 +359,37 @@ def create_group_name_dicts(data: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[
 
 def get_host_info(conn: sqlite3.Connection, global_rank: str):
     """
-    从 HOST_INFO 表获取该卡所属节点信息（hostUid），存入内存（config.HostRankMap）
-    不再生成 node_hostname_map.json 文件
-    供 CPU 检测按物理节点分组、无通信域名时节点分组回退使用
+    从 HOST_INFO 表获取该卡所属节点信息（hostUid / hostName），
+    从 NPU_INFO 表获取该卡的物理设备 id，均存入内存：
+      - config.HostRankMap（hostUid，供 CPU 检测按物理节点分组）
+      - config.RankDeviceMap（hostName + npu_id，供报告"物理设备"列展示）
+    不再生成 node_hostname_map.json 文件。
     """
     host_uid = None
+    host_name = None
     try:
-        cursor = conn.execute("SELECT hostUid FROM HOST_INFO LIMIT 1")
+        cursor = conn.execute("SELECT hostUid, hostName FROM HOST_INFO LIMIT 1")
         row = cursor.fetchone()
-        if row and row[0] is not None:
-            host_uid = str(row[0])
+        if row:
+            host_uid = str(row[0]) if row[0] is not None else None
+            host_name = str(row[1]) if row[1] is not None else None
     except Exception as e:
         logger.warning(f"读取 HOST_INFO 失败：{e}")
 
+    npu_id = None
+    try:
+        cursor = conn.execute("SELECT id FROM NPU_INFO LIMIT 1")
+        row = cursor.fetchone()
+        if row and row[0] is not None:
+            npu_id = str(row[0])
+    except Exception as e:
+        logger.warning(f"读取 NPU_INFO 失败：{e}")
+
     config.set_host_rank_map(global_rank, host_uid)
-    logger.info(f"节点信息：rank{global_rank} hostUid={host_uid}")
+    config.set_rank_device_map(global_rank, host_name, npu_id)
+    logger.info(
+        f"节点信息：rank{global_rank} hostUid={host_uid} hostName={host_name} npuId={npu_id}"
+    )
 
 
 def get_all_step_times(conn: sqlite3.Connection) -> List[StepTime]:
