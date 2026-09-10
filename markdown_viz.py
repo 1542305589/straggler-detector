@@ -250,10 +250,58 @@ def _category_threshold(category: str) -> str:
     return f"{config.get_compute_multiplier():g}×"
 
 
+def _rank_to_device(rank: int) -> str:
+    """把 rank 转成物理设备标识：{hostName}:Device{npu_id}（取自 config.RankDeviceMap）。"""
+    info = config.get_rank_device_map().get(str(rank))
+    if info:
+        hn = info.get("host_name") or "?"
+        nid = info.get("npu_id") or "?"
+        return f"{hn}:Device{nid}"
+    return f"rank{rank}"
+
+
+def _domain_of_group(parallels: dict, ranks_key: str) -> str:
+    """在 parallels 中查找某 rank 组所属的并行域名（如 "tp"），找不到返回 ""。"""
+    if not parallels:
+        return ""
+    try:
+        target = sorted(int(r) for r in ranks_key.split(","))
+    except (TypeError, ValueError):
+        return ""
+    for domain_name, groups in parallels.items():
+        if not domain_name:
+            continue
+        for group in groups:
+            try:
+                g = sorted(int(x) for x in group)
+            except (TypeError, ValueError):
+                continue
+            if g == target:
+                return domain_name
+    return ""
+
+
+def _item_device(category: str, key: str, parallels: dict) -> str:
+    """把一条异常项的 key 转成物理设备文本（与 html_viz 保持一致）。"""
+    if category == "comm":
+        try:
+            ranks = [int(r) for r in key.split(",")]
+        except ValueError:
+            return key
+        domain = _domain_of_group(parallels, key)
+        inner = ", ".join(_rank_to_device(r) for r in ranks)
+        return f"{domain}[{inner}]" if domain else f"[{inner}]"
+    try:
+        return _rank_to_device(int(key))
+    except (TypeError, ValueError):
+        return key
+
+
 def _detection_summary(
     detection_result: Dict[str, Dict[str, float]],
     valid_ranks: List[int],
     degradation: float,
+    parallels: Dict[str, List[List[int]]] = None,
 ) -> str:
     """生成检测结果摘要"""
     type_names = {
@@ -280,11 +328,14 @@ def _detection_summary(
             details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
             if len(details) > 80:
                 details = details[:77] + "..."
+            devices = "; ".join(_item_device(key, rk, parallels) for rk, _ in items.items())
             lines.append(f"  {name}")
             lines.append(f"      状态: 异常    异常项数: {len(items)}    劣化阈值: {th}    详情: {details}")
+            lines.append(f"      物理设备: {devices}")
         else:
             lines.append(f"  {name}")
             lines.append(f"      状态: 正常    异常项数: 0    劣化阈值: {th}    详情: -")
+            lines.append(f"      物理设备: -")
 
     lines.append("")
     lines.append(f"  总 Rank 数: {len(valid_ranks)}  |  劣化阈值基数: {degradation}")
@@ -442,7 +493,7 @@ def generate_report(
     if detection_result and any(detection_result.values()):
         sections.append(_sep_line("检测结果摘要", 50))
         sections.append("")
-        sections.append(_detection_summary(detection_result, valid_ranks, degradation))
+        sections.append(_detection_summary(detection_result, valid_ranks, degradation, parallels))
         sections.append("")
 
     # Part 1: 单卡指标排序柱状图（KERNEL_AICORE/kernel_aivec/memcpy_async/cpu/npu_bubble）
