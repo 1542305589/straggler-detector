@@ -212,17 +212,18 @@ def _type_names():
 
 
 def _category_threshold(category: str) -> str:
-    """返回某检测类别对应的劣化阈值显示文本。
+    """返回某检测类别对应的劣化阈值显示文本（倍率 + 计算式说明）。
 
-    - 计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3）
-    - 通信类（comm） → 倍率 = 1 + 5×基数（如 0.3 → 2.5）
+    - 计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3×（1 + 1 × 0.3））
+    - 通信类（comm） → 倍率 = 1 + 5×基数（如 0.3 → 2.5×（1 + 5 × 0.3））
     - npu_bubble → 固定硬阈值 <5000ns
     """
     if category == "npu_bubble":
         return "<5000ns"
+    d_str = f"{config.Degradation:g}"
     if category == "comm":
-        return f"{config.get_comm_multiplier():g}×"
-    return f"{config.get_compute_multiplier():g}×"
+        return f"{config.get_comm_multiplier():g}×（1 + 5 × {d_str}）"
+    return f"{config.get_compute_multiplier():g}×（1 + 1 × {d_str}）"
 
 
 def _rank_to_device(rank: int) -> str:
