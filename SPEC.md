@@ -1,7 +1,7 @@
 # straggler-detector 方案设计说明书（SPEC）
 
 > 本文档逐模块阐述 `straggler-detector` skill 的完整方案：架构、数据流、核心算法、各指标的定义与生成方式、检测逻辑、结果输出与故障联合分析。
-> 代码版本：Python 移植版，检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离）。
+> 代码版本：Python 移植版，检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
 
 ---
 
@@ -35,7 +35,7 @@ straggler-detector/
 ├── __init__.py                 # 包初始化（版本号）
 ├── config.py                   # 全局配置、阈值、劣化数据容器、节点映射、域名标志
 ├── utils.py                    # 结果写入、清理、交互式询问、通用工具
-├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离）
+├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
 ├── profilingdataparse.py       # .db(SQLite) → op_metric CSV/JSON
 ├── nodelevel.py                # 各维度慢节点检测核心逻辑
 ├── nodelevel_data_handler.py   # 读取 op_metric CSV + group_info JSON，构建快照/并行域/节点组
@@ -126,10 +126,10 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 5. **Lloyd 迭代** ≤MAX_ITERATIONS 轮：最近质心分配 → 质心 = 簇均值；空簇质心放到离其分配质心最远的样本；收敛 = 质心位移 < eps 且无分配变化。
 6. **识别异常簇**：按原始值均值降序，基线 = 最小均值簇；簇均值 > 基线×倍率 → 该簇异常；从大到小遍历，遇第一个不满足即停止。
 7. 无异常簇 → 无异常退出。
-8. **逐轮剥离**：把本轮异常簇数据**剔除**，对**剩余数据**回到步骤 2（轮数 ≤ max_depth）。
-9. 各轮按**当轮基线**判断是否异常（剥掉大值后基线单调不增，逐轮可检出更细微的离群点）；返回全部轮的异常簇（映射回 rank）。劣化指数统一用**最后一次得到的基线簇**（最严格地板）作为分母，`degradation = 值 / 最后基线`，使所有轮检出的异常劣化在同一刻度上可比。
+8. **异常簇递归细分**：以**异常簇的数据**为输入回到步骤 2（depth+1 ≤ max_depth）；更深层有异常 → 用更深层结果**替换**父层；更深层无异常 → 保持父层（向外排除边缘成员、减少误检）。
+9. 劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**作为分母，`degradation = 异常值 / 第一次基线`，使所有异常在同一刻度上可比。
 
-> 与旧版差异：旧 homogeneous（spacedetector）是递归二分，且无剥离子集——新版每次**剔除**异常簇而非对异常数据继续聚类。
+> 与旧版差异：旧 homogeneous（spacedetector）是递归二分——本版对**异常簇数据**继续聚类细分，而非对剩余正常数据剥离。
 
 ### 5.2 异常倍率由 degradation 决定
 
@@ -339,8 +339,8 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 1. **单快照**：不跨 step 做时间序列分析；CSV 只落 1 条聚合数据。
 2. **倒数第二点**：多行 CSV 取 n-2 行，规避最后一行不完整。
 3. **无效标记 `-99999`**：贯穿解析、读取、各检测函数，用于跳过缺失数据。
-4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 逐轮剥离），唯一参数为倍率（由 degradation 决定）。
-5. **逐轮剥离，检测/劣化分离**：每轮剔出异常簇后对剩余数据再聚类，**检测**各用当轮基线（剥掉大值后基线单调不增，逐步检出更细微离群点）；**劣化指数**统一用最后一次得到的基线簇（最严格地板）作分母，跨轮同一刻度可比。
+4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为倍率（由 degradation 决定）。
+5. **异常簇递归细分**：对异常簇数据再次聚类，**更深层异常替换父层、更深层无异常保持父层**（减少误检）；**劣化指数**统一用第一次 KMeans（全数据）的基线簇均值作分母，分子是异常值本身，同一刻度可比。
 6. **倍率分组**：计算/IO/Host = `1+degradation`，通信域 = `1+5×degradation`。
 7. **6 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。

@@ -9,7 +9,7 @@ straggler-detector/
 ├── __init__.py                 # 包初始化
 ├── config.py                   # 配置、阈值、劣化数据容器、节点/域名标志
 ├── utils.py                    # 结果写入、清理、通用工具
-├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 逐轮剥离）
+├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
 ├── profilingdataparse.py       # Profiling 数据解析（SQLite → CSV/JSON）
 ├── nodelevel.py                # 慢节点检测核心逻辑
 ├── nodelevel_data_handler.py   # 数据读取、检测组选择、节点分组
@@ -139,7 +139,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 核心算法（kmeans_detector.py）
 
-`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **逐轮剥离**（剔除异常簇数据后对剩余数据再聚类，轮数 ≤10，各轮按**当轮基线**判断是否异常；劣化指数统一用**最后一次得到的基线簇**为分母，degradation = 值/最后基线，跨轮劣化同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。
+`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。
 
 检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤；无命名通信域时退化按 hostUid 物理节点分组（通信域组间指标直接跳过）。
 
