@@ -566,12 +566,13 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         deg_str = f"{max_deg:.3f}"
 
         # 劣化阈值列
+        d_str = f"{degradation:g}"
         if category == "npu_bubble":
-            th_str = f"{threshold['bubble']}ns"
+            th_str = "<5000ns"
         elif category in COMM_GROUP_CATEGORIES:
-            th_str = f"{threshold['comm']:.3f}"
+            th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
         else:
-            th_str = f"{threshold['compute']:.3f}"
+            th_str = f"{threshold['compute']:g}×（1 + 1 × {d_str}）"
 
         # 类别列
         label = CATEGORY_LABELS.get(category, category)
