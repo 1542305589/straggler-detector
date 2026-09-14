@@ -13,11 +13,10 @@
    空簇质心放到离其分配质心最远的样本；收敛 = 质心位移 < eps 且无分配变化。
 6. 识别异常簇：按原始值均值降序，基线 = 最小均值簇；簇均值 > 基线×倍率 → 该簇异常。
 7. 无异常簇 → 无异常退出。
-8. 逐轮剥离：把本轮异常簇数据**剔除**，对**剩余数据**回到步骤 2（轮数 ≤ MAX_DEPTH）；
-   各轮按**当轮基线**判断是否异常（剥掉大值后基线单调不增，逐轮可检出更细微的离群点）。
-9. 返回全部轮的异常簇（映射回 rank）。检测判断各用当轮基线；
-   劣化指数统一用**最后一次得到的基线簇**（最严格地板）作为分母，
-   degradation = value / 最后基线均值，使所有轮检出的异常劣化在同一刻度上可比。
+8. 递归：以**异常簇的数据**为输入回到步骤 2（depth+1 ≤ max_depth）；
+   更深层有异常 → 用更深层结果**替换**父层；更深层无异常 → 保持父层（向外排除边缘成员、减少误检）。
+9. 劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**作为分母，
+   degradation = 异常值 / 第一次基线均值，使所有异常在同一刻度上可比。
 
 纯 Python 实现（仅 math/random），保持模块零依赖、可复现。
 """
@@ -57,9 +56,9 @@ def general_anomaly_detection(
         (异常 rank 列表, 各异常 rank 的劣化程度列表)
 
     劣化指数说明：
-        异常判断各轮用当轮基线（剥掉大值后基线单调不增，逐步检出更细微离群点）；
-        但劣化指数统一用“最后一次得到的基线簇”（最严格地板）作为分母，
-        使所有轮检出的异常劣化在同一刻度上可比。
+        对异常簇数据逐层递归细分（更深层异常替换父层，减少误检）；
+        劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作分母，
+        分子是异常数据本身，使所有异常在同一刻度上可比。
     """
     if not values or len(values) < 2:
         return [], []
@@ -72,34 +71,25 @@ def general_anomaly_detection(
 
     rng = random.Random(seed)
 
-    # 递归逐轮剥离异常簇，携带原始索引（映射回 ranks）。
-    # 每轮中先将样本归一为“携带原始索引”，每轮返回 (当轮基线均值, 当轮异常原始索引)；
-    # 累积全部轮结果，最后映射回 ranks 并计算劣化程度。
-    rounds = _recurse_anomaly(
+    # 递归：对异常簇数据逐层细分，携带原始索引（映射回 ranks）。
+    # 返回 (第一次 KMeans（全数据）的基线均值, 最终异常原始索引列表)。
+    first_baseline, anomaly_ids = _recurse_anomaly(
         list(values), list(range(len(values))), 0,
         anomaly_multiplier, max_k, max_iter, max_depth, convergence_eps, rng,
     )
 
-    if not rounds:
+    if not anomaly_ids:
         return [], []
 
-    # 劣化指数统一用“最后一次得到的基线簇”（最严格地板）作为分母。
-    # 剥离只删大值簇，各轮基线均值单调不增，故 rounds[-1][0] 即最小、最严格的基线。
-    # 这样所有轮检出的异常劣化都在同一刻度上可比。
-    global_denom = rounds[-1][0]
-    if not global_denom or global_denom <= 0:
-        global_denom = 1.0
+    # 劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作分母，分子是异常数据本身。
+    denom = first_baseline if first_baseline and first_baseline > 0 else 1.0
 
     anomaly_ranks = []
     degradations = []
-    for _, anomaly_indices in rounds:
-        for idx in anomaly_indices:
-            if 0 <= idx < len(ranks):
-                anomaly_ranks.append(ranks[idx])
-                value = values[idx]
-                degradations.append(value / global_denom)
-            else:
-                degradations.append(1.0)
+    for idx in anomaly_ids:
+        if 0 <= idx < len(ranks):
+            anomaly_ranks.append(ranks[idx])
+            degradations.append(values[idx] / denom)
 
     return anomaly_ranks, degradations
 
@@ -114,15 +104,16 @@ def _recurse_anomaly(
     max_depth: int,
     convergence_eps: float,
     rng: random.Random,
-) -> List[Tuple[float, List[int]]]:
+) -> Tuple[Optional[float], List[int]]:
     """
-    递归异常检测核心（逐轮剥离异常簇）。
+    递归异常检测核心（对异常簇数据逐层细分，减少误检）。
 
-    每轮：对当前样本做一次 KMeans 检出异常簇，然后**剔除**这些异常数据，
-    对**剩余数据**再次 KMeans 聚类，直到剩余数据无异常或达到轮数上限（max_depth）。
+    每层：对当前样本做一次 KMeans 检出异常簇；若检出，则对**异常簇数据**递归。
+    更深层有异常 → 用更深层结果**替换**父层；更深层无异常 → 保持父层（当前异常簇全体）。
 
     返回:
-        每轮结果列表，元素为 (该轮基线簇均值, 该轮异常原始索引列表)，累积全部轮。
+        (第一次 KMeans（全数据）的基线均值, 最终异常原始索引列表)。
+        基线均值恒为最外层（全数据）第一次 KMeans 的基线，供劣化指数作分母。
     """
     # 1. 过滤 ≤0 及 -99999
     valid_data = []
@@ -133,8 +124,8 @@ def _recurse_anomaly(
             valid_indices.append(i)
 
     if len(valid_data) < 2:
-        # 剩余样本不足 2 → 无法继续聚类，无更多异常
-        return []
+        # 剩余样本不足 2 → 无法继续聚类，无异常
+        return None, []
 
     # 一次 KMeans 检测：返回异常数据值及其原始索引
     anomaly_vals, anomaly_ids, baseline_mean = _kmeans_anomaly_detect(
@@ -143,27 +134,23 @@ def _recurse_anomaly(
 
     if not anomaly_vals:
         # 7. 无异常簇 → 无异常退出
-        return []
+        return baseline_mean, []
 
-    # 本轮异常
-    rounds = [(baseline_mean, list(anomaly_ids))]
-
-    # 达到轮数上限 → 不再向下剥离
+    # 达到递归深度上限 → 保持父层（当前异常簇全体）
     if depth >= max_depth:
-        return rounds
+        return baseline_mean, list(anomaly_ids)
 
-    # 8. 剔除异常簇数据，对剩余数据再次聚类
-    anom_set = set(anomaly_ids)
-    remaining_data = [v for v, i in zip(valid_data, valid_indices) if i not in anom_set]
-    remaining_indices = [i for i in valid_indices if i not in anom_set]
+    # 8. 对异常簇数据递归，更深层异常替换父层
+    _, sub_ids = _recurse_anomaly(
+        anomaly_vals, list(anomaly_ids), depth + 1,
+        anomaly_multiplier, max_k, max_iter, max_depth, convergence_eps, rng,
+    )
 
-    if len(remaining_data) >= 2:
-        rounds.extend(_recurse_anomaly(
-            remaining_data, remaining_indices, depth + 1,
-            anomaly_multiplier, max_k, max_iter, max_depth, convergence_eps, rng,
-        ))
-
-    return rounds
+    if sub_ids:
+        # 更深层有异常 → 用更深层结果替换父层
+        return baseline_mean, sub_ids
+    # 更深层无异常 → 保持父层（当前异常簇全体）
+    return baseline_mean, list(anomaly_ids)
 
 
 def _kmeans_anomaly_detect(

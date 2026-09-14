@@ -119,4 +119,4 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 ## 算法说明
 
-检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **逐轮剥离**（剔除异常簇数据后对剩余数据再聚类，轮数 ≤10，各轮按**当轮基线**判断是否异常；劣化指数统一用**最后一次得到的基线簇**为分母，degradation = 值/最后基线，使跨轮劣化在同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+1×degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
+检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+1×degradation`，通信域类 = `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
