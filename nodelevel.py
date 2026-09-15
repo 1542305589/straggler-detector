@@ -190,7 +190,8 @@ def det_cal_for_one_group(
 def det_metric_for_one_group(
     aligned_data: Dict[str, Dict[int, float]],
     npu_group: List[int],
-    column: str
+    column: str,
+    multiplier: float,
 ) -> Tuple[List[int], List[float]]:
     """
     对单个检测组进行指定指标的慢卡检测
@@ -208,9 +209,9 @@ def det_metric_for_one_group(
     if len(ranks) < minRanksInGroup:
         return [], []
 
-    # 通用检测算法（新核心），计算/IO 类 → 用计算类倍率
+    # 通用检测算法（新核心），倍率由 category 决定（memcpy_async 用通信类倍率）
     return kmeans_detector.general_anomaly_detection(
-        ranks, values, config.get_compute_multiplier()
+        ranks, values, multiplier
     )
 
 
@@ -225,8 +226,10 @@ def get_slow_metric_ranks(
     对指定指标列（MEMCPY_ASYNC/KERNEL_AIVEC 等）检测慢卡
     参照 get_slow_calculate_ranks 的逻辑：在 cal 检测组内逐个组做齐次化聚类
     """
+    multiplier = config.get_multiplier_for_category(category)
     for npu_group in detection_groups:
-        abnormal_ranks, rank_deg_severitys = det_metric_for_one_group(aligned_data, npu_group, column)
+        abnormal_ranks, rank_deg_severitys = det_metric_for_one_group(
+            aligned_data, npu_group, column, multiplier)
 
         for i in range(min(len(abnormal_ranks), len(rank_deg_severitys))):
             rank = abnormal_ranks[i]
