@@ -342,8 +342,9 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 
 # ---- 最终输出汇总表（渲染到调用 skill 的 agent 的 stdout，不进任何 log 文件） ----
 
-# 计算/IO/Host 类（倍率 = 1 + degradation）与通信域类（倍率 = 1 + 5*degradation）的类别集合
-COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu")
+# 计算/IO/Host 类（倍率 = 1 + degradation）单卡类别集合
+COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "cpu")
+# 组键类别（display_key 带域名）
 COMM_GROUP_CATEGORIES = ("comm",)
 
 
@@ -569,7 +570,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         d_str = f"{degradation:g}"
         if category == "npu_bubble":
             th_str = "<5000ns"
-        elif category in COMM_GROUP_CATEGORIES:
+        elif category in config.COMM_MULTIPLIER_CATEGORIES:
             th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
         else:
             th_str = f"{threshold['compute']:g}×（1 + 1 × {d_str}）"
