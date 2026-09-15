@@ -550,21 +550,28 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
             abnormal_ranks.extend(_parse_ranks_from_key(key))
         abnormal_ranks = sorted(set(abnormal_ranks))
 
-        # 组键类别（comm）：每个异常通信组都带域名展示，如 tp[0, 1]
+        # 异常卡列 + 劣化指数列（逐项一一对应，有几张异常卡就写几个劣化指数）
         if category in COMM_GROUP_CATEGORIES:
-            group_parts = []
-            for key in items:
+            # 组键类别（comm）：按劣化值降序，逐组列出，劣化指数与之顺序对应
+            sorted_items = sorted(items.items(), key=lambda x: -x[1])
+            cards_parts = []
+            deg_parts = []
+            for key, val in sorted_items:
                 ranks = _parse_ranks_from_key(key)
                 domain_name = _domain_of_group(parallels, key)
                 inner = ", ".join(str(r) for r in ranks)
-                group_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
-            cards_str = "，".join(group_parts)
+                cards_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
+                deg_parts.append(f"{val:.3f}")
+            cards_str = "，".join(cards_parts)
+            deg_str = "，".join(deg_parts)
         else:
+            # 单卡类别：按 rank 升序，逐卡列出，劣化指数带 rank 前缀与之对应
+            deg_parts = []
+            for r in abnormal_ranks:
+                v = items.get(str(r))
+                deg_parts.append(f"{r}:{v:.3f}" if v is not None else f"{r}:?")
             cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
-
-        # 劣化指数列：该类别的最大劣化值
-        max_deg = max(items.values())
-        deg_str = f"{max_deg:.3f}"
+            deg_str = "，".join(deg_parts)
 
         # 劣化阈值列
         d_str = f"{degradation:g}"
