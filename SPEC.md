@@ -80,6 +80,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
   ├── detect_slow_domain_by_bandwidth() → comm（HasNamedDomain 时）
+  ├── detect_pp_slow_domain()                → pp_comm（PP 等待占比）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
         │
         ▼
@@ -242,6 +243,17 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 - `process_cpu_data_by_node`：按**物理节点**（`config.HostRankMap`）分组，组内去首尾后求均值覆盖组内卡值；无节点映射时回退 `process_cpu_data`（按 4 卡分组 + 去首尾均值）。
 - 通用算法 max，写入 `cpu`。
 
+### 8.7 PP 慢通信 pp_comm（detect_pp_slow_domain）
+
+PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测。
+
+数据来源：解析后回填（`profilingdataparse.backfill_pp_wait_duration`）写进 CSV 动态列 `PP_Wait` = 每卡「PP 传输后**严格下一次**集合通信」的时长之和（下一条通信算子必须本身是集合通信，否则该次不计）。
+
+检测规则（`detect_pp_slow_domain`）：
+- 同属一个 PP 组的卡求和 → `d_g`（过滤 -99999）。
+- 慢 PP 组的接收方晚进集合通信 → `d_g` 偏小 → `Δ_g = max(d) − d_g` 最大（越大越异常）。
+- `score_g = Δ_g / 会话时长`（会话时长取 `StepDuration` 最大值），`score_g > PP_WAIT_THRESHOLD`（默认 5%）判异常，写入 `pp_comm`（组键，`display_key` 带域名，劣化指数以百分比显示）。
+
 ---
 
 ## 9. 结果输出
@@ -341,8 +353,8 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 3. **无效标记 `-99999`**：贯穿解析、读取、各检测函数，用于跳过缺失数据。
 4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为倍率（由 degradation 决定）。
 5. **异常簇递归细分**：对异常簇数据再次聚类，**更深层异常替换父层、更深层无异常保持父层**（减少误检）；**劣化指数**统一用第一次 KMeans（全数据）的基线簇均值作分母，分子是异常值本身，同一刻度可比。
-6. **倍率分组**：计算/IO/Host = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`；慢通信（comm）= 固定 `SLOW_COMM_RATIO`（1.3）。
-7. **6 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`。
+6. **倍率分组**：计算/IO/Host = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`；慢通信（comm）= 固定 `SLOW_COMM_RATIO`（1.3）；PP 慢通信（pp_comm）= 固定 `PP_WAIT_THRESHOLD`（5%）。
+7. **7 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`, `pp_comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。
 10. **CPU/节点分组**：使用内存 `config.HostRankMap`（源自 `HOST_INFO.hostUid`），不落盘文件；无映射时回退按 4 卡。

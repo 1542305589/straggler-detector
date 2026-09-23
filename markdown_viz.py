@@ -240,6 +240,7 @@ def _category_threshold(category: str) -> str:
     """返回某检测类别对应的劣化阈值显示文本（倍率 + 计算式说明，与 html_viz 保持一致）。
 
     - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，如 1.3×）
+    - PP 慢通信（pp_comm）→ 固定百分比阈值 PP_WAIT_THRESHOLD（如 5%）
     - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5×基数（如 0.3 → 2.5×（1 + 5 × 0.3））
     - 其余计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3×（1 + 1 × 0.3））
     - npu_bubble → 固定硬阈值 <5000ns
@@ -248,6 +249,8 @@ def _category_threshold(category: str) -> str:
         return "<5000ns"
     if category == "comm":
         return f"{config.SLOW_COMM_RATIO:g}×"
+    if category == "pp_comm":
+        return f"{config.PP_WAIT_THRESHOLD * 100:g}%"
     d_str = f"{config.Degradation:g}"
     if category in config.COMM_MULTIPLIER_CATEGORIES:
         return f"{config.get_comm_multiplier():g}×（1 + 5 × {d_str}）"
@@ -287,7 +290,7 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
 
 def _item_device(category: str, key: str, parallels: dict) -> str:
     """把一条异常项的 key 转成物理设备文本（与 html_viz 保持一致）。"""
-    if category == "comm":
+    if category in ("comm", "pp_comm"):
         try:
             ranks = [int(r) for r in key.split(",")]
         except ValueError:
@@ -312,7 +315,8 @@ def _detection_summary(
         "KERNEL_AICORE": "KERNEL_AICORE（所有类型为 KERNEL_AICORE 的算子的平均时间）",
         "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
         "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
-        "comm": "comm（各通信域 {xp}_Duration 的通信组间对比）",
+        "comm": "comm（各通信域 {domain}_{opType}_{count} 带宽聚类）",
+        "pp_comm": "pp_comm（PP 传输后下一次集合通信等待，按 PP 组求和）",
         "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
         "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
@@ -329,7 +333,10 @@ def _detection_summary(
         items = detection_result.get(key) or {}
         th = _category_threshold(key)
         if items:
-            details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
+            if key == "pp_comm":
+                details = "; ".join(f"{rk}({ratio * 100:.1f}%)" for rk, ratio in items.items())
+            else:
+                details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
             if len(details) > 80:
                 details = details[:77] + "..."
             devices = "; ".join(_item_device(key, rk, parallels) for rk, _ in items.items())

@@ -1181,7 +1181,7 @@ def _load_domain_ops(
     raw_ops = _query_domain_ops(conn, group_name_ids, step_time)
     if not raw_ops:
         return []
-    name_ids = [op["op_name"] for op in raw_ops]
+    name_ids = list({op["op_name"] for op in raw_ops})
     name_map = _string_map_by_ids(conn, name_ids)
 
     out = []
@@ -1335,3 +1335,100 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
             _backfill_bandwidth_csv(path, cols)
 
     logger.info("[SLOW-DOMAIN] 慢通信带宽回填完成")
+
+
+# ======================================================================
+# PP 流水线等待回填（PP 慢通信检测的辅助数据）
+#
+# 每卡记录"PP 传输（Send/Recv）后严格下一次集合通信"的时长之和，写回 CSV 动态列
+# "PP_Wait"。PP 组内求和后，慢 PP 组的接收方晚进集合通信 → 组和偏小。
+# ======================================================================
+
+def _is_pp_transfer(name: str) -> bool:
+    """判断算子名是否为 PP 点对点传输（Send/Recv）。"""
+    s = _leading_letters(_strip_vendor_prefix(name)).lower()
+    return s.startswith("send") or s.startswith("recv") or s.startswith("receive")
+
+
+def _load_all_comm_ops(
+    conn: sqlite3.Connection, step_time: StepTime
+) -> List[Dict[str, Any]]:
+    """加载某 rank 在时间窗内的全部通信算子（带名字），按 startNs 升序。"""
+    if not table_exists(conn, "COMMUNICATION_OP"):
+        return []
+    cursor = conn.execute(
+        """
+        SELECT opName, startNs, endNs FROM COMMUNICATION_OP
+        WHERE startNs >= ? AND endNs <= ?
+        ORDER BY startNs ASC
+        """,
+        (step_time.start_ns, step_time.end_ns),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return []
+    name_ids = list({row[0] for row in rows})
+    name_map = _string_map_by_ids(conn, name_ids)
+    out = []
+    for row in rows:
+        out.append({
+            "name": name_map.get(row[0], ""),
+            "start": row[1],
+            "end": row[2],
+        })
+    return out
+
+
+def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[int]:
+    """
+    计算某 rank 的 PP 等待 = 所有"PP 传输后严格下一次集合通信"的时长之和。
+    严格下一次：PP 传输的下一条通信算子必须本身是集合通信，否则该次不计。
+    （COMMUNICATION_OP 只含集合通信与点对点传输，故"非 Send/Recv"即视为集合通信，
+      包括 allReduce / reduceScatter 等未进带宽白名单的集合通信。）
+    """
+    ops = _load_all_comm_ops(conn, step_time)
+    if len(ops) < 2:
+        return None
+
+    total = 0
+    found = False
+    for i in range(len(ops) - 1):
+        if not _is_pp_transfer(ops[i]["name"]):
+            continue
+        nxt = ops[i + 1]
+        if _is_pp_transfer(nxt["name"]):
+            # 中间夹了其他通信（下一条仍是点对点传输）→ 不满足"严格下一次集合通信"
+            continue
+        total += nxt["end"] - nxt["start"]
+        found = True
+    return total if found else None
+
+
+def backfill_pp_wait_duration(input_path: str, db_files: Optional[List[str]] = None):
+    """回填每卡的 PP 等待列（PP_Wait），供 PP 慢通信检测使用。"""
+    if db_files is None:
+        db_files = discover_db_files(input_path)
+    if not db_files:
+        return
+
+    write_root = config.get_output_path() or input_path
+    for db_path in db_files:
+        rank_str = extract_global_rank_from_filename(db_path)
+        if rank_str is None:
+            continue
+        try:
+            conn = sqlite3.connect(db_path)
+        except Exception:
+            continue
+        try:
+            step = _merged_step(conn)
+            val = _compute_pp_wait(conn, step)
+        except Exception:
+            val = None
+        conn.close()
+        if val is None:
+            continue
+        path = os.path.join(write_root, "op_metric", f"global_rank_{rank_str}.csv")
+        _backfill_bandwidth_csv(path, {config.PP_WAIT_COLUMN: repr(float(val))})
+
+    logger.info("[SLOW-DOMAIN] PP 等待回填完成")

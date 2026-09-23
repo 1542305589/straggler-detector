@@ -130,11 +130,15 @@ def _safe_print(text: str):
 
 
 def _backfill_slow_domain(job_path: str, db_files: list = None):
-    """慢通信带宽回填（附加步骤，失败仅告警不中断检测）。"""
+    """慢通信带宽 / PP 等待回填（附加步骤，失败仅告警不中断检测）。"""
     try:
         profilingdataparse.backfill_slow_domain_bandwidth(job_path, db_files)
     except Exception as e:
         logger.warning(f"慢通信带宽回填失败：{e}")
+    try:
+        profilingdataparse.backfill_pp_wait_duration(job_path, db_files)
+    except Exception as e:
+        logger.warning(f"PP 等待回填失败：{e}")
 
 
 def _find_colocate_worlds(input_path: str) -> List[dict]:

@@ -33,6 +33,13 @@ SLOW_COMM_RATIO = 1.3            # 慢通信带宽聚类的比率阈值
 SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
 SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
 
+# ---- PP 流水线慢通信检测（另一方案：PP 传输后集合通信等待）----
+# 每卡记录"PP 传输后严格下一次集合通信"的时长之和，按 PP 组求和；
+# 慢 PP 组的接收方晚进集合通信 → 时长偏小 → Δ = max(组和) − 组和 最大；
+# 以 Δ / 会话时长 > PP_WAIT_THRESHOLD 判异常（Δ 越大越异常）。
+PP_WAIT_THRESHOLD = 0.05         # PP 等待占会话时长的比例阈值（5%）
+PP_WAIT_COLUMN = "PP_Wait"       # 每卡"PP 传输后下一次集合通信时长之和"的动态列名
+
 # 集群数据标志：由 nodelevel_data_handler 在检测时判定（Case A 集群 / Case B 非集群）
 IsClusterData = False
 

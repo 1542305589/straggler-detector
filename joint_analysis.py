@@ -44,6 +44,7 @@ CATEGORY_LABELS = {
     "kernel_aivec": "矢量计算(KERNEL_AIVEC)",
     "memcpy_async": "内存搬运(MEMCPY_ASYNC)",
     "comm": "慢通信域(comm)",
+    "pp_comm": "PP慢通信(pp_comm)",
     "cpu": "慢CPU卡(cpu)",
     "npu_bubble": "NPU空泡(npu_bubble)",
 }
@@ -54,6 +55,7 @@ SHORT_CATEGORY_LABELS = {
     "kernel_aivec": "矢量计算",
     "memcpy_async": "内存搬运",
     "comm": "慢通信域",
+    "pp_comm": "PP慢通信",
     "cpu": "慢CPU卡",
     "npu_bubble": "NPU空泡",
 }
@@ -121,6 +123,16 @@ def _print_comm_bars(prefix: str, category: str, abnormal_items: dict, step_data
     """
     lines = []
     abnormal_keys = set(abnormal_items.keys())
+
+    # PP 慢通信：展示 PP 组及其等待占比 / 等待和
+    if category == "pp_comm":
+        pp_wait = step_data.get(config.PP_WAIT_COLUMN, {}) if step_data else {}
+        lines.append(f"{prefix} [INFO] PP 慢通信组（PP 传输后集合通信等待占比）：")
+        for key, val in sorted(abnormal_items.items(), key=lambda kv: kv[1], reverse=True):
+            ranks = _parse_ranks_from_key(key)
+            s = sum(pp_wait[r] for r in ranks if r in pp_wait and pp_wait[r] != -99999)
+            lines.append(f"{prefix}   [WARN] PP 组 [{key}] -> 等待占比 = {val * 100:.1f}%（等待和={_fmt_ns(s)}）")
+        return lines
 
     # 尝试从 step_data 中找出各并行域时长指标（如 tp_Duration）
     domain_metric = None
@@ -231,14 +243,14 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
     lines.append(f"{prefix} 输出时间: {datetime.now().strftime('%Y-%m-%d %H:%M:%S')}")
     lines.append(f"{prefix} ---------- 一、各列检测结果汇总 ----------")
 
-    group_categories = ("comm",)
+    group_categories = ("comm", "pp_comm")
     # 单卡类别集合：CATEGORY_METRIC 中映射到指标列且非组键类别
     single_card_categories = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "cpu", "npu_bubble")
 
     # 动态类别集合：优先展示已知/存在的类别，同时覆盖动态类别
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "cpu", "npu_bubble",
+        "comm", "pp_comm", "cpu", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -345,7 +357,7 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 # 计算/IO/Host 类（倍率 = 1 + degradation）单卡类别集合
 COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec")
 # 组键类别（display_key 带域名）
-COMM_GROUP_CATEGORIES = ("comm",)
+COMM_GROUP_CATEGORIES = ("comm", "pp_comm")
 
 
 def _fmt_ns(value: float) -> str:
@@ -438,6 +450,19 @@ def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
     return "；".join(texts)
 
 
+def _cell_pp_summary(items: dict, step_data: dict) -> str:
+    """PP 慢通信的数据要点：展示每个异常 PP 组的 PP 等待之和（PP_Wait）。"""
+    pp_wait = step_data.get(config.PP_WAIT_COLUMN, {}) if step_data else {}
+    if not pp_wait:
+        return "无详细数据"
+    parts = []
+    for key in items:
+        ranks = _parse_ranks_from_key(key)
+        s = sum(pp_wait[r] for r in ranks if r in pp_wait and pp_wait[r] != -99999)
+        parts.append(f"[{key}]等待和={_fmt_ns(s)}")
+    return "，".join(parts) if parts else "无详细数据"
+
+
 def _disp_len(text: str) -> int:
     """估算字符串在终端中的显示宽度（CJK/全角字符按 2 列计）。"""
     return sum(2 if 0x2E80 <= ord(ch) <= 0x9FFF or 0xFF00 <= ord(ch) <= 0xFFEF else 1
@@ -526,7 +551,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
-        "comm", "cpu", "npu_bubble",
+        "comm", "pp_comm", "cpu", "npu_bubble",
     ]
     known = set(ordered_categories)
     dynamic = [c for c in result.keys() if c not in known]
@@ -552,7 +577,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
         # 异常卡列 + 劣化指数列（逐项一一对应，有几张异常卡就写几个劣化指数）
         if category in COMM_GROUP_CATEGORIES:
-            # 组键类别（comm）：按劣化值降序，逐组列出，劣化指数与之顺序对应
+            # 组键类别（comm / pp_comm）：按劣化值降序，逐组列出，劣化指数与之顺序对应
             sorted_items = sorted(items.items(), key=lambda x: -x[1])
             cards_parts = []
             deg_parts = []
@@ -561,7 +586,10 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
                 domain_name = _domain_of_group(parallels, key)
                 inner = ", ".join(str(r) for r in ranks)
                 cards_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
-                deg_parts.append(f"{val:.3f}")
+                if category == "pp_comm":
+                    deg_parts.append(f"{val * 100:.1f}%")
+                else:
+                    deg_parts.append(f"{val:.3f}")
             cards_str = "，".join(cards_parts)
             deg_str = "，".join(deg_parts)
         else:
@@ -579,6 +607,8 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
             th_str = "<5000ns"
         elif category == "comm":
             th_str = f"{config.SLOW_COMM_RATIO:g}×"
+        elif category == "pp_comm":
+            th_str = f"{config.PP_WAIT_THRESHOLD * 100:g}%"
         elif category in config.COMM_MULTIPLIER_CATEGORIES:
             th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
         else:
@@ -590,7 +620,9 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         category_str = f"{category}（{short}）" if short else label
 
         # 数据要点列
-        if category in COMM_GROUP_CATEGORIES:
+        if category == "pp_comm":
+            summary = _cell_pp_summary(items, step_data)
+        elif category in COMM_GROUP_CATEGORIES:
             summary = _cell_comm_summary(items, parallels, step_data)
         else:
             metric_col = CATEGORY_METRIC.get(category)
