@@ -343,7 +343,7 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 # ---- 最终输出汇总表（渲染到调用 skill 的 agent 的 stdout，不进任何 log 文件） ----
 
 # 计算/IO/Host 类（倍率 = 1 + degradation）单卡类别集合
-COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec", "cpu")
+COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec")
 # 组键类别（display_key 带域名）
 COMM_GROUP_CATEGORIES = ("comm",)
 

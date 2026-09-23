@@ -29,7 +29,6 @@ zpHostDataColumn = "ZP_Host"
 zpBubbleColumn = "ZP_Bubble"
 dataLoaderDataColumn = "DataLoader"
 ppParallelDomainName = "pp"
-cpuDegradationPercent = 2.0
 memcpyAsyncColumn = "MEMCPY_ASYNC"
 kernelAivecColumn = "KERNEL_AIVEC"
 
@@ -487,8 +486,9 @@ def get_slow_host_ranks_by_homogenize(
     # 按物理节点分组计算组内均值（取代固定按 4 分组）—— 集群整体拉齐
     process_cpu_data_by_node(have_data_ranks, ranks_data)
 
+    # cpu 属通信类倍率（1 + 5×degradation）
     abnormal_ranks, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
-        have_data_ranks, ranks_data, config.get_compute_multiplier()
+        have_data_ranks, ranks_data, config.get_multiplier_for_category("cpu")
     )
 
     for i in range(min(len(abnormal_ranks), len(rank_deg_severitys))):
