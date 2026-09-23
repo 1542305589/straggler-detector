@@ -204,7 +204,8 @@ def _type_names():
         "KERNEL_AICORE": "KERNEL_AICORE（所有类型为 KERNEL_AICORE 的算子的平均时间）",
         "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
         "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
-        "comm": "comm（各通信域 {xp}_Duration 的通信组间对比）",
+        "comm": "comm（各通信域 {domain}_{opType}_{count} 带宽聚类）",
+        "pp_comm": "pp_comm（PP 传输后下一次集合通信等待，按 PP 组求和）",
         "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
         "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
@@ -215,6 +216,7 @@ def _category_threshold(category: str) -> str:
     """返回某检测类别对应的劣化阈值显示文本（倍率 + 计算式说明）。
 
     - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，如 1.3×）
+    - PP 慢通信（pp_comm）→ 固定百分比阈值 PP_WAIT_THRESHOLD（如 5%）
     - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5×基数（如 0.3 → 2.5×（1 + 5 × 0.3））
     - 其余计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3×（1 + 1 × 0.3））
     - npu_bubble → 固定硬阈值 <5000ns
@@ -223,6 +225,8 @@ def _category_threshold(category: str) -> str:
         return "<5000ns"
     if category == "comm":
         return f"{config.SLOW_COMM_RATIO:g}×"
+    if category == "pp_comm":
+        return f"{config.PP_WAIT_THRESHOLD * 100:g}%"
     d_str = f"{config.Degradation:g}"
     if category in config.COMM_MULTIPLIER_CATEGORIES:
         return f"{config.get_comm_multiplier():g}×（1 + 5 × {d_str}）"
@@ -264,9 +268,9 @@ def _item_device(category: str, key: str, parallels: dict) -> str:
     """把一条异常项的 key 转成物理设备文本。
 
     - 单卡类别：单 rank，显示 {hostName}:Device{npu_id}
-    - 通信组（comm）：显示 {domain}[{hostName}:Device{id}, ...]，组内逐卡转换
+    - 组键类别（comm / pp_comm）：显示 {domain}[{hostName}:Device{id}, ...]，组内逐卡转换
     """
-    if category == "comm":
+    if category in ("comm", "pp_comm"):
         try:
             ranks = [int(r) for r in key.split(",")]
         except ValueError:
@@ -361,15 +365,19 @@ def generate_html_report(
         body.append('<table><thead><tr><th>检测类型</th><th>状态</th>'
                     '<th>异常项数</th><th>劣化阈值</th><th>劣化指数</th><th>物理设备</th></tr></thead><tbody>')
         order = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
-                 "cpu", "npu_bubble"]
+                 "pp_comm", "cpu", "npu_bubble"]
         order += [c for c in detection_result if c not in order]
         for category in order:
             items = detection_result.get(category) or {}
             name = type_names.get(category, category)
             th = _category_threshold(category)
             if items:
-                details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'
-                                    for rk, v in sorted(items.items(), key=lambda x: -x[1]))
+                if category == "pp_comm":
+                    details = "，".join(f'<span class="tag bad">{_esc(rk)}({v * 100:.1f}%)</span>'
+                                        for rk, v in sorted(items.items(), key=lambda x: -x[1]))
+                else:
+                    details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'
+                                        for rk, v in sorted(items.items(), key=lambda x: -x[1]))
                 devices = "，".join(_item_device(category, rk, parallels)
                                     for rk, _ in sorted(items.items(), key=lambda x: -x[1]))
                 body.append(f'<tr><td>{_esc(name)}</td><td><span class="tag bad">异常</span></td>'

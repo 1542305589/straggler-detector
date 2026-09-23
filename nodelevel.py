@@ -94,6 +94,8 @@ def delimit_detection(
     if config.get_has_named_domain():
         logger.info("\n慢通信域检测（带宽聚类）:")
         detect_slow_domain_by_bandwidth(parallels, step_data, local_result)
+        logger.info("\nPP 流水线慢通信检测:")
+        detect_pp_slow_domain(parallels, step_data, local_result)
     else:
         logger.info("[SKIP] 无通信域名，跳过慢通信域检测（comm）")
 
@@ -545,3 +547,49 @@ def _collect_op_types(group_bws: List[List[Dict[str, Any]]]) -> set:
         for e in bws:
             s.add(e["op_type"])
     return s
+
+
+def detect_pp_slow_domain(
+    parallels: Dict[str, List[List[int]]],
+    step_data: Dict[str, Dict[int, float]],
+    local_result: config.DegradationData,
+):
+    """
+    PP 流水线慢通信检测（另一方案，对应 PP 域）。
+
+    数据来源：PP 等待回填写进 CSV 的动态列 "PP_Wait"（每卡"PP 传输后严格下一次
+    集合通信"的时长之和）。同属一个 PP 组的卡求和 → d_g。
+
+    慢 PP 组的接收方晚进集合通信 → d_g 偏小 → Δ_g = max(d) − d_g 最大（越大越异常）。
+    以 Δ_g / 会话时长 > PP_WAIT_THRESHOLD（默认 5%）判异常，写入类别 "pp_comm"。
+    """
+    groups = parallels.get(ppParallelDomainName)
+    if not groups or len(groups) < 2:
+        return
+
+    pp_wait = step_data.get(config.PP_WAIT_COLUMN, {})
+    if not pp_wait:
+        return
+
+    # 每组 PP 等待之和（过滤 -99999 / 缺失）
+    group_sums = []
+    for g in groups:
+        vals = [pp_wait[r] for r in g if r in pp_wait and pp_wait[r] != -99999]
+        if not vals:
+            continue
+        group_sums.append((g, sum(vals)))
+    if len(group_sums) < 2:
+        return
+
+    # 会话时长：取 StepDuration 最大值作为会话代理（聚合 step 覆盖整段 profiling）
+    step_dur = step_data.get("StepDuration", {})
+    valid_durs = [v for v in step_dur.values() if v and v != -99999 and v > 0]
+    session = max(valid_durs) if valid_durs else 0
+    if session <= 0:
+        return
+
+    max_sum = max(s for _, s in group_sums)
+    for g, s in group_sums:
+        score = (max_sum - s) / session
+        if score > config.PP_WAIT_THRESHOLD:
+            local_result.add_group("pp_comm", g, score)
