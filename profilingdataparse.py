@@ -8,6 +8,8 @@ import csv
 import json
 import os
 import re
+import math
+import bisect
 import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
@@ -936,3 +938,400 @@ def write_results_to_csv(output_file: str, pms: List[PerformanceMetrics]):
             writer.writerow(record)
 
     logger.info(f"成功写入 {len(pms)} 条记录到 {output_file}")
+
+
+# ======================================================================
+# 慢通信带宽回填（对应 Go dataparse/slow_domain.go BackfillSlowDomainBandwidth）
+#
+# 解析完成后，重新扫描 .db、重建并行拓扑、跨卡对齐集合通信算子，为每个
+# (opType, count) 组合计算带宽（count / 组内最快 10% 最短耗时均值），并把这些
+# 带宽写回 op_metric/global_rank_{N}.csv 的动态列 "<domain>_<opType>_<count>"。
+# 该回填只对集合通信域有效；pp / embd 以及 Send/Recv 被跳过。
+# ======================================================================
+
+PP_DOMAIN_NAME = "pp"
+EMBD_DOMAIN_NAME = "embd"
+WALLCLOCK_TOLERANCE_NS = 5_000_000  # 5 ms
+
+# 纯集合通信算子白名单：只有这些算子族参与慢通信带宽检测
+# （allReduce / reduceScatter / Send / Recv 等被排除）。
+PURE_COMM_TYPES = {
+    "allgather", "allgatherv", "allgatherbase",
+    "alltoall", "alltoallv", "alltoallsingle",
+    "scatter", "gather",
+}
+
+_SEQ_B_RE = re.compile(r'__\d+_(\d+)_\d+$')
+
+
+@dataclass
+class BwOp:
+    """一个通信算子的带宽统计所需字段。"""
+    op_type: str
+    seq_b: int
+    count: int
+    start: int
+    end: int
+
+
+def _strip_vendor_prefix(name: str) -> str:
+    lower = name.lower()
+    for p in ("hcom", "hccl", "acl"):
+        if lower.startswith(p):
+            return name[len(p):].lstrip("_")
+    return name
+
+
+def _leading_letters(s: str) -> str:
+    i = 0
+    while i < len(s) and s[i].isalpha():
+        i += 1
+    return s[:i]
+
+
+def _pure_comm_kind(name: str) -> str:
+    """把算子名归一为纯集合通信 token，不在白名单时返回空串。"""
+    s = _strip_vendor_prefix(name)
+    s = _leading_letters(s).lower()
+    return s if s in PURE_COMM_TYPES else ""
+
+
+def _op_seq_b(name: str) -> int:
+    """从算子名（hcom_xxx__A_B_C）提取序列索引 B，用于跨卡对齐；无标记返回 -1。"""
+    m = _SEQ_B_RE.search(name)
+    return int(m.group(1)) if m else -1
+
+
+class _BwIndex:
+    """按 (opType, count) 分桶并维护按 start 排序，供 wall-clock / sequence 匹配。"""
+
+    def __init__(self, ops: List[BwOp]):
+        self.ops = ops
+        self.buckets: Dict[Tuple[str, int], List[int]] = {}
+        self.starts: Dict[Tuple[str, int], List[int]] = {}
+        for i, op in enumerate(ops):
+            k = (op.op_type, op.count)
+            self.buckets.setdefault(k, []).append(i)
+        for k, idxs in self.buckets.items():
+            idxs.sort(key=lambda i: ops[i].start)
+            self.starts[k] = [ops[i].start for i in idxs]
+
+    def wallclock(self, op: BwOp, tol: int) -> int:
+        k = (op.op_type, op.count)
+        bucket = self.buckets.get(k)
+        if not bucket:
+            return -1
+        starts = self.starts[k]
+        n = len(bucket)
+
+        i = bisect.bisect_left(starts, op.start)
+        nearest, nd = -1, float('inf')
+        for j in (i - 1, i):
+            if 0 <= j < n:
+                d = abs(starts[j] - op.start)
+                if d < nd:
+                    nd, nearest = d, bucket[j]
+
+        lo = bisect.bisect_left(starts, op.start - tol)
+        hi = bisect.bisect_left(starts, op.end)
+        best, bov = -1, 0
+        for j in range(lo, min(hi, n)):
+            idx = bucket[j]
+            o = self.ops[idx]
+            ov = min(op.end, o.end) - max(op.start, o.start)
+            if ov > bov:
+                bov, best = ov, idx
+        if best >= 0 and bov > 0:
+            return best
+        if nearest >= 0 and nd <= tol:
+            return nearest
+        return -1
+
+    def seq(self, op: BwOp) -> int:
+        if op.seq_b < 0:
+            return -1
+        for idx in self.buckets.get((op.op_type, op.count), []):
+            if self.ops[idx].seq_b == op.seq_b:
+                return idx
+        return -1
+
+
+def _compute_bandwidth_from_ops(
+    members: Dict[int, List[BwOp]], ranks: List[int]
+) -> Dict[Tuple[str, int], float]:
+    """跨卡对齐集合通信算子，返回 per-(opType,count) 带宽（count / 最快 10% 最短耗时均值）。"""
+    if not ranks:
+        return {}
+    base_ops = members.get(ranks[0], [])
+    if not base_ops:
+        return {}
+
+    idxs = {r: _BwIndex(members[r]) for r in ranks}
+
+    use_seq: Dict[int, bool] = {}
+    for r in ranks[1:]:
+        wc = sum(1 for op in base_ops if idxs[r].wallclock(op, WALLCLOCK_TOLERANCE_NS) >= 0)
+        use_seq[r] = wc == 0
+
+    combos: Dict[Tuple[str, int], List[int]] = {}
+    for base in base_ops:
+        dur = [base.end - base.start]
+        ok = True
+        for r in ranks[1:]:
+            j = idxs[r].seq(base) if use_seq[r] else idxs[r].wallclock(base, WALLCLOCK_TOLERANCE_NS)
+            if j < 0:
+                ok = False
+                break
+            o = members[r][j]
+            dur.append(o.end - o.start)
+        if not ok:
+            continue
+        k = (base.op_type, base.count)
+        combos.setdefault(k, []).append(min(dur))
+
+    res: Dict[Tuple[str, int], float] = {}
+    for k, durs in combos.items():
+        valid = [d for d in durs if d > 0]
+        if not valid:
+            continue
+        valid.sort()
+        n = int(math.ceil(len(valid) * 0.10))
+        if n < 1:
+            n = 1
+        mean_dur = sum(valid[:n]) / n
+        res[k] = k[1] / mean_dur  # bandwidth = count / mean_dur
+    return res
+
+
+def _merged_step(conn: sqlite3.Connection) -> StepTime:
+    """把该 rank 的所有 step 时间窗合并为一个覆盖整段 profiling 的窗口。"""
+    steps = get_all_step_times(conn)
+    valid = [s for s in steps if s.start_ns != float('-inf') and s.end_ns != float('inf')]
+    if not valid:
+        return StepTime(id=-1, start_ns=-2 ** 62, end_ns=2 ** 62)
+    min_s = min(s.start_ns for s in valid)
+    max_e = max(s.end_ns for s in valid)
+    return StepTime(id=-1, start_ns=min_s, end_ns=max_e)
+
+
+def _batch_query_string_ids(conn: sqlite3.Connection, keys: List[str]) -> Dict[str, int]:
+    if not keys:
+        return {}
+    placeholders = ",".join("?" * len(keys))
+    cursor = conn.execute(
+        f"SELECT value, id FROM STRING_IDS WHERE value IN ({placeholders})", keys
+    )
+    return {row[0]: row[1] for row in cursor}
+
+
+def _string_map_by_ids(conn: sqlite3.Connection, ids: List[int]) -> Dict[int, str]:
+    if not ids:
+        return {}
+    placeholders = ",".join("?" * len(ids))
+    cursor = conn.execute(
+        f"SELECT id, value FROM STRING_IDS WHERE id IN ({placeholders})", ids
+    )
+    return {row[0]: row[1] for row in cursor}
+
+
+def _query_domain_ops(
+    conn: sqlite3.Connection, group_name_ids: List[int], step_time: StepTime
+) -> List[Dict[str, int]]:
+    """查询通信算子，返回带 opName(STRING_IDS id) 与 count 的原始行。"""
+    if not table_exists(conn, "COMMUNICATION_OP") or not group_name_ids:
+        return []
+    placeholders = ",".join("?" * len(group_name_ids))
+    cursor = conn.execute(
+        f"""
+        SELECT opName, startNs, endNs, count FROM COMMUNICATION_OP
+        WHERE groupName IN ({placeholders}) AND startNs >= ? AND endNs <= ?
+        ORDER BY startNs ASC
+        """,
+        group_name_ids + [step_time.start_ns, step_time.end_ns],
+    )
+    out = []
+    for row in cursor:
+        out.append({
+            "op_name": row[0],
+            "start": row[1],
+            "end": row[2],
+            "count": int(row[3]) if isinstance(row[3], str) else row[3],
+        })
+    return out
+
+
+def _load_domain_ops(
+    conn: sqlite3.Connection,
+    pgi: Dict[str, Any],
+    typ: str,
+    step_time: StepTime,
+    min_count: int,
+) -> List[BwOp]:
+    """加载某 rank 在某域类型下的集合通信算子（白名单过滤 + count 下限）。"""
+    keys = [k for k, v in pgi.items() if isinstance(v, dict) and v.get("group_name") == typ]
+    if not keys:
+        return []
+    id_map = _batch_query_string_ids(conn, keys)
+    if not id_map:
+        return []
+    group_name_ids = [id_map[k] for k in keys if k in id_map]
+    if not group_name_ids:
+        return []
+
+    raw_ops = _query_domain_ops(conn, group_name_ids, step_time)
+    if not raw_ops:
+        return []
+    name_ids = [op["op_name"] for op in raw_ops]
+    name_map = _string_map_by_ids(conn, name_ids)
+
+    out = []
+    for op in raw_ops:
+        nm = name_map.get(op["op_name"], "")
+        k = _pure_comm_kind(nm)
+        if not k:
+            continue
+        if op["count"] < min_count:
+            continue
+        out.append(BwOp(
+            op_type=k, seq_b=_op_seq_b(nm),
+            count=op["count"], start=op["start"], end=op["end"],
+        ))
+    return out
+
+
+def _backfill_bandwidth_csv(path: str, cols: Dict[str, str]):
+    """把动态带宽列追加写回某 rank 的 CSV；已存在的列跳过。"""
+    if not os.path.exists(path):
+        return
+    with open(path, 'r', newline='') as f:
+        records = list(csv.reader(f))
+    if not records:
+        return
+
+    header = records[0]
+    existing = set(header)
+    new_cols = sorted([name for name in cols if name not in existing])
+    if not new_cols:
+        return
+
+    header = header + new_cols
+    records[0] = header
+    for i in range(1, len(records)):
+        for name in new_cols:
+            records[i].append(cols[name])
+
+    with open(path, 'w', newline='') as f:
+        writer = csv.writer(f)
+        writer.writerows(records)
+
+
+def discover_db_files(input_path: str) -> List[str]:
+    """递归发现 ascend_pytorch_profiler_*.db（跳过空文件）。"""
+    out = []
+    for root, _dirs, files in os.walk(input_path):
+        for file in files:
+            if file.startswith("ascend_pytorch_profiler_") and file.endswith(".db"):
+                db_path = os.path.join(root, file)
+                if os.path.getsize(db_path) > 0:
+                    out.append(db_path)
+    return out
+
+
+def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]] = None):
+    """
+    慢通信带宽回填主入口（对应 Go BackfillSlowDomainBandwidth）。
+    在 DataParsing 之后、检测读取 CSV 之前调用。失败不致命：调用方记录日志并继续。
+    """
+    min_count = config.SLOW_COMM_MIN_COUNT
+    if min_count <= 0:
+        min_count = 1000
+
+    if db_files is None:
+        db_files = discover_db_files(input_path)
+    if not db_files:
+        return
+
+    rank_to_info: Dict[int, Dict[str, Any]] = {}
+    for db_path in db_files:
+        rank_str = extract_global_rank_from_filename(db_path)
+        if rank_str is None:
+            continue
+        try:
+            r = int(rank_str)
+        except ValueError:
+            continue
+        try:
+            conn = sqlite3.connect(db_path)
+        except Exception:
+            continue
+        try:
+            pgi = get_parallel_group_info(conn, None)
+        except Exception:
+            pgi = {}
+        conn.close()
+        if not pgi:
+            continue
+        rank_to_info[r] = {"rank": rank_str, "path": db_path, "pgi": pgi}
+
+    if not rank_to_info:
+        return
+
+    # 发现域分组，按 "type|sorted-ranks" 去重。
+    group_map: Dict[str, Dict[str, Any]] = {}
+    for ri in rank_to_info.values():
+        for val in ri["pgi"].values():
+            if not isinstance(val, dict):
+                continue
+            typ = val.get("group_name", "")
+            if not typ:
+                continue
+            grp = [int(x) for x in val.get("global_ranks", [])]
+            if not grp:
+                continue
+            grp.sort()
+            key = f"{typ}|{','.join(map(str, grp))}"
+            if key not in group_map:
+                group_map[key] = {"typ": typ, "ranks": grp}
+
+    # 只保留有 db 信息的 rank。
+    for g in group_map.values():
+        g["ranks"] = [r for r in g["ranks"] if r in rank_to_info]
+
+    for g in group_map.values():
+        typ = g["typ"]
+        ranks = g["ranks"]
+        if typ == PP_DOMAIN_NAME or typ == EMBD_DOMAIN_NAME:
+            continue
+        if len(ranks) < 2:
+            continue
+
+        members: Dict[int, List[BwOp]] = {}
+        valid = True
+        for r in ranks:
+            ri = rank_to_info[r]
+            try:
+                conn = sqlite3.connect(ri["path"])
+            except Exception:
+                valid = False
+                break
+            step = _merged_step(conn)
+            ops = _load_domain_ops(conn, ri["pgi"], typ, step, min_count)
+            conn.close()
+            members[r] = ops
+        if not valid:
+            continue
+
+        res = _compute_bandwidth_from_ops(members, ranks)
+        if not res:
+            continue
+
+        cols: Dict[str, str] = {}
+        for (op_type, count), bw in res.items():
+            cols[f"{typ}_{op_type}_{count}"] = repr(bw)
+
+        write_root = config.get_output_path() or input_path
+        for r in ranks:
+            path = os.path.join(write_root, "op_metric", f"global_rank_{r}.csv")
+            _backfill_bandwidth_csv(path, cols)
+
+    logger.info("[SLOW-DOMAIN] 慢通信带宽回填完成")

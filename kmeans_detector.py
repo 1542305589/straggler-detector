@@ -11,12 +11,13 @@
 4. KMeans++ 初始化质心：首质心 = data[0]，后续 D² 加权随机采样（种子 RNG 保复现）。
 5. Lloyd 迭代 ≤MAX_ITERATIONS 轮：最近质心分配 → 质心=簇均值；
    空簇质心放到离其分配质心最远的样本；收敛 = 质心位移 < eps 且无分配变化。
-6. 识别异常簇：按原始值均值降序，基线 = 最小均值簇；簇均值 > 基线×倍率 → 该簇异常。
+6. 识别异常簇：按方向选基线（max 方向基线 = 最小均值簇，min 方向基线 = 最大均值簇）；
+   max 方向簇均值 > 基线×倍率 → 该簇异常；min 方向簇均值 < 基线且 ratio < 1/倍率 → 该簇异常。
 7. 无异常簇 → 无异常退出。
 8. 递归：以**异常簇的数据**为输入回到步骤 2（depth+1 ≤ max_depth）；
    更深层有异常 → 用更深层结果**替换**父层；更深层无异常 → 保持父层（向外排除边缘成员、减少误检）。
-9. 劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**作为分母，
-   degradation = 异常值 / 第一次基线均值，使所有异常在同一刻度上可比。
+9. 劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**作参考，
+   max 方向 degradation = 异常值 / 基线，min 方向 degradation = 基线 / 异常值，均 >1 且越大越异常。
 
 纯 Python 实现（仅 math/random），保持模块零依赖、可复现。
 """
@@ -33,6 +34,7 @@ def general_anomaly_detection(
     ranks: List[int],
     values: List[float],
     anomaly_multiplier: float = 2.0,
+    high_is_anomaly: bool = True,
     max_k: int = 10,
     max_iter: int = 300,
     max_depth: int = 10,
@@ -40,12 +42,13 @@ def general_anomaly_detection(
     seed: int = 42,
 ) -> Tuple[List[int], List[float]]:
     """
-    通用慢节点检测算法（新核心，始终 max 方向：值偏大视为异常）。
+    通用慢节点检测算法（新核心，KMeans 比率检测，支持双向）。
 
     参数:
         ranks: 卡的 Rank 号列表，如 [1, 5, 9, 13]
         values: 与 ranks 对应的指标值列表，如 [10, 20, 10, 100]
         anomaly_multiplier: 异常倍率（默认 2.0）
+        high_is_anomaly: True = 值偏大异常（max 方向，耗时类）；False = 值偏小异常（min 方向，带宽类）
         max_k: 肘部法最大簇数
         max_iter: Lloyd 最大迭代轮数
         max_depth: 递归深度上限
@@ -54,11 +57,12 @@ def general_anomaly_detection(
 
     返回:
         (异常 rank 列表, 各异常 rank 的劣化程度列表)
+        劣化指数统一 >1 且“越大越异常”：max 方向 = 值/基线，min 方向 = 基线/值。
 
     劣化指数说明：
         对异常簇数据逐层递归细分（更深层异常替换父层，减少误检）；
-        劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作分母，
-        分子是异常数据本身，使所有异常在同一刻度上可比。
+        劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作参考，
+        max 方向分母=基线、min 方向分子=基线，使所有异常在同一刻度上可比。
     """
     if not values or len(values) < 2:
         return [], []
@@ -75,13 +79,15 @@ def general_anomaly_detection(
     # 返回 (第一次 KMeans（全数据）的基线均值, 最终异常原始索引列表)。
     first_baseline, anomaly_ids = _recurse_anomaly(
         list(values), list(range(len(values))), 0,
-        anomaly_multiplier, max_k, max_iter, max_depth, convergence_eps, rng,
+        anomaly_multiplier, high_is_anomaly,
+        max_k, max_iter, max_depth, convergence_eps, rng,
     )
 
     if not anomaly_ids:
         return [], []
 
-    # 劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作分母，分子是异常数据本身。
+    # 劣化指数统一用“第一次 KMeans（全数据）的基线簇均值”作参考：
+    # max 方向 = 值/基线（>1）；min 方向 = 基线/值（>1，越小越慢）。
     denom = first_baseline if first_baseline and first_baseline > 0 else 1.0
 
     anomaly_ranks = []
@@ -89,7 +95,10 @@ def general_anomaly_detection(
     for idx in anomaly_ids:
         if 0 <= idx < len(ranks):
             anomaly_ranks.append(ranks[idx])
-            degradations.append(values[idx] / denom)
+            if high_is_anomaly:
+                degradations.append(values[idx] / denom)
+            else:
+                degradations.append(denom / values[idx] if values[idx] > 0 else 1.0)
 
     return anomaly_ranks, degradations
 
@@ -99,6 +108,7 @@ def _recurse_anomaly(
     indices: List[int],
     depth: int,
     anomaly_multiplier: float,
+    high_is_anomaly: bool,
     max_k: int,
     max_iter: int,
     max_depth: int,
@@ -113,7 +123,7 @@ def _recurse_anomaly(
 
     返回:
         (第一次 KMeans（全数据）的基线均值, 最终异常原始索引列表)。
-        基线均值恒为最外层（全数据）第一次 KMeans 的基线，供劣化指数作分母。
+        基线均值恒为最外层（全数据）第一次 KMeans 的基线，供劣化指数作参考。
     """
     # 1. 过滤 ≤0 及 -99999
     valid_data = []
@@ -129,7 +139,8 @@ def _recurse_anomaly(
 
     # 一次 KMeans 检测：返回异常数据值及其原始索引
     anomaly_vals, anomaly_ids, baseline_mean = _kmeans_anomaly_detect(
-        valid_data, valid_indices, anomaly_multiplier, max_k, max_iter, convergence_eps, rng,
+        valid_data, valid_indices, anomaly_multiplier, high_is_anomaly,
+        max_k, max_iter, convergence_eps, rng,
     )
 
     if not anomaly_vals:
@@ -143,7 +154,8 @@ def _recurse_anomaly(
     # 8. 对异常簇数据递归，更深层异常替换父层
     _, sub_ids = _recurse_anomaly(
         anomaly_vals, list(anomaly_ids), depth + 1,
-        anomaly_multiplier, max_k, max_iter, max_depth, convergence_eps, rng,
+        anomaly_multiplier, high_is_anomaly,
+        max_k, max_iter, max_depth, convergence_eps, rng,
     )
 
     if sub_ids:
@@ -157,6 +169,7 @@ def _kmeans_anomaly_detect(
     data: List[float],
     indices: List[int],
     anomaly_multiplier: float,
+    high_is_anomaly: bool,
     max_k: int,
     max_iter: int,
     convergence_eps: float,
@@ -182,7 +195,8 @@ def _kmeans_anomaly_detect(
     labels, centers = _kmeans(zdata, k, max_iter, convergence_eps, rng)
 
     # 6. 识别异常簇
-    #    计算每个簇的原始值均值，按降序排列，基线 = 最小均值簇
+    #    计算每个簇的原始值均值，按方向选基线：
+    #    max 方向基线 = 最小均值簇，min 方向基线 = 最大均值簇。
     cluster_means = {}
     for c in range(k):
         members = [data[j] for j in range(n) if labels[j] == c]
@@ -192,15 +206,28 @@ def _kmeans_anomaly_detect(
     if not cluster_means:
         return [], [], 0.0
 
-    baseline_mean = min(cluster_means.values())
+    if high_is_anomaly:
+        baseline_mean = min(cluster_means.values())
+    else:
+        baseline_mean = max(cluster_means.values())
 
-    # 按簇均值降序遍历，遇到第一个不满足(>基线×倍率)则停止
     anomaly_clusters = []
-    for c in sorted(cluster_means, key=lambda x: cluster_means[x], reverse=True):
-        if cluster_means[c] > baseline_mean * anomaly_multiplier:
-            anomaly_clusters.append(c)
-        else:
-            break
+    if high_is_anomaly:
+        # 按簇均值降序遍历，遇到第一个不满足（>基线×倍率）则停止
+        for c in sorted(cluster_means, key=lambda x: cluster_means[x], reverse=True):
+            if cluster_means[c] > baseline_mean * anomaly_multiplier:
+                anomaly_clusters.append(c)
+            else:
+                break
+    else:
+        # 按簇均值升序遍历（min 方向：均值越小越异常），
+        # 异常判据 = 簇均值 < 基线 且 ratio < 1/multiplier，遇到第一个不满足则停止
+        for c in sorted(cluster_means, key=lambda x: cluster_means[x]):
+            if cluster_means[c] < baseline_mean and \
+                    cluster_means[c] / baseline_mean < 1.0 / anomaly_multiplier:
+                anomaly_clusters.append(c)
+            else:
+                break
 
     if not anomaly_clusters:
         return [], [], baseline_mean

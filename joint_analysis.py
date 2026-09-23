@@ -577,6 +577,8 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         d_str = f"{degradation:g}"
         if category == "npu_bubble":
             th_str = "<5000ns"
+        elif category == "comm":
+            th_str = f"{config.SLOW_COMM_RATIO:g}×"
         elif category in config.COMM_MULTIPLIER_CATEGORIES:
             th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
         else:

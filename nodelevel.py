@@ -88,14 +88,14 @@ def delimit_detection(
         get_slow_metric_ranks(cal_detection_group, step_data, column, category, local_result)
         logger.info(f"  - {column} -> {category}")
 
-    # ===== 通信域组间对比（comm） =====
-    # 无命名通信域（情况 A）时，通信域指标无法向用户解释对应 tp/ep，直接跳过；
-    # 否则正常检测（情况 B / 正常数据）。
+    # ===== 慢通信域检测（带宽聚类，comm） =====
+    # 无命名通信域（情况 A）时，无带宽列可检测，直接跳过；
+    # 否则按域组带宽做 min 方向聚类（情况 B / 正常数据）。
     if config.get_has_named_domain():
-        logger.info("\n通信域组间对比检测:")
-        detection_all_communication_parallel(parallels, cal_detection_group, valid_ranks, step_data, local_result)
+        logger.info("\n慢通信域检测（带宽聚类）:")
+        detect_slow_domain_by_bandwidth(parallels, step_data, local_result)
     else:
-        logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测（comm）")
+        logger.info("[SKIP] 无通信域名，跳过慢通信域检测（comm）")
 
     # ===== CPU 资源卡检测（ZP_Host，集群整体拉齐） =====
     logger.info("\nCPU 资源卡检测（集群整体拉齐）:")
@@ -258,140 +258,6 @@ def detection_zp_bubble_data(npu_data: Dict[int, float], local_result: config.De
             continue
         if value < 5000:
             local_result.add_single("npu_bubble", npu_id, value)
-
-
-def check_parallel_domain_is_exist(parallel: List[List[int]], cur_npus: int) -> bool:
-    """
-    检查并行域是否有效
-    对应 Go 代码中的 checkParallelDomainIsExist 函数
-
-    注意：不再要求域中总卡数等于本节点卡数（cur_npus），
-    因为 group_info 是全集群拓扑，可能包含其他节点的卡。
-    下游检测函数会通过 -99999 过滤来处理数据缺失的情况。
-    """
-    if not parallel:
-        return False
-
-    per_domain_nums = len(parallel[0]) if parallel else 0
-    has_multi_card_group = False
-
-    for domain in parallel:
-        if len(domain) > 1:
-            has_multi_card_group = True
-
-        # 各个域卡数参差不齐
-        if len(domain) != per_domain_nums:
-            logger.warning(f"[SLOWNODE ALGO] 通信域间卡的数量不一致:{parallel}")
-            return False
-
-    # 并行域中只有卡本身：不存在卡间并行域
-    if not has_multi_card_group:
-        return False
-
-    return True
-
-
-def get_pp_slow_communicate_domains(
-    slow_send_ranks: List[int],
-    pp_parallel: List[List[int]]
-) -> List[List[int]]:
-    """
-    通过慢 send ranks 检测慢 PP 通信域
-    对应 Go 代码中的 getPpSlowCommunicateDomains 函数
-    """
-    if not pp_parallel or not slow_send_ranks:
-        logger.warning("[SLOWNODE ALGO] detection without pp parallel or slow send ranks!")
-        return []
-
-    ret = []
-    for slow_send_rank in slow_send_ranks:
-        for pp_domain in pp_parallel:
-            if slow_send_rank in pp_domain:
-                ret.append(pp_domain)
-                break
-
-    return ret
-
-
-def homogenization_for_slow_communication(
-    detection_domains: List[List[int]],
-    detection_data: Dict[int, float],
-    degradation_percent: float,
-    pp_stage_num: int
-) -> Tuple[List[List[int]], List[float]]:
-    """
-    慢通信域聚类方法
-    对应 Go 代码中的 HomogenizationForSlowCommunication 函数
-    排除 -99999 标记的无效数据
-
-    入参为并行域，同时也是检测组
-    """
-    slow_comm_domains = []
-    slow_comm_domain_severitys = []
-
-    if not detection_domains or not detection_data:
-        logger.warning("[SLOWNODE ALGO] slow communication domains detection data is empty!")
-        return [], []
-
-    # 1. 对每个子域内部排序
-    for domain in detection_domains:
-        domain.sort()
-
-    # 2. 对整个 detection_domains 按字典序排序
-    detection_domains.sort()
-
-    # 3. 找出每个通信域中耗时最短的卡（排除 -99999）
-    detection_cards = []
-    rank2_groups = {}
-
-    for domain in detection_domains:
-        # 过滤掉 -99999 的卡，找有效数据中的最小值
-        valid_cards = [card for card in domain if detection_data.get(card, 0) != -99999]
-        if not valid_cards:
-            continue
-        min_card = min(valid_cards, key=lambda x: detection_data.get(x, float('inf')))
-        detection_cards.append(min_card)
-        rank2_groups[min_card] = domain
-
-    if not detection_cards:
-        return [], []
-
-    # 4. 按 pp_size 划分成几份分别进行聚类
-    detection_card_groups = []
-    interval = len(detection_cards) // pp_stage_num
-
-    for i in range(pp_stage_num):
-        start = i * interval
-        end = start + interval
-        if start < len(detection_cards):
-            detection_card_groups.append(detection_cards[start:end])
-
-    # 5. 对每个组进行聚类检测（排除 -99999）
-    for detection_ranks in detection_card_groups:
-        # 过滤掉 -99999 的 rank 和对应的数据
-        valid_ranks = []
-        valid_datas = []
-        for rank in detection_ranks:
-            val = detection_data.get(rank, 0)
-            if val != -99999 and val != 0:
-                valid_ranks.append(rank)
-                valid_datas.append(val)
-
-        if len(valid_ranks) < minRanksInGroup:
-            continue
-
-        abnormal_ranks, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
-            valid_ranks, valid_datas, config.get_comm_multiplier()
-        )
-
-        # 将异常 rank 映射回对应的通信域
-        for i, rank in enumerate(abnormal_ranks):
-            if rank in rank2_groups:
-                slow_comm_domains.append(rank2_groups[rank])
-                if i < len(rank_deg_severitys):
-                    slow_comm_domain_severitys.append(rank_deg_severitys[i])
-
-    return slow_comm_domains, slow_comm_domain_severitys
 
 
 def process_cpu_data(ranks_data: List[float]):
@@ -560,205 +426,122 @@ def get_cal_detection_group(
     return "", []
 
 
-def _detect_comm_group_metric(
+def detect_slow_domain_by_bandwidth(
     parallels: Dict[str, List[List[int]]],
-    cal_detection_group: List[List[int]],
-    valid_ranks: List[int],
-    data: Dict[str, Dict[int, float]],
+    step_data: Dict[str, Dict[int, float]],
     local_result: config.DegradationData,
-    metric_column: str,
-    category: str,
 ):
     """
-    对单个通信组间指标（{xp}_Duration）做通信域组间对比。
+    按带宽聚类检测慢通信组（对应 Go DetectSlowDomainByBandwidth）。
 
-    规则：
-    - 对每个并行域，取其各分组中"代表卡"（组内该指标值最小的有效卡），再跨组做通用检测，
-      慢组映射回整个通信域组。
-    - 该指标值/计数用 metric_column 取数（区别于 always 用 {xp}_Duration）。
-
-    返回:
-        True 固定（便于调用方 continue）
+    数据来源：带宽回填写进 CSV 的动态列 "<domain>_<opType>_<count>"。
+    对每个集合通信域、每个 opType：
+      1. 每组取 count 最大的条目作为代表（count 越大带宽越准）；
+      2. 保留 count >= max×0.5 且 > SLOW_COMM_COUNT_FLOOR 的组（滤 count 噪声）；
+      3. 用通用检测（min 方向，带宽越小越慢）聚类代表带宽，阈值 = SLOW_COMM_RATIO。
+    只报告在每个 opType 上都异常的组，劣化指数取各 opType 最大值。
     """
-    pp_stage_num = 1
+    ratio = config.SLOW_COMM_RATIO
+    if ratio <= 0:
+        ratio = 1.3
 
-    for name, parallel in parallels.items():
-        if name == ppParallelDomainName:
-            # PP 域：在 cal_detection_group（如 tp_exp 组）内比较该指标，找出慢 rank 后映射回 PP 域
-            xp_detection_data = _collect_metric_data(metric_column, data)
-            slow_domains, severities = get_pp_slow_communication_domains(
-                parallel, cal_detection_group, xp_detection_data, config.get_comm_multiplier()
-            )
-            for i in range(min(len(slow_domains), len(severities))):
-                group = slow_domains[i]
-                if not group:
-                    continue
-                local_result.add_group(category, group, severities[i])
+    for domain, groups in parallels.items():
+        if domain == ppParallelDomainName or domain == "embd":
+            continue
+        if len(groups) < 2:
             continue
 
-        if name == "embd":
+        group_bws = [_bw_set_for_group(domain, group, step_data) for group in groups]
+        op_types = _collect_op_types(group_bws)
+        if not op_types:
             continue
 
-        if not check_parallel_domain_is_exist(parallel, len(valid_ranks)):
-            continue
+        anomalous: Dict[int, Dict[str, float]] = {}
 
-        xp_detection_data = _collect_metric_data(metric_column, data)
+        for op_type in op_types:
+            # 每组取 count 最大的条目作为代表
+            reps = []  # (groupIdx, count, bw)
+            for gi, bws in enumerate(group_bws):
+                max_c = -1
+                max_bw = 0.0
+                for e in bws:
+                    if e["op_type"] != op_type or e["count"] <= max_c:
+                        continue
+                    max_c = e["count"]
+                    max_bw = e["bw"]
+                if max_c >= 0:
+                    reps.append((gi, max_c, max_bw))
 
-        slow_domains, severities = homogenization_for_slow_communication(
-            parallel, xp_detection_data, config.get_comm_multiplier(), pp_stage_num
-        )
-
-        for i in range(min(len(slow_domains), len(severities))):
-            group = slow_domains[i]
-            if not group:
+            if len(reps) < 2:
                 continue
-            local_result.add_group(category, group, severities[i])
 
-    return True
+            max_count = max(r[1] for r in reps)
+            half = max_count * 0.5
+            kept = [r for r in reps if r[1] >= half and r[1] > config.SLOW_COMM_COUNT_FLOOR]
+            if len(kept) < 2:
+                continue
+
+            kept_gidxs = [r[0] for r in kept]
+            bw_values = [r[2] for r in kept]
+            abnormal_gidxs, degradations = kmeans_detector.general_anomaly_detection(
+                kept_gidxs, bw_values, ratio, high_is_anomaly=False
+            )
+            for gi, deg in zip(abnormal_gidxs, degradations):
+                anomalous.setdefault(gi, {})[op_type] = deg
+
+        # 只报告在每个 opType 上都异常的组，劣化指数取各 opType 最大值
+        for gi, op_degs in anomalous.items():
+            if len(op_degs) != len(op_types):
+                continue
+            max_deg = max(op_degs.values())
+            local_result.add_group("comm", groups[gi], max_deg)
 
 
-def _collect_metric_data(
-    metric_column: str,
-    all_data: Dict[str, Dict[int, float]]
-) -> Dict[int, float]:
-    """
-    收集通信组间检测所用指标数据：{rank: value}。
-    取 metric_column（{xp}_Duration）并按 -99999、0 过滤无效值。
-    """
-    ret = {}
-    col_data = all_data.get(metric_column, {})
-    if not col_data:
-        return ret
-    for npu_id, val in col_data.items():
-        if val != -99999 and val != 0:
-            ret[npu_id] = val
-    return ret
-
-
-def detection_all_communication_parallel(
-    parallels: Dict[str, List[List[int]]],
-    cal_detection_group: List[List[int]],
-    valid_ranks: List[int],
-    data: Dict[str, Dict[int, float]],
-    local_result: config.DegradationData
-) -> bool:
-    """
-    对所有通信域做组间对比检测，覆盖指标：
-    - {xp}_Duration → comm（慢通信域）
-    对应 Go 代码中的 detectionAllCommunicationParallel 函数。
-    """
-    if not parallels:
-        return True
-
-    # 双保险：无命名通信域（情况 A）时，不检测任何通信域组间指标
-    if not config.get_has_named_domain():
-        logger.info("[SKIP] 无通信域名，跳过通信域组间对比检测")
-        return True
-
-    # {xp}_Duration → comm
-    for name in parallels:
-        if not name:
+def _bw_set_for_group(
+    domain: str, group: List[int], step_data: Dict[str, Dict[int, float]]
+) -> List[Dict[str, Any]]:
+    """收集某通信组在各带宽列上的值（组内所有 rank 共享同一回填带宽，取第一个有值的）。"""
+    prefix = domain + "_"
+    out = []
+    for col, by_rank in step_data.items():
+        op_type, count = _parse_bandwidth_col(prefix, col)
+        if op_type is None:
             continue
-        _detect_comm_group_metric(
-            {name: parallels[name]}, cal_detection_group, valid_ranks, data,
-            local_result, f"{name}_Duration", "comm",
-        )
-
-    return True
-
-
-def get_pp_slow_communication_domains(
-    pp_parallel_domains: List[List[int]],
-    zp_parallels: List[List[int]],
-    detection_data: Dict[int, float],
-    degradation_percent: float
-) -> Tuple[List[List[int]], List[float]]:
-    """
-    获取慢 PP 通信域
-    对应 Go 代码中的 getPpSlowCommunicationDomains 函数
-    排除 -99999 标记的无效数据
-    """
-    if not zp_parallels or len(zp_parallels) == 0 or len(zp_parallels[0]) == 1:
-        logger.warning("[SLOWNODE ALGO] 此时只存在 PP 通信域，无法进行同一个 stage 的聚类检测!")
-        return [], []
-
-    if not detection_data:
-        logger.warning("[SLOWNODE ALGO] slow communication domains detection data is empty!")
-        return [], []
-
-    # 遍历 TP 并行域，获取慢 PP send ranks
-    slow_pp_send_ranks = []
-    deg_levels = []
-
-    for zp_parallel in zp_parallels:
-        # 过滤掉 -99999 的 rank，只保留有效数据
-        valid_ranks = []
-        valid_datas = []
-        for rank in zp_parallel:
-            val = detection_data.get(rank, 0)
-            if val != -99999 and val != 0:
-                valid_ranks.append(rank)
-                valid_datas.append(val)
-
-        # 如果有效数据不足，跳过该组
-        if len(valid_ranks) < minRanksInGroup:
+        v = None
+        for r in group:
+            if r in by_rank:
+                v = by_rank[r]
+                break
+        if v is None:
             continue
-
-        slow_pp_send_ranks_tmp, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
-            valid_ranks, valid_datas, config.get_comm_multiplier()
-        )
-
-        slow_pp_send_ranks.extend(slow_pp_send_ranks_tmp)
-        deg_levels.extend(rank_deg_severitys)
-
-    logger.info(f"[SLOWNODE ALGO] 慢 PP 通信的 Rank: {slow_pp_send_ranks}")
-
-    if not slow_pp_send_ranks:
-        return [], []
-
-    # 获取慢 PP 通信域
-    slow_pp_communications = get_pp_slow_communicate_domains(slow_pp_send_ranks, pp_parallel_domains)
-
-    # 返回每个通信域的最大劣化值
-    degradations = find_domain_max_degradations(slow_pp_communications, slow_pp_send_ranks, deg_levels)
-
-    return slow_pp_communications, degradations
+        out.append({"op_type": op_type, "count": count, "bw": v})
+    return out
 
 
-def find_domain_max_degradations(
-    slow_pp_communications: List[List[int]],
-    slow_pp_send_ranks: List[int],
-    deg_levels: List[float]
-) -> List[float]:
-    """
-    返回每个通信域的最大劣化值
-    对应 Go 代码中的 findDomainMaxDegradations 函数
-    """
-    # 构建 rank -> degradation 的映射
-    rank_to_deg = {}
-    for i, rank in enumerate(slow_pp_send_ranks):
-        if i < len(deg_levels):
-            rank_to_deg[rank] = deg_levels[i]
-        else:
-            logger.warning(f"警告：rank {rank} 没有对应的劣化值")
-            rank_to_deg[rank] = 0.0
+def _parse_bandwidth_col(prefix: str, col: str):
+    """解析带宽列名 "<opType>_<count>"（给定域前缀）。非数字尾/诊断列返回 None。"""
+    if not col.startswith(prefix):
+        return None, 0
+    rest = col[len(prefix):]
+    if rest.startswith("_"):
+        rest = rest[1:]
+    idx = rest.rfind("_")
+    if idx <= 0 or idx == len(rest) - 1:
+        return None, 0
+    op_type = rest[:idx]
+    count_str = rest[idx + 1:]
+    try:
+        count = int(count_str)
+    except ValueError:
+        return None, 0
+    if op_type == "Duration" or op_type == "Count":
+        return None, 0
+    return op_type, count
 
-    result = []
-    for domain in slow_pp_communications:
-        if not domain:
-            result.append(0.0)
-            continue
 
-        max_deg = -1.0
-        found = False
-        for rank in domain:
-            if rank in rank_to_deg:
-                found = True
-                max_deg = max(max_deg, rank_to_deg[rank])
-
-        if not found:
-            max_deg = 0.0
-
-        result.append(max_deg)
-
-    return result
+def _collect_op_types(group_bws: List[List[Dict[str, Any]]]) -> set:
+    s = set()
+    for bws in group_bws:
+        for e in bws:
+            s.add(e["op_type"])
+    return s

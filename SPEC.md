@@ -79,7 +79,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── detection_zp_bubble_data()             → npu_bubble
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
-  ├── detection_all_communication_parallel() → comm（HasNamedDomain 时）
+  ├── detect_slow_domain_by_bandwidth() → comm（HasNamedDomain 时）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
         │
         ▼
@@ -134,7 +134,8 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 ### 5.2 异常倍率由 degradation 决定
 
 - 计算/IO/Host 类（`KERNEL_AICORE`, `kernel_aivec`）→ 倍率 = `1 + degradation`
-- 通信类（`comm`）、内存搬运（`memcpy_async`）与慢 CPU（`cpu`）→ 倍率 = `1 + 5×degradation`
+- 内存搬运（`memcpy_async`）与慢 CPU（`cpu`）→ 倍率 = `1 + 5×degradation`
+- 慢通信（`comm`）→ 固定比率阈值 `SLOW_COMM_RATIO`（默认 1.3，带宽聚类，与 degradation 无关）
 - `npu_bubble` → 固定硬阈值 `< 5000ns`
 
 ---
@@ -224,16 +225,16 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 排除 -99999 与 ≤0；`value < 5000`（ns，硬编码）记异常，写入 `npu_bubble`（小值异常）。
 
-### 8.5 通信域组间对比（detection_all_communication_parallel）
+### 8.5 慢通信域带宽检测（detect_slow_domain_by_bandwidth）
 
-覆盖指标：
-- 各域 `{xp}_Duration` → `comm`
+数据来源：解析后带宽回填（`profilingdataparse.backfill_slow_domain_bandwidth`）写进 CSV 的动态列 `<domain>_<opType>_<count>`（跨卡对齐集合通信算子，带宽 = count / 组内最快 10% 最短耗时均值）。
 
-**守卫**（双保险，[nodelevel.py:97](nodelevel.py#L97) 与 [nodelevel.py:728](nodelevel.py#L728)）：
-- `config.get_has_named_domain()` 为真 → 正常检测通信域组间指标（情况 B / 正常数据）。
-- 为假（情况 A，无命名通信域）→ 直接跳过（无域名无法解释该域对应 tp/ep；检出也无从向用户说明）。
+检测规则：
+- 遍历每个集合通信域（跳过 `pp` / `embd`，组数 <2 跳过）。
+- 对每个 opType：每组取 count 最大的条目作代表，保留 `count >= max×0.5` 且 `> SLOW_COMM_COUNT_FLOOR(10240)` 的组；用通用检测（**min 方向**，带宽越小越慢）聚类代表带宽，阈值 = `SLOW_COMM_RATIO`（默认 1.3）。
+- 只报告在每个 opType 上都异常的组，劣化指数取各 opType 最大值，写入 `comm`（组键，`display_key` 带域名）。
 
-`_detect_comm_group_metric` 对每个并行域做组间对比，异常组写入对应类别（comm 为组键，`display_key` 带域名）。
+**守卫**：`config.get_has_named_domain()` 为假（情况 A，无命名通信域）→ 无带宽列，直接跳过。
 
 ### 8.6 慢 CPU 卡 cpu（get_slow_host_ranks_by_homogenize）
 
@@ -312,7 +313,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 - **类别**：`{code}（{SHORT_CATEGORY_LABELS}）`，如 `KERNEL_AICORE（慢计算卡）`。
 - **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
 - **劣化指数**：该类别的最大劣化值（3 位小数）。
-- **劣化阈值**：`npu_bubble` → `5000ns`；通信类（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
+- **劣化阈值**：`npu_bubble` → `5000ns`；慢通信（comm）→ `SLOW_COMM_RATIO`（固定 1.3）；内存搬运（memcpy_async）与慢 CPU（cpu）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
 - **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；无数据兜底 `无详细数据`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
@@ -340,7 +341,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 3. **无效标记 `-99999`**：贯穿解析、读取、各检测函数，用于跳过缺失数据。
 4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为倍率（由 degradation 决定）。
 5. **异常簇递归细分**：对异常簇数据再次聚类，**更深层异常替换父层、更深层无异常保持父层**（减少误检）；**劣化指数**统一用第一次 KMeans（全数据）的基线簇均值作分母，分子是异常值本身，同一刻度可比。
-6. **倍率分组**：计算/IO/Host = `1+degradation`，通信域（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`。
+6. **倍率分组**：计算/IO/Host = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`；慢通信（comm）= 固定 `SLOW_COMM_RATIO`（1.3）。
 7. **6 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。

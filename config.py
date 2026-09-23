@@ -16,7 +16,8 @@ Degradation = 0.3            # 劣化阈值基础值（运行时提问，未提�
 
 # 放缩倍数分组：
 # - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec）→ 倍率 = 1 + degradation
-# - 通信类指标（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5*degradation
+# - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5*degradation
+# - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，与 degradation 无关）
 Utilization_ComputeMultiplier = 0.0   # 计算类倍率 = 1 + 1*degradation（运行时 set_thresholds 计算）
 Utilization_CommMultiplier = 0.0      # 通信类倍率 = 1 + 5*degradation（运行时 set_thresholds 计算）
 CALC_MULTIPLIER_BASE = 1.0    # 计算/IO/Host 类放缩倍数基数
@@ -26,6 +27,11 @@ MAX_K = 10                  # 肘部法最大簇数上限
 MAX_ITERATIONS = 300        # Lloyd 迭代轮数上限
 RECURSION_DEPTH = 10        # 异常递归检测深度上限
 CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
+
+# ---- 慢通信带宽检测（对应 Go DetectSlowDomainByBandwidth）----
+SLOW_COMM_RATIO = 1.3            # 慢通信带宽聚类的比率阈值
+SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
+SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
 
 # 集群数据标志：由 nodelevel_data_handler 在检测时判定（Case A 集群 / Case B 非集群）
 IsClusterData = False
@@ -199,13 +205,14 @@ def get_comm_multiplier() -> float:
 
 
 # 使用通信类倍率（1 + 5×degradation）的检测类别
-COMM_MULTIPLIER_CATEGORIES = ("comm", "memcpy_async", "cpu")
+# 注意：comm 改用固定 SLOW_COMM_RATIO（带宽聚类），不在此列。
+COMM_MULTIPLIER_CATEGORIES = ("memcpy_async", "cpu")
 
 
 def get_multiplier_for_category(category: str) -> float:
     """返回某检测类别的异常倍率。
 
-    - 通信类（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ 1 + 5×degradation
+    - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 1 + 5×degradation
     - 其余计算/IO/Host 类 → 1 + 1×degradation
     """
     if category in COMM_MULTIPLIER_CATEGORIES:
