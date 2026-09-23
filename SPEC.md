@@ -133,10 +133,9 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 5.2 异常倍率由 degradation 决定
 
-- 计算/IO/Host 类（`KERNEL_AICORE`, `kernel_aivec`, `cpu`）→ 倍率 = `1 + degradation`
-- 通信类（`comm`）与内存搬运（`memcpy_async`）→ 倍率 = `1 + 5×degradation`
+- 计算/IO/Host 类（`KERNEL_AICORE`, `kernel_aivec`）→ 倍率 = `1 + degradation`
+- 通信类（`comm`）、内存搬运（`memcpy_async`）与慢 CPU（`cpu`）→ 倍率 = `1 + 5×degradation`
 - `npu_bubble` → 固定硬阈值 `< 5000ns`
-- `cpu` 沿用 `cpuDegradationPercent = 2.0`（实际由 config 倍率覆盖）
 
 ---
 
@@ -313,7 +312,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 - **类别**：`{code}（{SHORT_CATEGORY_LABELS}）`，如 `KERNEL_AICORE（慢计算卡）`。
 - **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
 - **劣化指数**：该类别的最大劣化值（3 位小数）。
-- **劣化阈值**：`npu_bubble` → `5000ns`；通信类（comm）与内存搬运（memcpy_async）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
+- **劣化阈值**：`npu_bubble` → `5000ns`；通信类（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
 - **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；无数据兜底 `无详细数据`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
@@ -341,7 +340,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 3. **无效标记 `-99999`**：贯穿解析、读取、各检测函数，用于跳过缺失数据。
 4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为倍率（由 degradation 决定）。
 5. **异常簇递归细分**：对异常簇数据再次聚类，**更深层异常替换父层、更深层无异常保持父层**（减少误检）；**劣化指数**统一用第一次 KMeans（全数据）的基线簇均值作分母，分子是异常值本身，同一刻度可比。
-6. **倍率分组**：计算/IO/Host = `1+degradation`，通信域（comm）与内存搬运（memcpy_async）= `1+5×degradation`。
+6. **倍率分组**：计算/IO/Host = `1+degradation`，通信域（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`。
 7. **6 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。

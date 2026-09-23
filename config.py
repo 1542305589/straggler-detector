@@ -15,8 +15,8 @@ ZP_BUBBLE_ABNORMAL_BOUNDARY = 50000  # 50us
 Degradation = 0.3            # 劣化阈值基础值（运行时提问，未提问时用默认 0.3）
 
 # 放缩倍数分组：
-# - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec, cpu）→ 倍率 = 1 + degradation
-# - 通信类指标（comm）与内存搬运（memcpy_async）→ 倍率 = 1 + 5*degradation
+# - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec）→ 倍率 = 1 + degradation
+# - 通信类指标（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5*degradation
 Utilization_ComputeMultiplier = 0.0   # 计算类倍率 = 1 + 1*degradation（运行时 set_thresholds 计算）
 Utilization_CommMultiplier = 0.0      # 通信类倍率 = 1 + 5*degradation（运行时 set_thresholds 计算）
 CALC_MULTIPLIER_BASE = 1.0    # 计算/IO/Host 类放缩倍数基数
@@ -199,13 +199,13 @@ def get_comm_multiplier() -> float:
 
 
 # 使用通信类倍率（1 + 5×degradation）的检测类别
-COMM_MULTIPLIER_CATEGORIES = ("comm", "memcpy_async")
+COMM_MULTIPLIER_CATEGORIES = ("comm", "memcpy_async", "cpu")
 
 
 def get_multiplier_for_category(category: str) -> float:
     """返回某检测类别的异常倍率。
 
-    - 通信类（comm）与内存搬运（memcpy_async）→ 1 + 5×degradation
+    - 通信类（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）→ 1 + 5×degradation
     - 其余计算/IO/Host 类 → 1 + 1×degradation
     """
     if category in COMM_MULTIPLIER_CATEGORIES:
