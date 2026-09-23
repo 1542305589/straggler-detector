@@ -99,7 +99,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
-| `comm` | `{xp}_Duration` | 通信域组间对比 |
+| `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -130,7 +130,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
   ├── detection_zp_bubble_data()           → npu_bubble
   ├── get_slow_calculate_ranks()           → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2           → kernel_aivec / memcpy_async
-  ├── detection_all_communication_parallel()→ comm（有命名域时）
+  ├── detect_slow_domain_by_bandwidth()    → comm（带宽聚类，有命名域时）
   ├── get_slow_host_ranks_by_homogenize()  → cpu
         │
         ▼
@@ -139,7 +139,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 核心算法（kmeans_detector.py）
 
-`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，通信域类（comm）、内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`；`npu_bubble` 用固定阈值 `< 5000ns`。
+`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`，慢通信（comm）用固定带宽比率阈值 `1.3`；`npu_bubble` 用固定阈值 `< 5000ns`。
 
 检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤；无命名通信域时退化按 hostUid 物理节点分组（通信域组间指标直接跳过）。
 

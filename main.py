@@ -129,6 +129,14 @@ def _safe_print(text: str):
             sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
 
 
+def _backfill_slow_domain(job_path: str, db_files: list = None):
+    """慢通信带宽回填（附加步骤，失败仅告警不中断检测）。"""
+    try:
+        profilingdataparse.backfill_slow_domain_bandwidth(job_path, db_files)
+    except Exception as e:
+        logger.warning(f"慢通信带宽回填失败：{e}")
+
+
 def _find_colocate_worlds(input_path: str) -> List[dict]:
     """
     探测 verl colocate 输入：root 下同层多个 worker*_ascend_pt（每 worker = 一个 rank db），
@@ -243,6 +251,9 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
         else:
             profilingdataparse.data_parsing(job_path)
         logger.info("数据解析完成")
+
+        # 慢通信带宽回填（解析后、检测前）：把 "<domain>_<opType>_<count>" 带宽列写回 CSV
+        _backfill_slow_domain(job_path, db_files)
     else:
         logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
@@ -388,6 +399,7 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
             # 强制清理并重新解析
             utils.clean_detection_outputs(input_path)
             profilingdataparse.data_parsing(input_path)
+            _backfill_slow_domain(input_path)
         elif clean == 'no':
             logger.info("跳过清理和重新解析（clean=no），直接使用已有的 op_metric 数据")
         else:
@@ -396,6 +408,7 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
             if should_clean:
                 utils.clean_detection_outputs(input_path)
                 profilingdataparse.data_parsing(input_path)
+                _backfill_slow_domain(input_path)
             else:
                 logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
