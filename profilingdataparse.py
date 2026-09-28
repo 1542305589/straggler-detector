@@ -1345,7 +1345,7 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
 # ======================================================================
 # PP 流水线等待回填（PP 慢通信检测的辅助数据）
 #
-# 每卡记录"PP 接收(Recv)后严格下一次集合通信"的时长之和，写回 CSV 动态列
+# 每卡记录「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的时间之和，写回 CSV 动态列
 # "PP_Wait"（Send 不计，发送端不被等待）。PP 组内求和后，慢 PP 组的接收方晚进
 # 集合通信 → 组和偏小。
 # ======================================================================
@@ -1393,7 +1393,8 @@ def _load_all_comm_ops(
 
 def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[int]:
     """
-    计算某 rank 的 PP 等待 = 所有"PP 接收(Recv)后严格下一次集合通信"的时长之和。
+    计算某 rank 的 PP 等待 = 所有「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的
+    时间之和（不再用集合通信自身的 end-start）。
 
     只看 Recv（Send 不计，发送端不被等待）；严格下一次：Recv 的下一条通信算子必须
     本身是集合通信，否则该次不计。
@@ -1413,8 +1414,11 @@ def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[
         if _is_pp_transfer(nxt["name"]):
             # 中间夹了其他通信（下一条仍是点对点传输）→ 不满足"严格下一次集合通信"
             continue
-        total += nxt["end"] - nxt["start"]
-        found = True
+        # PP recv 结束 → 下一次集合通信结束
+        d = nxt["end"] - ops[i]["end"]
+        if d > 0:
+            total += d
+            found = True
     return total if found else None
 
 
