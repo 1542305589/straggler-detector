@@ -964,8 +964,8 @@ PURE_COMM_TYPES = {
 _SEQ_B_RE = re.compile(r'__\d+_(\d+)_\d+$')
 
 # PP 传输算子名形如 hcom_send__486_0_1 / hcom_receive__486_1_1:
-# "486" 为该 PP 传输的流号(连接对编号)。相邻 PP stage 的收发两端共享同一流号,
-# 故可按流号把各 rank 反推成 PP 分组。
+# "486" 为该 PP 传输的流号(连接对编号)。一条 PP 链路(相邻两 stage)共享一个流号,
+# 需把链路用并查集串起来才能还原完整 PP 组(见 derive_pp_groups)。
 _PP_FLOW_RE = re.compile(r'__(\d+)')
 
 
@@ -1455,8 +1455,10 @@ def backfill_pp_wait_duration(input_path: str, db_files: Optional[List[str]] = N
 # --------------------------------------------------------------------
 # PP 分组反推：parallel_group_info 只登记集合通信域(tp/ep/mc2…), 不含 PP。
 # PP 由点对点 Send/Recv 传输实现, 相邻 PP stage 收发两端共享同一 PP 传输
-# 流号(hcom_send__<flow>_* / hcom_receive__<flow>_*)。据此可把各 rank
-# 按流号分组, 还原出 PP 分组, 供 detect_pp_slow_domain 使用。
+# 流号(hcom_send__<flow>_* / hcom_receive__<flow>_*)。一个流号连接相邻两个
+# stage(一条 PP 链路); 中间 stage 同时参与"上一条收 + 下一条发"两条链路, 故
+# 需把链路串起来(并查集连通分量)才能还原完整 PP 组(如 tp2pp4 下 [0,2],[2,4],
+# [4,6] 三条链路串联成 PP 组 [0,2,4,6])。
 # --------------------------------------------------------------------
 
 def _pp_flow_id(name: str) -> Optional[str]:
@@ -1486,10 +1488,13 @@ def derive_pp_groups(input_path: str, db_files: Optional[List[str]] = None) -> L
     从各 rank 的 COMMUNICATION_OP 点对点 Send/Recv 算子反推 PP 分组。
 
     原理：相邻 PP stage 的收发两端在各自 db 里都有形如 hcom_send__<flow>_* /
-    hcom_receive__<flow>_* 的 PP 传输算子，且共享同一流号 <flow>。按流号把 rank
-    归组，即可还原 PP 分组（如 tp4pp2 8 卡下流号 486/384/855/471 → [0,4],[1,5],[2,6],[3,7]）。
+    hcom_receive__<flow>_* 的 PP 传输算子，且共享同一流号 <flow>（一条 PP 链路 =
+    一个流号，连接相邻两个 stage）。一个流号只连接一条链路，因此需要把共享 rank
+    的链路用**并查集连通分量**串起来，才能得到完整 PP 组：
+      - tp4pp2（PP=2）：4 条链路各自独立 → [[0,4],[1,5],[2,6],[3,7]]
+      - tp2pp4（PP=4）：[0,2],[2,4],[4,6] 串联 → [0,2,4,6]；[1,3],[3,5],[5,7] → [1,3,5,7]
 
-    返回: 按流号划分的 rank 分组列表(每组成员 >= 2, 组内升序, 组间按最小 rank 排序)。
+    返回: 完整 PP 组列表(每组成员 >= 2, 组内升序, 组间按最小 rank 排序)。
     无可用 PP 传输时返回 []。
     """
     if db_files is None:
@@ -1519,6 +1524,36 @@ def derive_pp_groups(input_path: str, db_files: Optional[List[str]] = None) -> L
         for fl in flows:
             flow_to_ranks.setdefault(fl, set()).add(rank)
 
-    groups = [sorted(rs) for rs in flow_to_ranks.values() if len(rs) >= 2]
+    # 并查集：同一流号的收发两端合并；共享 rank 的链路自然串成完整 PP 组。
+    parent: Dict[int, int] = {}
+
+    def find(x: int) -> int:
+        parent.setdefault(x, x)
+        root = x
+        while parent[root] != root:
+            root = parent[root]
+        while parent[x] != root:   # 路径压缩
+            nxt = parent[x]
+            parent[x] = root
+            x = nxt
+        return root
+
+    def union(a: int, b: int):
+        ra, rb = find(a), find(b)
+        if ra != rb:
+            parent[rb] = ra
+
+    for rs in flow_to_ranks.values():
+        rs = list(rs)
+        for r in rs:
+            find(r)  # 保证每个 rank 都入并查集
+        for i in range(1, len(rs)):
+            union(rs[0], rs[i])
+
+    comps: Dict[int, List[int]] = {}
+    for r in list(parent.keys()):
+        comps.setdefault(find(r), []).append(r)
+
+    groups = [sorted(v) for v in comps.values() if len(v) >= 2]
     groups.sort(key=lambda g: (min(g), g))
     return groups
