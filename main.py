@@ -262,7 +262,7 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
         logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
     # === 步骤 2: 获取并行域和有效 ranks ===
-    parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path)
+    parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path, db_files=db_files)
 
     if not parallels or not valid_ranks:
         logger.error("获取并行域/卡数失败")

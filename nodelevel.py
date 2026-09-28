@@ -557,8 +557,8 @@ def detect_pp_slow_domain(
     """
     PP 流水线慢通信检测（另一方案，对应 PP 域）。
 
-    数据来源：PP 等待回填写进 CSV 的动态列 "PP_Wait"（每卡"PP 传输后严格下一次
-    集合通信"的时长之和）。同属一个 PP 组的卡求和 → d_g。
+    数据来源：PP 等待回填写进 CSV 的动态列 "PP_Wait"（每卡"PP 接收(Recv)后严格
+    下一次集合通信"的时长之和；Send 不计）。同属一个 PP 组的卡求和 → d_g。
 
     慢 PP 组的接收方晚进集合通信 → d_g 偏小 → Δ_g = max(d) − d_g 最大（越大越异常）。
     以 Δ_g / 会话时长 > PP_WAIT_THRESHOLD（默认 5%）判异常，写入类别 "pp_comm"。

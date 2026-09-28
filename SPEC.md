@@ -245,9 +245,9 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.7 PP 慢通信 pp_comm（detect_pp_slow_domain）
 
-PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测。
+PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测（只看 **Recv**，发送端不计）。
 
-数据来源：解析后回填（`profilingdataparse.backfill_pp_wait_duration`）写进 CSV 动态列 `PP_Wait` = 每卡「PP 传输后**严格下一次**集合通信」的时长之和（下一条通信算子必须本身是集合通信，否则该次不计）。
+数据来源：解析后回填（`profilingdataparse.backfill_pp_wait_duration`）写进 CSV 动态列 `PP_Wait` = 每卡「PP 接收(Recv)后**严格下一次**集合通信」的时长之和（下一条通信算子必须本身是集合通信，否则该次不计）。
 
 检测规则（`detect_pp_slow_domain`）：
 - 同属一个 PP 组的卡求和 → `d_g`（过滤 -99999）。

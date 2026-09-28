@@ -963,6 +963,11 @@ PURE_COMM_TYPES = {
 
 _SEQ_B_RE = re.compile(r'__\d+_(\d+)_\d+$')
 
+# PP 传输算子名形如 hcom_send__486_0_1 / hcom_receive__486_1_1:
+# "486" 为该 PP 传输的流号(连接对编号)。相邻 PP stage 的收发两端共享同一流号,
+# 故可按流号把各 rank 反推成 PP 分组。
+_PP_FLOW_RE = re.compile(r'__(\d+)')
+
 
 @dataclass
 class BwOp:
@@ -1340,14 +1345,21 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
 # ======================================================================
 # PP 流水线等待回填（PP 慢通信检测的辅助数据）
 #
-# 每卡记录"PP 传输（Send/Recv）后严格下一次集合通信"的时长之和，写回 CSV 动态列
-# "PP_Wait"。PP 组内求和后，慢 PP 组的接收方晚进集合通信 → 组和偏小。
+# 每卡记录"PP 接收(Recv)后严格下一次集合通信"的时长之和，写回 CSV 动态列
+# "PP_Wait"（Send 不计，发送端不被等待）。PP 组内求和后，慢 PP 组的接收方晚进
+# 集合通信 → 组和偏小。
 # ======================================================================
 
 def _is_pp_transfer(name: str) -> bool:
     """判断算子名是否为 PP 点对点传输（Send/Recv）。"""
     s = _leading_letters(_strip_vendor_prefix(name)).lower()
     return s.startswith("send") or s.startswith("recv") or s.startswith("receive")
+
+
+def _is_pp_recv(name: str) -> bool:
+    """判断算子名是否为 PP 点对点接收（Recv/Receive）。"""
+    s = _leading_letters(_strip_vendor_prefix(name)).lower()
+    return s.startswith("recv") or s.startswith("receive")
 
 
 def _load_all_comm_ops(
@@ -1381,8 +1393,10 @@ def _load_all_comm_ops(
 
 def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[int]:
     """
-    计算某 rank 的 PP 等待 = 所有"PP 传输后严格下一次集合通信"的时长之和。
-    严格下一次：PP 传输的下一条通信算子必须本身是集合通信，否则该次不计。
+    计算某 rank 的 PP 等待 = 所有"PP 接收(Recv)后严格下一次集合通信"的时长之和。
+
+    只看 Recv（Send 不计，发送端不被等待）；严格下一次：Recv 的下一条通信算子必须
+    本身是集合通信，否则该次不计。
     （COMMUNICATION_OP 只含集合通信与点对点传输，故"非 Send/Recv"即视为集合通信，
       包括 allReduce / reduceScatter 等未进带宽白名单的集合通信。）
     """
@@ -1393,7 +1407,7 @@ def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[
     total = 0
     found = False
     for i in range(len(ops) - 1):
-        if not _is_pp_transfer(ops[i]["name"]):
+        if not _is_pp_recv(ops[i]["name"]):
             continue
         nxt = ops[i + 1]
         if _is_pp_transfer(nxt["name"]):
@@ -1432,3 +1446,75 @@ def backfill_pp_wait_duration(input_path: str, db_files: Optional[List[str]] = N
         _backfill_bandwidth_csv(path, {config.PP_WAIT_COLUMN: repr(float(val))})
 
     logger.info("[SLOW-DOMAIN] PP 等待回填完成")
+
+
+# --------------------------------------------------------------------
+# PP 分组反推：parallel_group_info 只登记集合通信域(tp/ep/mc2…), 不含 PP。
+# PP 由点对点 Send/Recv 传输实现, 相邻 PP stage 收发两端共享同一 PP 传输
+# 流号(hcom_send__<flow>_* / hcom_receive__<flow>_*)。据此可把各 rank
+# 按流号分组, 还原出 PP 分组, 供 detect_pp_slow_domain 使用。
+# --------------------------------------------------------------------
+
+def _pp_flow_id(name: str) -> Optional[str]:
+    """从 PP 传输算子名(hcom_send__486_0_1 / hcom_receive__486_1_1)提取 PP 传输流号(486)。"""
+    m = _PP_FLOW_RE.search(name)
+    return m.group(1) if m else None
+
+
+def _rank_pp_flows(conn: sqlite3.Connection) -> set:
+    """返回某 rank 用到的全部 PP 传输流号集合(取自 COMMUNICATION_OP 的 send/recv 算子)。"""
+    if not table_exists(conn, "COMMUNICATION_OP"):
+        return set()
+    rows = conn.execute("SELECT DISTINCT opName FROM COMMUNICATION_OP").fetchall()
+    ids = [r[0] for r in rows]
+    name_map = _string_map_by_ids(conn, ids)
+    flows = set()
+    for name in name_map.values():
+        if _is_pp_transfer(name):
+            fl = _pp_flow_id(name)
+            if fl is not None:
+                flows.add(fl)
+    return flows
+
+
+def derive_pp_groups(input_path: str, db_files: Optional[List[str]] = None) -> List[List[int]]:
+    """
+    从各 rank 的 COMMUNICATION_OP 点对点 Send/Recv 算子反推 PP 分组。
+
+    原理：相邻 PP stage 的收发两端在各自 db 里都有形如 hcom_send__<flow>_* /
+    hcom_receive__<flow>_* 的 PP 传输算子，且共享同一流号 <flow>。按流号把 rank
+    归组，即可还原 PP 分组（如 tp4pp2 8 卡下流号 486/384/855/471 → [0,4],[1,5],[2,6],[3,7]）。
+
+    返回: 按流号划分的 rank 分组列表(每组成员 >= 2, 组内升序, 组间按最小 rank 排序)。
+    无可用 PP 传输时返回 []。
+    """
+    if db_files is None:
+        db_files = discover_db_files(input_path)
+    if not db_files:
+        return []
+
+    flow_to_ranks: Dict[str, set] = {}
+    for db_path in db_files:
+        rank_str = extract_global_rank_from_filename(db_path)
+        if rank_str is None:
+            continue
+        try:
+            rank = int(rank_str)
+        except ValueError:
+            continue
+        try:
+            conn = sqlite3.connect(db_path)
+        except Exception:
+            continue
+        try:
+            flows = _rank_pp_flows(conn)
+        except Exception:
+            conn.close()
+            continue
+        conn.close()
+        for fl in flows:
+            flow_to_ranks.setdefault(fl, set()).add(rank)
+
+    groups = [sorted(rs) for rs in flow_to_ranks.values() if len(rs) >= 2]
+    groups.sort(key=lambda g: (min(g), g))
+    return groups

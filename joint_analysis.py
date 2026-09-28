@@ -127,7 +127,7 @@ def _print_comm_bars(prefix: str, category: str, abnormal_items: dict, step_data
     # PP 慢通信：展示 PP 组及其等待占比 / 等待和
     if category == "pp_comm":
         pp_wait = step_data.get(config.PP_WAIT_COLUMN, {}) if step_data else {}
-        lines.append(f"{prefix} [INFO] PP 慢通信组（PP 传输后集合通信等待占比）：")
+        lines.append(f"{prefix} [INFO] PP 慢通信组（PP 接收后集合通信等待占比）：")
         for key, val in sorted(abnormal_items.items(), key=lambda kv: kv[1], reverse=True):
             ranks = _parse_ranks_from_key(key)
             s = sum(pp_wait[r] for r in ranks if r in pp_wait and pp_wait[r] != -99999)

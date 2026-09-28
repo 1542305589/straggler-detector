@@ -316,7 +316,7 @@ def _detection_summary(
         "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
         "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
         "comm": "comm（各通信域 {domain}_{opType}_{count} 带宽聚类）",
-        "pp_comm": "pp_comm（PP 传输后下一次集合通信等待，按 PP 组求和）",
+        "pp_comm": "pp_comm（PP 接收后下一次集合通信等待，按 PP 组求和）",
         "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
         "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
