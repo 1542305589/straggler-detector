@@ -19,6 +19,7 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
 import config
+import profilingdataparse
 
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("[SLOWNODE ALGO]")
@@ -143,7 +144,31 @@ def get_cur_job_last_step_data(ranks: List[int]) -> Dict[str, Dict[int, float]]:
     return result
 
 
-def get_cur_detection_info(job_path: str) -> Tuple[Dict[str, List[List[int]]], List[int]]:
+def _inject_pp_groups(parallels: Dict[str, List[List[int]]], job_path: str,
+                      valid_ranks: List[int], db_files: Optional[List[str]] = None):
+    """
+    PP 流水线并行域由点对点 Send/Recv 实现，parallel_group_info 不登记 "pp" 域。
+    这里从各 rank 的 COMMUNICATION_OP send/recv 算子流号反推 PP 分组，注入
+    parallels["pp"]（若不存在），供 detect_pp_slow_domain 使用。
+    """
+    if "pp" in parallels or not valid_ranks:
+        return
+    try:
+        pp_groups = profilingdataparse.derive_pp_groups(job_path, db_files=db_files)
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 反推 PP 分组失败: {e}")
+        return
+    kept = []
+    for g in pp_groups:
+        rr = [r for r in g if r in valid_ranks]
+        if len(rr) >= 2:
+            kept.append(sorted(rr))
+    if len(kept) >= 2:
+        parallels["pp"] = kept
+        logger.info(f"[SLOWNODE ALGO] 由 P2P Send/Recv 流号反推 PP 分组: {kept}")
+
+
+def get_cur_detection_info(job_path: str, db_files: Optional[List[str]] = None) -> Tuple[Dict[str, List[List[int]]], List[int]]:
     """
     获取当前检测信息（并行域和有效 ranks）
     对应 Go 代码中的 GetCurDetectionInfo 函数
@@ -210,6 +235,9 @@ def get_cur_detection_info(job_path: str) -> Tuple[Dict[str, List[List[int]]], L
 
     # 判定是否为“集群数据”（Case A 集群 / Case B 非集群）
     determine_cluster_data(job_path, valid_ranks)
+
+    # PP 域：parallel_group_info 不登记，从 COMMUNICATION_OP 点对点 Send/Recv 反推注入
+    _inject_pp_groups(parallels, job_path, valid_ranks, db_files)
 
     return parallels, valid_ranks
 

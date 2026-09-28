@@ -100,7 +100,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_Wait`（PP 传输后集合通信等待） | 按 PP 组求和后取差值占比（Δ/会话 > 5%） |
+| `pp_comm` | `PP_Wait`（PP 接收后集合通信等待） | 按 PP 组求和后取差值占比（Δ/会话 > 5%） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
