@@ -296,7 +296,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 | `memcpy_async` | `MEMCPY_ASYNC` | 单卡 / 大值 |
 | `cpu` | `ZP_Host` | 单卡 / 大值 |
 | `npu_bubble` | `ZP_Bubble` | 单卡 / 小值（固定 <5000ns） |
-| `comm` | `{xp}_Duration` | 通信域组级别 |
+| `comm` | `{domain}_{opType}_{count}`（带宽） | 通信域组级别 |
 
 ### 10.3 报告结构（joint_failure_analysis.log，log 格式）
 
@@ -324,7 +324,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 - **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
 - **劣化指数**：该类别的最大劣化值（3 位小数）。
 - **劣化阈值**：`npu_bubble` → `BUBBLE_THRESHOLD_NS`；通信类（comm / pp_comm）→ `COMM_THRESHOLD`；IO/CPU 类（cpu / memcpy_async）→ `IO_THRESHOLD`；计算类（KERNEL_AICORE / kernel_aivec）→ `COMPUTE_THRESHOLD`。
-- **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；pp_comm 显示 `s->r=重叠时长`；无数据兜底 `无详细数据`。
+- **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；comm 显示异常组各 opType 的代表带宽（`allgather(cnt=1024)=1.23e-3，…`）；pp_comm 显示 `s->r=重叠时长`；无数据兜底 `无详细数据`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
 ---
@@ -332,7 +332,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 ## 11. 可视化（visualizer.py + markdown_viz.py）
 
 - `visualizer.run_visualization`：控制台实时反馈 + 调用 `markdown_viz.write_report` 生成 `analysis_result/detection_report.log`。
-- `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、通信域分组表、总通信耗时。
+- `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、各域集合通信带宽排序、各域带宽概览。
 
 ---
 

@@ -13,6 +13,7 @@ from typing import Dict, List
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import utils
 
 
 # 硬件流水线各阶段及其对应的检测类别（按因果先后顺序）
@@ -118,11 +119,10 @@ def _print_per_rank_bars(
 
 def _print_comm_bars(prefix: str, category: str, abnormal_items: dict, step_data: dict, parallels: dict) -> List[str]:
     """
-    通信域类别：展示异常通信域，并尽量展示该域下各卡的通信时长（若有数据）。
+    通信域类别：展示异常通信组（comm 用算子带宽；pp_comm 用链路重叠时长）。
     返回 log 行列表。
     """
     lines = []
-    abnormal_keys = set(abnormal_items.keys())
 
     # PP 慢通信：展示 PP 链路及其重叠时长
     if category == "pp_comm":
@@ -136,33 +136,16 @@ def _print_comm_bars(prefix: str, category: str, abnormal_items: dict, step_data
             lines.append(f"{prefix}   [WARN] PP 链路 [{ranks[0]}->{ranks[-1]}] -> 劣化指数 = {val:.2f}（重叠={ov_str}）")
         return lines
 
-    # 尝试从 step_data 中找出各并行域时长指标（如 tp_Duration）
-    domain_metric = None
-    if parallels:
-        for domain_name in parallels.keys():
-            col = f"{domain_name}_Duration"
-            if step_data.get(col):
-                domain_metric = col
-                break
-
-    if domain_metric:
-        ranks_map = {str(r): v for r, v in step_data.get(domain_metric, {}).items()
-                     if v != -99999}
-        if ranks_map:
-            max_val = max(ranks_map.values()) or 1
-            lines.append(f"{prefix} [INFO] 全部卡 {domain_metric} 值：")
-            for rank, val in sorted(ranks_map.items(), key=lambda kv: kv[1], reverse=True):
-                # 该卡是否落在任一异常通信域内
-                abnormal = False
-                for gk in abnormal_keys:
-                    if rank in gk.split(","):
-                        abnormal = True
-                        break
-                lines.append(f"{prefix}  " + _bar(f"rank{rank}", val, max_val, abnormal))
-    else:
-        # 无域时长数据，仅展示异常通信域
-        for key, val in sorted(abnormal_items.items(), key=lambda kv: kv[1], reverse=True):
-            lines.append(f"{prefix}   [WARN] 慢通信域组 [{key}] -> 劣化指数 = {val:.2f}")
+    # 慢通信域（comm）：展示异常组的算子带宽（越小越慢）
+    lines.append(f"{prefix} [INFO] 慢通信域（算子带宽，越小越慢）：")
+    for key, val in sorted(abnormal_items.items(), key=lambda kv: kv[1], reverse=True):
+        ranks = _parse_ranks_from_key(key)
+        dom = _domain_of_group(parallels, key)
+        show = f"{dom}[{', '.join(str(r) for r in ranks)}]" if dom else \
+            "[" + ", ".join(str(r) for r in ranks) + "]"
+        reps = utils.group_representative_bandwidth(step_data, dom, ranks) if dom else []
+        bw_str = ", ".join(f"{o}(cnt={c})={b:.4g}" for o, c, b in reps) if reps else "无数据"
+        lines.append(f"{prefix}   [WARN] 慢通信组 {show} -> 劣化指数 = {val:.2f}（带宽: {bw_str}）")
     return lines
 
 
@@ -415,41 +398,22 @@ def _cell_metric_summary(metric_col: str, abnormal_ranks, step_data) -> str:
 
 def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
     """
-    通信域类别的数据要点：按异常组所属域分组，用对应 {domain}_Duration 列展示各卡值。
-    例：tp 域异常 → "rank0=1.10ms，rank1=1.15ms，其他≈80us~85us（约 14.0 倍）"
-    无法定位域时长列时兜底为 "无详细数据"。
+    通信域类别的数据要点：对每个异常组，展示该组所属域的算子带宽（越小越慢）。
+    例：tp[0, 1]: allgather(cnt=1024)=1.23e-3，alltoallv(cnt=2048)=...
     """
-    abnormal_by_domain = {}
+    parts = []
     for key in items:
         ranks = _parse_ranks_from_key(key)
         dom = _domain_of_group(parallels, key)
-        abnormal_by_domain.setdefault(dom, [])
-        abnormal_by_domain[dom].extend(ranks)
-
-    def _find_duration_col(domain_name: str):
-        if domain_name:
-            col = f"{domain_name}_Duration"
-            if step_data and step_data.get(col):
-                return col
-        # 兜底：任选一个带时长列的域
-        if parallels:
-            for dn in parallels.keys():
-                col = f"{dn}_Duration"
-                if step_data and step_data.get(col):
-                    return col
-        return None
-
-    texts = []
-    for dom, ranks in abnormal_by_domain.items():
-        col = _find_duration_col(dom)
-        if not col:
+        label = f"{dom}[{', '.join(str(r) for r in ranks)}]" if dom else \
+            "[" + ", ".join(str(r) for r in ranks) + "]"
+        reps = utils.group_representative_bandwidth(step_data, dom, ranks) if dom else []
+        if not reps:
+            parts.append(f"{label}: 无带宽数据")
             continue
-        text = _cell_metric_summary(col, sorted(set(ranks)), step_data)
-        if text and text != "无详细数据":
-            texts.append(text)
-    if not texts:
-        return "无详细数据"
-    return "；".join(texts)
+        bw_str = "，".join(f"{o}(cnt={c})={b:.4g}" for o, c, b in reps)
+        parts.append(f"{label}: {bw_str}")
+    return "；".join(parts) if parts else "无详细数据"
 
 
 def _cell_pp_summary(items: dict, step_data: dict) -> str:

@@ -522,23 +522,7 @@ def _bw_set_for_group(
 
 def _parse_bandwidth_col(prefix: str, col: str):
     """解析带宽列名 "<opType>_<count>"（给定域前缀）。非数字尾/诊断列返回 None。"""
-    if not col.startswith(prefix):
-        return None, 0
-    rest = col[len(prefix):]
-    if rest.startswith("_"):
-        rest = rest[1:]
-    idx = rest.rfind("_")
-    if idx <= 0 or idx == len(rest) - 1:
-        return None, 0
-    op_type = rest[:idx]
-    count_str = rest[idx + 1:]
-    try:
-        count = int(count_str)
-    except ValueError:
-        return None, 0
-    if op_type == "Duration" or op_type == "Count":
-        return None, 0
-    return op_type, count
+    return utils.parse_bandwidth_col(prefix, col)
 
 
 def _collect_op_types(group_bws: List[List[Dict[str, Any]]]) -> set:
