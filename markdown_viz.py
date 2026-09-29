@@ -386,6 +386,14 @@ def generate_report(
         abnormal_map = {}
         if detection_result and cat in detection_result:
             abnormal_map = detection_result[cat]
+            if cat == "cpu" and abnormal_map:
+                # cpu 的 key 是节点显示名（hostName），转成 rank 集合供 ZP_Host 段高亮
+                node_ranks = config.get_node_ranks_map()
+                abnormal_map = {
+                    str(r): deg
+                    for node, deg in abnormal_map.items()
+                    for r in node_ranks.get(node, [])
+                }
 
         sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_map))
 
