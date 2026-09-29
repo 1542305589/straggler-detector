@@ -73,34 +73,78 @@ def _sep_line(title: str = "", width: int = 70) -> str:
     return SEP * width
 
 
+def _disp_len(text: str) -> int:
+    """估算字符串在终端中的显示宽度（CJK/全角字符按 2 列计）。"""
+    return sum(2 if 0x2E80 <= ord(ch) <= 0x9FFF or 0xFF00 <= ord(ch) <= 0xFFEF else 1
+               for ch in text)
+
+
+def _disp_rjust(text: str, width: int) -> str:
+    """按显示宽度右对齐填充。"""
+    return " " * max(width - _disp_len(text), 0) + text
+
+
+def _zp_host_by_node(zp_host: Dict[int, float], cpu_result: Optional[Dict[str, float]]):
+    """把逐卡 ZP_Host 聚合到物理节点。
+
+    返回 ({节点名: 去首尾均值}, {异常节点: 劣化指数})；无节点映射时返回 (None, None)，
+    调用方退回逐卡展示。节点名取自 config.get_node_ranks_map()。
+    """
+    node_ranks = config.get_node_ranks_map()
+    if not node_ranks:
+        return None, None
+
+    node_data = {}
+    for node, ranks in node_ranks.items():
+        vals = [zp_host[r] for r in ranks if r in zp_host and zp_host[r] != -99999]
+        if not vals:
+            continue
+        if len(vals) > 2:
+            s = sorted(vals)
+            trimmed = s[1:-1]  # 去首尾，与检测口径一致
+            node_data[node] = sum(trimmed) / len(trimmed)
+        else:
+            node_data[node] = sum(vals) / len(vals)
+
+    abnormal = {k: v for k, v in (cpu_result or {}).items() if k in node_data}
+    return node_data, abnormal
+
+
 def _metric_section(
     metric_name: str,
-    data: Dict[int, float],
-    abnormal_map: Optional[Dict[str, float]] = None,
+    data: Dict,
+    abnormal_map: Optional[Dict] = None,
     note: str = "",
+    label_header: str = "Rank",
+    count_label: str = "总卡数",
+    unit: str = "卡",
 ) -> str:
     """生成单个指标的排序柱状图（纯文本）。
 
     柱状图的"相对倍数"列以**组内最小耗时**为基准（最快的卡=1.00x，其余为相对其倍数，
     与排序天然单调）。该列是直观的组内对比量，**不**混同于检测的劣化指数
     （后者以第一次 KMeans 基线簇均值为分母，见摘要/汇总表）。
+
+    cpu（ZP_Host）按节点聚合时，标签列为节点名（label_header="节点"）。
     """
     filtered = _filter_valid(data)
     if not filtered:
         return f"\n[{metric_name}] 无有效数据\n"
 
+    # 异常集合同时容纳 int rank 与节点名（两处比较都能命中）
     abnormal_set = set()
     if abnormal_map:
-        try:
-            abnormal_set = {int(rk) for rk in abnormal_map.keys()}
-        except ValueError:
-            abnormal_set = set()
+        for rk in abnormal_map.keys():
+            abnormal_set.add(rk)
+            try:
+                abnormal_set.add(int(rk))
+            except (TypeError, ValueError):
+                pass
 
     sorted_items = sorted(filtered.items(), key=lambda x: x[1], reverse=True)
     values = [v for _, v in sorted_items]
-    max_value = values[0] if values else 1
 
-    # 基准 = 组内最小耗时（最快卡），该卡显示 1.00x
+    # 基准 = 组内最小耗时（最快卡/节点），显示 1.00x
     baseline = min(values) if values else 0
 
     sorted_vals = sorted(values)
@@ -126,31 +170,37 @@ def _metric_section(
 
     top_max = sorted_items[0][1] if sorted_items else 1
 
+    # 标签列宽（按显示宽度，兼容节点名）
+    label_w = max([_disp_len(label_header), 6] + [_disp_len(str(k)) for k in filtered])
+
     # 列头（相对倍数 = 该卡耗时 / 组内最小耗时，最快卡为 1.00x）
-    lines.append(f"  {'#':>3}  {'Rank':>6}  {'耗时':>10}  {'相对倍数':>8}  柱状图")
-    lines.append(f"  {'---':>3}  {'------':>6}  {'----------':>10}  {'--------':>8}  -------")
+    lines.append("  " + f"{'#':>3}" + "  " + _disp_rjust(label_header, label_w)
+                 + "  " + _disp_rjust("耗时", 10) + "  " + _disp_rjust("相对倍数", 8) + "  柱状图")
+    lines.append("  " + f"{'---':>3}" + "  " + "-" * label_w
+                 + "  " + "-" * 10 + "  " + "-" * 8 + "  -------")
 
     idx = 0
     for item in display_items:
         if item is None:
             mid = total - TOP_N - BOTTOM_N
-            lines.append(f"  ...  ......  ..........  ........  (中间 {mid} 卡略)")
+            lines.append(f"  ...  {'-' * label_w}  {'-' * 10}  {'-' * 8}  (中间 {mid} {unit}略)")
             continue
 
-        rank, val = item
+        label, val = item
         idx += 1
         bar = _bar(val, top_max)
         ratio = val / baseline if baseline > 0 else 1
-        is_abnormal = rank in abnormal_set
+        is_abnormal = label in abnormal_set
         marker = " ***" if is_abnormal else ""
-        lines.append(f"  {idx:>3}  {rank:>6}  {_fmt_ns(val):>10}  {ratio:>7.2f}x  {bar}{marker}")
+        lines.append("  " + f"{idx:>3}" + "  " + _disp_rjust(str(label), label_w)
+                     + "  " + f"{_fmt_ns(val):>10}" + "  " + f"{ratio:>7.2f}x" + "  " + bar + marker)
 
     # 标记说明
     if abnormal_set:
         lines.append("")
-        lines.append("  *** = 异常卡")
+        lines.append(f"  *** = 异常{unit}")
     lines.append("")
-    lines.append(f"  相对倍数 = 耗时 / 组内最小耗时（最快卡=1.00x；与检测劣化指数口径不同）")
+    lines.append(f"  相对倍数 = 耗时 / 组内最小耗时（最快{unit}=1.00x；与检测劣化指数口径不同）")
 
     # 统计信息
     lines.append("")
@@ -158,7 +208,7 @@ def _metric_section(
     mean_val = sum(values) / len(values)
     max_val = sorted_vals[-1]
     min_val = sorted_vals[0]
-    lines.append(f"    总卡数:      {n}")
+    lines.append(f"    {count_label}:      {n}")
     lines.append(f"    最大值:      {_fmt_ns(max_val)}")
     lines.append(f"    最小值:      {_fmt_ns(min_val)}")
     lines.append(f"    均值:        {_fmt_ns(mean_val)}")
@@ -383,11 +433,22 @@ def generate_report(
             logger.warning(f"{metric_name} 所有数据均无效，跳过")
             continue
 
+        cpu_result = detection_result.get("cpu") if detection_result else None
+
+        # cpu（ZP_Host）按物理节点聚合展示（与检测口径一致）；无节点映射时退回逐卡
+        if cat == "cpu":
+            node_data, node_abnormal = _zp_host_by_node(step_data[metric_name], cpu_result)
+            if node_data:
+                sections.append(_metric_section(
+                    metric_name, node_data, node_abnormal,
+                    label_header="节点", count_label="节点数", unit="节点"))
+                continue
+
         abnormal_map = {}
         if detection_result and cat in detection_result:
             abnormal_map = detection_result[cat]
             if cat == "cpu" and abnormal_map:
-                # cpu 的 key 是节点显示名（hostName），转成 rank 集合供 ZP_Host 段高亮
+                # 退回逐卡时：cpu 的 key 是节点名（hostName），转成 rank 集合供高亮
                 node_ranks = config.get_node_ranks_map()
                 abnormal_map = {
                     str(r): deg
