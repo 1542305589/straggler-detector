@@ -19,6 +19,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import utils
+import joint_analysis
 
 logger = logging.getLogger("[REPORT]")
 
@@ -272,51 +273,16 @@ def _category_threshold(category: str) -> str:
     return f"{config.get_threshold_for_category(category):g}×"
 
 
-def _rank_to_device(rank: int) -> str:
-    """把 rank 转成物理设备标识：{hostName}:Device{npu_id}（取自 config.RankDeviceMap）。"""
-    info = config.get_rank_device_map().get(str(rank))
-    if info:
-        hn = info.get("host_name") or "?"
-        nid = info.get("npu_id") or "?"
-        return f"{hn}:Device{nid}"
-    return f"rank{rank}"
-
-
-def _domain_of_group(parallels: dict, ranks_key: str) -> str:
-    """在 parallels 中查找某 rank 组所属的并行域名（如 "tp"），找不到返回 ""。"""
-    if not parallels:
-        return ""
-    try:
-        target = sorted(int(r) for r in ranks_key.split(","))
-    except (TypeError, ValueError):
-        return ""
-    for domain_name, groups in parallels.items():
-        if not domain_name:
-            continue
-        for group in groups:
-            try:
-                g = sorted(int(x) for x in group)
-            except (TypeError, ValueError):
-                continue
-            if g == target:
-                return domain_name
-    return ""
-
-
-def _item_device(category: str, key: str, parallels: dict) -> str:
-    """把一条异常项的 key 转成物理设备文本。"""
-    if category in ("comm", "pp_comm"):
-        try:
-            ranks = [int(r) for r in key.split(",")]
-        except ValueError:
-            return key
-        domain = _domain_of_group(parallels, key)
-        inner = ", ".join(_rank_to_device(r) for r in ranks)
-        return f"{domain}[{inner}]" if domain else f"[{inner}]"
-    try:
-        return _rank_to_device(int(key))
-    except (TypeError, ValueError):
-        return key
+# 各检测类别的口径说明（置于汇总表下方脚注）
+CATEGORY_DESC = {
+    "KERNEL_AICORE": "所有 KERNEL_AICORE 算子的平均时间",
+    "kernel_aivec": "所有 KERNEL_AIVEC 算子的平均时间",
+    "memcpy_async": "所有 MEMCPY_ASYNC 算子的平均时间",
+    "comm": "各通信域 {domain}_{opType}_{count} 带宽聚类",
+    "pp_comm": "PP 链路 Send/Recv 时间窗重叠（长则慢），按阶段位置聚类",
+    "cpu": "ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值",
+    "npu_bubble": "ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常",
+}
 
 
 def _detection_summary(
@@ -324,43 +290,39 @@ def _detection_summary(
     valid_ranks: List[int],
     parallels: Dict[str, List[List[int]]] = None,
 ) -> str:
-    """生成检测结果摘要"""
-    type_names = {
-        "KERNEL_AICORE": "KERNEL_AICORE（所有类型为 KERNEL_AICORE 的算子的平均时间）",
-        "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
-        "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
-        "comm": "comm（各通信域 {domain}_{opType}_{count} 带宽聚类）",
-        "pp_comm": "pp_comm（PP 链路 Send/Recv 时间窗重叠，长则慢；按阶段位置聚类）",
-        "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
-        "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
-    }
-    # 覆盖动态类别
-    for key in detection_result:
-        if key not in type_names:
-            type_names[key] = key
+    """生成检测结果摘要（Unicode 框线表 + 口径脚注）。"""
+    headers = ["类别", "状态", "劣化阈值", "异常卡", "劣化指数", "物理设备"]
+    ordered = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async",
+               "comm", "pp_comm", "cpu", "npu_bubble"]
+    known = set(ordered)
+    dynamic = [c for c in detection_result.keys() if c not in known]
+    all_categories = ordered + sorted(dynamic)
 
-    lines = []
-    lines.append("  检测类型 / 检测口径")
-    lines.append("  " + "-" * 58)
-
-    for key, name in type_names.items():
-        items = detection_result.get(key) or {}
-        th = _category_threshold(key)
+    rows = []
+    for category in all_categories:
+        items = detection_result.get(category) or {}
+        name = joint_analysis.CATEGORY_DISPLAY.get(category, category)
+        th = _category_threshold(category)
         if items:
-            if key == "pp_comm":
-                details = "; ".join(f"{rk.replace(',', '->')}({ratio:.2f}×)" for rk, ratio in items.items())
-            else:
-                details = "; ".join(f"{rk}({ratio:.2f}×)" for rk, ratio in items.items())
-            if len(details) > 80:
-                details = details[:77] + "..."
-            devices = "; ".join(_item_device(key, rk, parallels) for rk, _ in items.items())
-            lines.append(f"  {name}")
-            lines.append(f"      状态: 异常    异常项数: {len(items)}    劣化阈值: {th}    详情: {details}")
-            lines.append(f"      物理设备: {devices}")
+            cards_str, deg_str, dev_str = joint_analysis._summary_cells(
+                category, items, parallels)
+            rows.append([name, "异常", th, cards_str, deg_str, dev_str or "-"])
         else:
-            lines.append(f"  {name}")
-            lines.append(f"      状态: 正常    异常项数: 0    劣化阈值: {th}    详情: -")
-            lines.append(f"      物理设备: -")
+            rows.append([name, "正常", th, "-", "-", "-"])
+
+    lines = [joint_analysis._render_box_table(headers, rows)]
+
+    desc_categories = [c for c in all_categories if c in CATEGORY_DESC]
+    if desc_categories:
+        name_width = max(
+            joint_analysis._disp_len(joint_analysis.CATEGORY_DISPLAY.get(c, c))
+            for c in desc_categories
+        )
+        lines.append("  口径说明:")
+        for category in desc_categories:
+            name = joint_analysis.CATEGORY_DISPLAY.get(category, category)
+            lines.append("    · " + joint_analysis._disp_ljust(name, name_width)
+                         + ": " + CATEGORY_DESC[category])
 
     lines.append("")
     lines.append(

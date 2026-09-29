@@ -424,6 +424,87 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
     return ""
 
 
+# 物理设备列显示宽度上限（超出以 … 截断）
+DEVICE_DISPLAY_LIMIT = 30
+
+
+def _rank_to_device(rank: int) -> str:
+    """把 rank 转成物理设备标识：{hostName}:Device{npu_id}（取自 config.RankDeviceMap）。"""
+    info = config.get_rank_device_map().get(str(rank))
+    if info:
+        hn = info.get("host_name") or "?"
+        nid = info.get("npu_id") or "?"
+        return f"{hn}:Device{nid}"
+    return f"rank{rank}"
+
+
+def _truncate_display(text: str, limit: int = DEVICE_DISPLAY_LIMIT) -> str:
+    """按显示宽度截断文本，超出部分以 … 结尾。"""
+    if _disp_len(text) <= limit:
+        return text
+    out = ""
+    for ch in text:
+        if _disp_len(out + ch) > limit - 1:
+            break
+        out += ch
+    return out + "…"
+
+
+def _summary_cells(category: str, items: dict, parallels: dict = None):
+    """
+    生成某类别在汇总表中的 (异常卡, 劣化指数, 物理设备) 三列文本。
+
+    - 单卡类别: 异常卡="rank 0, 3"；劣化指数="0:1.397，3:1.398"
+    - comm:    异常卡="tp[0, 1]"；劣化指数="tp[0, 1]:2.5"
+    - pp_comm: 异常卡="0->4"；劣化指数="0->4:2.5"
+    物理设备列列出涉及卡的 hostName:Device，过长时截断。
+    """
+    sorted_items = sorted(items.items(), key=lambda x: -x[1])
+
+    if category == "pp_comm":
+        cards_parts = []
+        deg_parts = []
+        for key, val in sorted_items:
+            ranks = _parse_ranks_from_key(key)
+            label = f"{ranks[0]}->{ranks[-1]}"
+            cards_parts.append(label)
+            deg_parts.append(f"{label}:{val:g}")
+        cards_str = "，".join(cards_parts)
+        deg_str = "，".join(deg_parts)
+    elif category == "comm":
+        cards_parts = []
+        deg_parts = []
+        for key, val in sorted_items:
+            ranks = _parse_ranks_from_key(key)
+            domain_name = _domain_of_group(parallels, key)
+            inner = ", ".join(str(r) for r in ranks)
+            label = f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
+            cards_parts.append(label)
+            deg_parts.append(f"{label}:{val:g}")
+        cards_str = "，".join(cards_parts)
+        deg_str = "，".join(deg_parts)
+    else:
+        # 单卡类别：按 rank 升序，逐卡列出
+        abnormal_ranks = []
+        for key in items:
+            abnormal_ranks.extend(_parse_ranks_from_key(key))
+        abnormal_ranks = sorted(set(abnormal_ranks))
+        deg_parts = []
+        for r in abnormal_ranks:
+            v = items.get(str(r))
+            deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
+        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
+        deg_str = "，".join(deg_parts)
+
+    dev_parts = [
+        ", ".join(_rank_to_device(r) for r in _parse_ranks_from_key(key))
+        for key, _ in sorted_items
+    ]
+    dev_str = _truncate_display("; ".join(dev_parts))
+
+    return cards_str, deg_str, dev_str
+
+
 def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None) -> str:
     """
     生成逐类别汇总的 Unicode 框线表格字符串（渲染到调用方 agent 的最终输出，不进任何 log 文件）。
@@ -459,43 +540,8 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         if not items:
             continue
 
-        sorted_items = sorted(items.items(), key=lambda x: -x[1])
-
         # 异常卡列 + 劣化指数列（劣化指数用 "key:值" 与异常卡一一对应）
-        if category == "pp_comm":
-            cards_parts = []
-            deg_parts = []
-            for key, val in sorted_items:
-                ranks = _parse_ranks_from_key(key)
-                label = f"{ranks[0]}->{ranks[-1]}"
-                cards_parts.append(label)
-                deg_parts.append(f"{label}:{val:g}")
-            cards_str = "，".join(cards_parts)
-            deg_str = "，".join(deg_parts)
-        elif category == "comm":
-            cards_parts = []
-            deg_parts = []
-            for key, val in sorted_items:
-                ranks = _parse_ranks_from_key(key)
-                domain_name = _domain_of_group(parallels, key)
-                inner = ", ".join(str(r) for r in ranks)
-                label = f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
-                cards_parts.append(label)
-                deg_parts.append(f"{label}:{val:g}")
-            cards_str = "，".join(cards_parts)
-            deg_str = "，".join(deg_parts)
-        else:
-            # 单卡类别：按 rank 升序，逐卡列出
-            abnormal_ranks = []
-            for key in items:
-                abnormal_ranks.extend(_parse_ranks_from_key(key))
-            abnormal_ranks = sorted(set(abnormal_ranks))
-            deg_parts = []
-            for r in abnormal_ranks:
-                v = items.get(str(r))
-                deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
-            cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
-            deg_str = "，".join(deg_parts)
+        cards_str, deg_str, _devices = _summary_cells(category, items, parallels)
 
         # 劣化阈值列
         if category == "npu_bubble":
