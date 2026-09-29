@@ -540,8 +540,9 @@ def detect_pp_slow_domain(
     分组（parallels 无 "pp"），则不检测（避免把 CP/Ring Attention 误当 PP）。
 
     检测：按 PP 组内 stage 位置分组，把各 PP 组相邻两 stage 组成的链路(s->r)的
-    重叠时长放到同一组内做通用检测（max 方向，重叠越长→该链路传输越慢）；异常按
-    "发送方->接收方"（组键 [s, r]）写入类别 "pp_comm"。
+    重叠时长放到同一组内做通用检测（max 方向，重叠越长→该链路传输越慢）；异常以
+    组键 [s, r] 写入类别 "pp_comm"（显示箭头随匹配模式：batch → "<->"，send/recv → "->"）。
+    同一 stage 位置要求所有链路都匹配上才比较（任一条匹配不上则放弃该 stage）。
     """
     groups = parallels.get(ppParallelDomainName)
     if not groups or len(groups) < 2:
@@ -550,31 +551,55 @@ def detect_pp_slow_domain(
     overlap = step_data.get(config.PP_OVERLAP_COLUMN, {})
     if not overlap:
         return
+    counts = step_data.get(config.PP_COUNT_COLUMN, {})
+    tol = getattr(config, 'PP_COUNT_TOLERANCE', 0.05)
 
     # 组内升序视为 stage 顺序（rank = pp_stage * tp_size + tp_rank）
     sorted_groups = [sorted(g) for g in groups]
     max_len = max(len(g) for g in sorted_groups)
 
     for t in range(max_len - 1):
-        links = []  # (sender, receiver, value)
+        links = []  # {s, r, value, count}
+        complete = True
         for g in sorted_groups:
             if len(g) <= t + 1:
-                continue
+                complete = False  # 该组此 stage 无链路，无法完整比较
+                break
             s, r = g[t], g[t + 1]
             v = overlap.get(r)
             if v is None or v == -99999 or v <= 0:
-                continue
-            links.append((s, r, v))
+                complete = False  # 链路匹配失败/无数据
+                break
+            links.append({"s": s, "r": r, "value": v, "count": counts.get(r) or 0})
+        if not complete:
+            continue  # A2：该 stage 只要有一条匹配不上，放弃整个 stage 的比较
         if len(links) < 2:
             continue
 
-        recv_ranks = [r for _, r, _ in links]
-        values = [v for _, _, v in links]
-        abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
-            recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
-        )
-        for rk, deg in zip(abnormal_recv, degs):
-            for s, r, _ in links:
-                if r == rk:
-                    local_result.add_group("pp_comm", [s, r], deg)
+        # 按 count 相对容差分组：只比较"承载同样数据量"的链路，规避大包/小包差异
+        count_groups = []
+        for L in links:
+            placed = False
+            for cg in count_groups:
+                ref = cg[0]["count"]
+                denom = max(ref, L["count"])
+                if denom and abs(ref - L["count"]) / denom <= tol:
+                    cg.append(L)
+                    placed = True
                     break
+            if not placed:
+                count_groups.append([L])
+
+        for cg in count_groups:
+            if len(cg) < 2:
+                continue
+            recv_ranks = [x["r"] for x in cg]
+            values = [x["value"] for x in cg]
+            abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
+                recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
+            )
+            for rk, deg in zip(abnormal_recv, degs):
+                for x in cg:
+                    if x["r"] == rk:
+                        local_result.add_group("pp_comm", [x["s"], x["r"]], deg)
+                        break
