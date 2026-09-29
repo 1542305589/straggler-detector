@@ -318,13 +318,12 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ### 10.6 最终输出逐类别汇总表（build_summary_table）
 
-`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **Unicode 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`。
+`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **Unicode 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
 
-- **类别**：`{code}（{SHORT_CATEGORY_LABELS}）`，如 `KERNEL_AICORE（慢计算卡）`。
-- **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
-- **劣化指数**：该类别的最大劣化值（3 位小数）。
-- **劣化阈值**：`npu_bubble` → `BUBBLE_THRESHOLD_NS`；通信类（comm / pp_comm）→ `COMM_THRESHOLD`；IO/CPU 类（cpu / memcpy_async）→ `IO_THRESHOLD`；计算类（KERNEL_AICORE / kernel_aivec）→ `COMPUTE_THRESHOLD`。
-- **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；comm 显示异常组各 opType 的代表带宽（`allgather(cnt=1024)=1.23e-3，…`）；pp_comm 显示 `s->r=重叠时长`；无数据兜底 `无详细数据`。
+- **类别**：`CATEGORY_DISPLAY`（大小写对齐 op_metric 指标列名），如 `KERNEL_AICORE`、`KERNEL_AIVEC`、`MEMCPY_ASYNC`、`comm`、`pp_comm`、`cpu`、`npu_bubble`（无括号描述）。
+- **异常卡**：由 result 各 key 解析——单卡 `rank 0, 3`；comm 组 `tp[0, 1]`；pp_comm 链路 `0->4`。
+- **劣化指数**：逐项 `项:值`（自然精度，`g` 格式）——单卡 `0:1.397，3:1.398`；comm `tp[0, 1]:2.5`；pp_comm `0->4:2.5`。
+- **劣化阈值**：`npu_bubble` → `<{BUBBLE_THRESHOLD_NS}ns`；通信类（comm / pp_comm）→ `COMM_THRESHOLD`；IO/CPU 类（cpu / memcpy_async）→ `IO_THRESHOLD`；计算类（KERNEL_AICORE / kernel_aivec）→ `COMPUTE_THRESHOLD`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
 ---
