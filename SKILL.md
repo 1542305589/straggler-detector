@@ -22,7 +22,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 | 类别 | 指标列 | 检测方式 |
 |---|---|---|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_Wait`（PP 接收结束至下一次集合通信结束） | 按 PP 组求和后取差值占比（Δ/会话 > 5%） |
+| `pp_comm` | `PP_Overlap`（PP 链路 Send/Recv 时间窗重叠） | 按阶段位置聚类（max 方向，重叠长则慢，报 `发送方->接收方`） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -122,6 +122,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+1×degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`，慢通信（comm）用固定带宽比率阈值 `1.3`；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
 
-**PP 慢通信（`pp_comm`）另一方案**：PP 传输（Send/Recv）不在带宽白名单内，单独检测（只看 **Recv**，发送端不计）。解析后回填每卡「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的**时间之和**（`PP_Wait`），同属一个 PP 组的卡求和 `d_g`；慢 PP 组接收方晚进集合通信 → `d_g` 偏小 → `Δ_g = max(d) − d_g` 最大；以 `Δ_g / 会话时长 > PP_WAIT_THRESHOLD`（默认 5%）判异常。
+**PP 慢通信（`pp_comm`）另一方案**：PP 传输（Send/Recv）不在带宽白名单内，单独检测。**只在 `parallel_group_info` 明确声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。解析后回填每卡「其入边链路（发方 Send ↔ 收方 Recv）时间窗重叠时长」（`PP_Overlap`）；检测时按 PP 组内 **stage 位置**把各 PP 组的相邻两 stage 链路（`0->4, 1->5, …`）放一组做 kmeans（**max 方向，重叠越长→传输越慢**），异常以 `发送方->接收方`（如 `0->4`）报告。阈值 `PP_OVERLAP_MULTIPLIER`（默认 1.3）。
 
-**PP 分组反推（关键）**：Ascend profiler 的 `parallel_group_info` 只登记集合通信域（tp/ep/mc2…），**不登记 `pp` 域**。因此 PP 分组由 `profilingdataparse.derive_pp_groups` 从各 rank 的 `COMMUNICATION_OP` 点对点 Send/Recv 算子反推：相邻 PP stage 的收发两端共享同一 PP 传输流号（`hcom_send__<flow>_*` / `hcom_receive__<flow>_*` 的 `<flow>`，一个流号 = 一条 PP 链路），再用**并查集连通分量**把共享 rank 的链路串成完整 PP 组——例如 tp2pp4 下 `[0,2],[2,4],[4,6]` 三条链路串联成 PP 组 `[0,2,4,6]`（而非只得到两卡一组）；tp4pp2 下各链路独立 → `[[0,4],[1,5],[2,6],[3,7]]`。该分组在 `get_cur_detection_info` 中注入 `parallels["pp"]`，供 `pp_comm` 检测使用。
+**PP 分组来源**：PP 组直接读 `parallel_group_info` 的 `pp` 项（`group_name=="pp"` 的 `global_ranks`），读不到则不检测。同一 PP 组内 rank 升序视为 stage 顺序；相邻两 stage 组成一条链路（`s->r`），发方 Send 与收方 Recv 的算子时间窗若有重叠即匹配，重叠时长作为该链路指标。

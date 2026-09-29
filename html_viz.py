@@ -205,7 +205,7 @@ def _type_names():
         "kernel_aivec": "KERNEL_AIVEC（所有类型为 KERNEL_AIVEC 的算子的平均时间）",
         "memcpy_async": "MEMCPY_ASYNC（所有类型为 MEMCPY_ASYNC 的算子的平均时间）",
         "comm": "comm（各通信域 {domain}_{opType}_{count} 带宽聚类）",
-        "pp_comm": "pp_comm（PP 接收结束至下一次集合通信结束，按 PP 组求和）",
+        "pp_comm": "pp_comm（PP 链路 Send/Recv 时间窗重叠，长则慢；按阶段位置聚类）",
         "cpu": "cpu（ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值）",
         "npu_bubble": "npu_bubble（ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常）",
     }
@@ -216,7 +216,7 @@ def _category_threshold(category: str) -> str:
     """返回某检测类别对应的劣化阈值显示文本（倍率 + 计算式说明）。
 
     - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，如 1.3×）
-    - PP 慢通信（pp_comm）→ 固定百分比阈值 PP_WAIT_THRESHOLD（如 5%）
+    - PP 慢通信（pp_comm）→ 固定倍率阈值 PP_OVERLAP_MULTIPLIER（如 1.3×）
     - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5×基数（如 0.3 → 2.5×（1 + 5 × 0.3））
     - 其余计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3×（1 + 1 × 0.3））
     - npu_bubble → 固定硬阈值 <5000ns
@@ -226,7 +226,7 @@ def _category_threshold(category: str) -> str:
     if category == "comm":
         return f"{config.SLOW_COMM_RATIO:g}×"
     if category == "pp_comm":
-        return f"{config.PP_WAIT_THRESHOLD * 100:g}%"
+        return f"{config.PP_OVERLAP_MULTIPLIER:g}×"
     d_str = f"{config.Degradation:g}"
     if category in config.COMM_MULTIPLIER_CATEGORIES:
         return f"{config.get_comm_multiplier():g}×（1 + 5 × {d_str}）"
@@ -373,7 +373,7 @@ def generate_html_report(
             th = _category_threshold(category)
             if items:
                 if category == "pp_comm":
-                    details = "，".join(f'<span class="tag bad">{_esc(rk)}({v * 100:.1f}%)</span>'
+                    details = "，".join(f'<span class="tag bad">{_esc(rk.replace(",", "->"))}({v:.2f}×)</span>'
                                         for rk, v in sorted(items.items(), key=lambda x: -x[1]))
                 else:
                     details = "，".join(f'<span class="tag bad">{_esc(rk)}({v:.2f}×)</span>'

@@ -124,14 +124,16 @@ def _print_comm_bars(prefix: str, category: str, abnormal_items: dict, step_data
     lines = []
     abnormal_keys = set(abnormal_items.keys())
 
-    # PP 慢通信：展示 PP 组及其等待占比 / 等待和
+    # PP 慢通信：展示 PP 链路及其重叠时长
     if category == "pp_comm":
-        pp_wait = step_data.get(config.PP_WAIT_COLUMN, {}) if step_data else {}
-        lines.append(f"{prefix} [INFO] PP 慢通信组（PP 接收结束至下一次集合通信结束占比）：")
+        overlap = step_data.get(config.PP_OVERLAP_COLUMN, {}) if step_data else {}
+        lines.append(f"{prefix} [INFO] PP 慢通信链路（Send/Recv 时间窗重叠时长，长则慢）：")
         for key, val in sorted(abnormal_items.items(), key=lambda kv: kv[1], reverse=True):
             ranks = _parse_ranks_from_key(key)
-            s = sum(pp_wait[r] for r in ranks if r in pp_wait and pp_wait[r] != -99999)
-            lines.append(f"{prefix}   [WARN] PP 组 [{key}] -> 等待占比 = {val * 100:.1f}%（等待和={_fmt_ns(s)}）")
+            receiver = ranks[-1] if ranks else None
+            ov = overlap.get(receiver) if receiver is not None else None
+            ov_str = _fmt_ns(ov) if ov is not None and ov != -99999 else "无数据"
+            lines.append(f"{prefix}   [WARN] PP 链路 [{ranks[0]}->{ranks[-1]}] -> 劣化指数 = {val:.2f}（重叠={ov_str}）")
         return lines
 
     # 尝试从 step_data 中找出各并行域时长指标（如 tp_Duration）
@@ -451,15 +453,17 @@ def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
 
 
 def _cell_pp_summary(items: dict, step_data: dict) -> str:
-    """PP 慢通信的数据要点：展示每个异常 PP 组的 PP 等待之和（PP_Wait）。"""
-    pp_wait = step_data.get(config.PP_WAIT_COLUMN, {}) if step_data else {}
-    if not pp_wait:
+    """PP 慢通信的数据要点：展示每个异常 PP 链路的重叠时长（PP_Overlap，收方取数）。"""
+    overlap = step_data.get(config.PP_OVERLAP_COLUMN, {}) if step_data else {}
+    if not overlap:
         return "无详细数据"
     parts = []
     for key in items:
         ranks = _parse_ranks_from_key(key)
-        s = sum(pp_wait[r] for r in ranks if r in pp_wait and pp_wait[r] != -99999)
-        parts.append(f"[{key}]等待和={_fmt_ns(s)}")
+        receiver = ranks[-1]  # add_group 键为排序后的 [sender, receiver]
+        v = overlap.get(receiver)
+        show = f"{ranks[0]}->{ranks[-1]}"
+        parts.append(f"{show}={_fmt_ns(v)}" if v is not None and v != -99999 else f"{show}=无数据")
     return "，".join(parts) if parts else "无详细数据"
 
 
@@ -577,19 +581,21 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
         # 异常卡列 + 劣化指数列（逐项一一对应，有几张异常卡就写几个劣化指数）
         if category in COMM_GROUP_CATEGORIES:
-            # 组键类别（comm / pp_comm）：按劣化值降序，逐组列出，劣化指数与之顺序对应
+            # 组键类别（comm / pp_comm）：按劣化值降序，逐项列出，劣化指数与之顺序对应
             sorted_items = sorted(items.items(), key=lambda x: -x[1])
             cards_parts = []
             deg_parts = []
             for key, val in sorted_items:
                 ranks = _parse_ranks_from_key(key)
+                if category == "pp_comm":
+                    # PP 链路：[sender, receiver] -> "sender->receiver"
+                    cards_parts.append(f"{ranks[0]}->{ranks[-1]}")
+                    deg_parts.append(f"{val:.3f}")
+                    continue
                 domain_name = _domain_of_group(parallels, key)
                 inner = ", ".join(str(r) for r in ranks)
                 cards_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
-                if category == "pp_comm":
-                    deg_parts.append(f"{val * 100:.1f}%")
-                else:
-                    deg_parts.append(f"{val:.3f}")
+                deg_parts.append(f"{val:.3f}")
             cards_str = "，".join(cards_parts)
             deg_str = "，".join(deg_parts)
         else:
@@ -608,7 +614,7 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         elif category == "comm":
             th_str = f"{config.SLOW_COMM_RATIO:g}×"
         elif category == "pp_comm":
-            th_str = f"{config.PP_WAIT_THRESHOLD * 100:g}%"
+            th_str = f"{config.PP_OVERLAP_MULTIPLIER:g}×"
         elif category in config.COMM_MULTIPLIER_CATEGORIES:
             th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
         else:

@@ -961,19 +961,11 @@ PURE_COMM_TYPES = {
     "scatter", "gather",
 }
 
-_SEQ_B_RE = re.compile(r'__\d+_(\d+)_\d+$')
-
-# PP 传输算子名形如 hcom_send__486_0_1 / hcom_receive__486_1_1:
-# "486" 为该 PP 传输的流号(连接对编号)。一条 PP 链路(相邻两 stage)共享一个流号,
-# 需把链路用并查集串起来才能还原完整 PP 组(见 derive_pp_groups)。
-_PP_FLOW_RE = re.compile(r'__(\d+)')
-
 
 @dataclass
 class BwOp:
     """一个通信算子的带宽统计所需字段。"""
     op_type: str
-    seq_b: int
     count: int
     start: int
     end: int
@@ -1001,14 +993,8 @@ def _pure_comm_kind(name: str) -> str:
     return s if s in PURE_COMM_TYPES else ""
 
 
-def _op_seq_b(name: str) -> int:
-    """从算子名（hcom_xxx__A_B_C）提取序列索引 B，用于跨卡对齐；无标记返回 -1。"""
-    m = _SEQ_B_RE.search(name)
-    return int(m.group(1)) if m else -1
-
-
 class _BwIndex:
-    """按 (opType, count) 分桶并维护按 start 排序，供 wall-clock / sequence 匹配。"""
+    """按 (opType, count) 分桶并维护按 start 排序，供 wall-clock 匹配。"""
 
     def __init__(self, ops: List[BwOp]):
         self.ops = ops
@@ -1052,14 +1038,6 @@ class _BwIndex:
             return nearest
         return -1
 
-    def seq(self, op: BwOp) -> int:
-        if op.seq_b < 0:
-            return -1
-        for idx in self.buckets.get((op.op_type, op.count), []):
-            if self.ops[idx].seq_b == op.seq_b:
-                return idx
-        return -1
-
 
 def _compute_bandwidth_from_ops(
     members: Dict[int, List[BwOp]], ranks: List[int]
@@ -1073,17 +1051,12 @@ def _compute_bandwidth_from_ops(
 
     idxs = {r: _BwIndex(members[r]) for r in ranks}
 
-    use_seq: Dict[int, bool] = {}
-    for r in ranks[1:]:
-        wc = sum(1 for op in base_ops if idxs[r].wallclock(op, WALLCLOCK_TOLERANCE_NS) >= 0)
-        use_seq[r] = wc == 0
-
     combos: Dict[Tuple[str, int], List[int]] = {}
     for base in base_ops:
         dur = [base.end - base.start]
         ok = True
         for r in ranks[1:]:
-            j = idxs[r].seq(base) if use_seq[r] else idxs[r].wallclock(base, WALLCLOCK_TOLERANCE_NS)
+            j = idxs[r].wallclock(base, WALLCLOCK_TOLERANCE_NS)
             if j < 0:
                 ok = False
                 break
@@ -1198,7 +1171,7 @@ def _load_domain_ops(
         if op["count"] < min_count:
             continue
         out.append(BwOp(
-            op_type=k, seq_b=_op_seq_b(nm),
+            op_type=k,
             count=op["count"], start=op["start"], end=op["end"],
         ))
     return out
@@ -1343,18 +1316,12 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
 
 
 # ======================================================================
-# PP 流水线等待回填（PP 慢通信检测的辅助数据）
+# PP 链路重叠回填（PP 慢通信检测的辅助数据）
 #
-# 每卡记录「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的时间之和，写回 CSV 动态列
-# "PP_Wait"（Send 不计，发送端不被等待）。PP 组内求和后，慢 PP 组的接收方晚进
-# 集合通信 → 组和偏小。
+# PP 组从 parallel_group_info 的 pp 项读取（读不到就整段跳过）；对每个 PP 组相邻两
+# stage 组成的链路(s->r)，用发方 Send 与收方 Recv 算子的时间窗重叠时长作为链路指标，
+# 写回收方 r 的 CSV 动态列 "PP_Overlap"。检测端按 "发送方->接收方" 报告。
 # ======================================================================
-
-def _is_pp_transfer(name: str) -> bool:
-    """判断算子名是否为 PP 点对点传输（Send/Recv）。"""
-    s = _leading_letters(_strip_vendor_prefix(name)).lower()
-    return s.startswith("send") or s.startswith("recv") or s.startswith("receive")
-
 
 def _is_pp_recv(name: str) -> bool:
     """判断算子名是否为 PP 点对点接收（Recv/Receive）。"""
@@ -1391,118 +1358,84 @@ def _load_all_comm_ops(
     return out
 
 
-def _compute_pp_wait(conn: sqlite3.Connection, step_time: StepTime) -> Optional[int]:
-    """
-    计算某 rank 的 PP 等待 = 所有「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的
-    时间之和（不再用集合通信自身的 end-start）。
+def _is_pp_send(name: str) -> bool:
+    """判断算子名是否为 PP 点对点发送（Send）。"""
+    s = _leading_letters(_strip_vendor_prefix(name)).lower()
+    return s.startswith("send")
 
-    只看 Recv（Send 不计，发送端不被等待）；严格下一次：Recv 的下一条通信算子必须
-    本身是集合通信，否则该次不计。
-    （COMMUNICATION_OP 只含集合通信与点对点传输，故"非 Send/Recv"即视为集合通信，
-      包括 allReduce / reduceScatter 等未进带宽白名单的集合通信。）
-    """
-    ops = _load_all_comm_ops(conn, step_time)
-    if len(ops) < 2:
-        return None
 
+def _collect_pp_groups(rank_to_info: Dict[int, Dict[str, Any]]) -> List[List[int]]:
+    """
+    从各 rank 的 parallel_group_info 里收集 group_name == "pp" 的分组。
+
+    读不到 pp 项时返回 []（调用方据此跳过 PP 检测——只有 profiler 明确声明了 PP 域，
+    才认为这些点对点传输属于 PP；否则可能属于 CP/Ring Attention，不检测）。
+    """
+    seen = set()
+    groups = []
+    for ri in rank_to_info.values():
+        for val in ri["pgi"].values():
+            if not isinstance(val, dict) or val.get("group_name") != "pp":
+                continue
+            try:
+                grp = sorted(int(x) for x in val.get("global_ranks", []))
+            except (TypeError, ValueError):
+                continue
+            if len(grp) < 2:
+                continue
+            key = tuple(grp)
+            if key not in seen:
+                seen.add(key)
+                groups.append(grp)
+    groups.sort(key=lambda g: (min(g), g))
+    return groups
+
+
+def _load_pp_ops(conn: sqlite3.Connection) -> Dict[str, List[Dict[str, Any]]]:
+    """加载某 rank 的全部通信算子，按 Send / Recv 归类（带名字与起止时间）。"""
+    ops = _load_all_comm_ops(conn, _merged_step(conn))
+    return {
+        "send": [o for o in ops if _is_pp_send(o["name"])],
+        "recv": [o for o in ops if _is_pp_recv(o["name"])],
+    }
+
+
+def _link_overlap(
+    sends: List[Dict[str, Any]], recvs: List[Dict[str, Any]]
+) -> Optional[int]:
+    """
+    一条 PP 链路的重叠时长 = 该链路上每个「收方 Recv」与「发方 Send」时间窗重叠的
+    最大值之和。重叠 = min(send.end, recv.end) − max(send.start, recv.start)（>0 才计）。
+    无任何有效重叠时返回 None。
+    """
     total = 0
     found = False
-    for i in range(len(ops) - 1):
-        if not _is_pp_recv(ops[i]["name"]):
-            continue
-        nxt = ops[i + 1]
-        if _is_pp_transfer(nxt["name"]):
-            # 中间夹了其他通信（下一条仍是点对点传输）→ 不满足"严格下一次集合通信"
-            continue
-        # PP recv 结束 → 下一次集合通信结束
-        d = nxt["end"] - ops[i]["end"]
-        if d > 0:
-            total += d
+    for rc in recvs:
+        best = 0
+        for sd in sends:
+            ov = min(sd["end"], rc["end"]) - max(sd["start"], rc["start"])
+            if ov > best:
+                best = ov
+        if best > 0:
+            total += best
             found = True
     return total if found else None
 
 
-def backfill_pp_wait_duration(input_path: str, db_files: Optional[List[str]] = None):
-    """回填每卡的 PP 等待列（PP_Wait），供 PP 慢通信检测使用。"""
+def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
+    """
+    回填每卡的 PP 链路重叠时长列（PP_Overlap），供 PP 慢通信检测使用。
+
+    PP 组取自 parallel_group_info 的 pp 项（读不到则整段跳过）；对每个 PP 组相邻两
+    stage 组成的链路 (s->r)，匹配发方 s 的 Send 与收方 r 的 Recv 的时间窗重叠，结果
+    写回收方 r 的 CSV。检测端按 "发送方->接收方" 报告。
+    """
     if db_files is None:
         db_files = discover_db_files(input_path)
     if not db_files:
         return
 
-    write_root = config.get_output_path() or input_path
-    for db_path in db_files:
-        rank_str = extract_global_rank_from_filename(db_path)
-        if rank_str is None:
-            continue
-        try:
-            conn = sqlite3.connect(db_path)
-        except Exception:
-            continue
-        try:
-            step = _merged_step(conn)
-            val = _compute_pp_wait(conn, step)
-        except Exception:
-            val = None
-        conn.close()
-        if val is None:
-            continue
-        path = os.path.join(write_root, "op_metric", f"global_rank_{rank_str}.csv")
-        _backfill_bandwidth_csv(path, {config.PP_WAIT_COLUMN: repr(float(val))})
-
-    logger.info("[SLOW-DOMAIN] PP 等待回填完成")
-
-
-# --------------------------------------------------------------------
-# PP 分组反推：parallel_group_info 只登记集合通信域(tp/ep/mc2…), 不含 PP。
-# PP 由点对点 Send/Recv 传输实现, 相邻 PP stage 收发两端共享同一 PP 传输
-# 流号(hcom_send__<flow>_* / hcom_receive__<flow>_*)。一个流号连接相邻两个
-# stage(一条 PP 链路); 中间 stage 同时参与"上一条收 + 下一条发"两条链路, 故
-# 需把链路串起来(并查集连通分量)才能还原完整 PP 组(如 tp2pp4 下 [0,2],[2,4],
-# [4,6] 三条链路串联成 PP 组 [0,2,4,6])。
-# --------------------------------------------------------------------
-
-def _pp_flow_id(name: str) -> Optional[str]:
-    """从 PP 传输算子名(hcom_send__486_0_1 / hcom_receive__486_1_1)提取 PP 传输流号(486)。"""
-    m = _PP_FLOW_RE.search(name)
-    return m.group(1) if m else None
-
-
-def _rank_pp_flows(conn: sqlite3.Connection) -> set:
-    """返回某 rank 用到的全部 PP 传输流号集合(取自 COMMUNICATION_OP 的 send/recv 算子)。"""
-    if not table_exists(conn, "COMMUNICATION_OP"):
-        return set()
-    rows = conn.execute("SELECT DISTINCT opName FROM COMMUNICATION_OP").fetchall()
-    ids = [r[0] for r in rows]
-    name_map = _string_map_by_ids(conn, ids)
-    flows = set()
-    for name in name_map.values():
-        if _is_pp_transfer(name):
-            fl = _pp_flow_id(name)
-            if fl is not None:
-                flows.add(fl)
-    return flows
-
-
-def derive_pp_groups(input_path: str, db_files: Optional[List[str]] = None) -> List[List[int]]:
-    """
-    从各 rank 的 COMMUNICATION_OP 点对点 Send/Recv 算子反推 PP 分组。
-
-    原理：相邻 PP stage 的收发两端在各自 db 里都有形如 hcom_send__<flow>_* /
-    hcom_receive__<flow>_* 的 PP 传输算子，且共享同一流号 <flow>（一条 PP 链路 =
-    一个流号，连接相邻两个 stage）。一个流号只连接一条链路，因此需要把共享 rank
-    的链路用**并查集连通分量**串起来，才能得到完整 PP 组：
-      - tp4pp2（PP=2）：4 条链路各自独立 → [[0,4],[1,5],[2,6],[3,7]]
-      - tp2pp4（PP=4）：[0,2],[2,4],[4,6] 串联 → [0,2,4,6]；[1,3],[3,5],[5,7] → [1,3,5,7]
-
-    返回: 完整 PP 组列表(每组成员 >= 2, 组内升序, 组间按最小 rank 排序)。
-    无可用 PP 传输时返回 []。
-    """
-    if db_files is None:
-        db_files = discover_db_files(input_path)
-    if not db_files:
-        return []
-
-    flow_to_ranks: Dict[str, set] = {}
+    rank_to_info: Dict[int, Dict[str, Any]] = {}
     for db_path in db_files:
         rank_str = extract_global_rank_from_filename(db_path)
         if rank_str is None:
@@ -1516,44 +1449,48 @@ def derive_pp_groups(input_path: str, db_files: Optional[List[str]] = None) -> L
         except Exception:
             continue
         try:
-            flows = _rank_pp_flows(conn)
+            pgi = get_parallel_group_info(conn, None)
         except Exception:
-            conn.close()
-            continue
+            pgi = {}
         conn.close()
-        for fl in flows:
-            flow_to_ranks.setdefault(fl, set()).add(rank)
+        rank_to_info[rank] = {"path": db_path, "pgi": pgi or {}}
 
-    # 并查集：同一流号的收发两端合并；共享 rank 的链路自然串成完整 PP 组。
-    parent: Dict[int, int] = {}
+    if not rank_to_info:
+        return
 
-    def find(x: int) -> int:
-        parent.setdefault(x, x)
-        root = x
-        while parent[root] != root:
-            root = parent[root]
-        while parent[x] != root:   # 路径压缩
-            nxt = parent[x]
-            parent[x] = root
-            x = nxt
-        return root
+    pp_groups = _collect_pp_groups(rank_to_info)
+    if not pp_groups:
+        logger.info("[SLOW-DOMAIN] 无 PP 分组 metadata，跳过 PP 链路回填")
+        return
 
-    def union(a: int, b: int):
-        ra, rb = find(a), find(b)
-        if ra != rb:
-            parent[rb] = ra
+    write_root = config.get_output_path() or input_path
+    ops_cache: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
 
-    for rs in flow_to_ranks.values():
-        rs = list(rs)
-        for r in rs:
-            find(r)  # 保证每个 rank 都入并查集
-        for i in range(1, len(rs)):
-            union(rs[0], rs[i])
+    def rank_ops(rank: int) -> Dict[str, List[Dict[str, Any]]]:
+        if rank not in ops_cache:
+            info = rank_to_info.get(rank)
+            if info is None:
+                ops_cache[rank] = {"send": [], "recv": []}
+            else:
+                try:
+                    conn = sqlite3.connect(info["path"])
+                    ops_cache[rank] = _load_pp_ops(conn)
+                    conn.close()
+                except Exception:
+                    ops_cache[rank] = {"send": [], "recv": []}
+        return ops_cache[rank]
 
-    comps: Dict[int, List[int]] = {}
-    for r in list(parent.keys()):
-        comps.setdefault(find(r), []).append(r)
+    for g in pp_groups:
+        for t in range(len(g) - 1):
+            s, r = g[t], g[t + 1]
+            sends = rank_ops(s)["send"]
+            recvs = rank_ops(r)["recv"]
+            if not sends or not recvs:
+                continue
+            val = _link_overlap(sends, recvs)
+            if val is None:
+                continue
+            path = os.path.join(write_root, "op_metric", f"global_rank_{r}.csv")
+            _backfill_bandwidth_csv(path, {config.PP_OVERLAP_COLUMN: repr(float(val))})
 
-    groups = [sorted(v) for v in comps.values() if len(v) >= 2]
-    groups.sort(key=lambda g: (min(g), g))
-    return groups
+    logger.info("[SLOW-DOMAIN] PP 链路重叠回填完成")
