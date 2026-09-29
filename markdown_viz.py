@@ -6,7 +6,7 @@
 1. 水平柱状图（使用 Unicode 字符）
 2. 排序表格 + 统计摘要
 3. 异常高亮
-4. 并行域通信耗时排序
+4. 并行域集合通信带宽排序
 """
 
 import os
@@ -18,6 +18,7 @@ from datetime import datetime
 # 添加父目录到路径以便导入 config
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import utils
 
 logger = logging.getLogger("[REPORT]")
 
@@ -171,68 +172,90 @@ def _metric_section(
     return "\n".join(lines)
 
 
-def _comm_section(
+def _comm_bandwidth_section(
     domain_name: str,
     domain_groups: List[List[int]],
-    comm_data: Dict[int, float],
+    step_data: Dict[str, Dict[int, float]],
     abnormal_groups: Optional[List[List[int]]] = None,
 ) -> str:
-    """生成并行域通信耗时（纯文本）"""
-    group_stats = []
-    for group in domain_groups:
-        valid_vals = [comm_data.get(r, -99999) for r in group
-                      if comm_data.get(r, -99999) != -99999 and comm_data.get(r, -99999) > 0]
-        if not valid_vals:
-            continue
-        min_val = min(valid_vals)
-        max_val = max(valid_vals)
-        mean_val = sum(valid_vals) / len(valid_vals)
-        group_label = ",".join(str(r) for r in group)
-        group_stats.append((group_label, min_val, max_val, mean_val, valid_vals, group))
+    """生成并行域集合通信带宽（越小越慢；数据来自带宽列 <domain>_<opType>_<count>）。"""
+    cols = utils.domain_bandwidth_cols(step_data, domain_name)
+    if not cols:
+        return f"\n[{domain_name}] 无带宽数据\n"
 
-    if not group_stats:
-        return f"\n[{domain_name}] 无有效通信数据\n"
-
-    group_stats.sort(key=lambda x: x[1], reverse=True)
-
+    op_types = sorted({op for op, _c, _col in cols})
     abnormal_set = set()
     if abnormal_groups:
         for ag in abnormal_groups:
-            abnormal_set.add(",".join(str(r) for r in ag))
+            abnormal_set.add(",".join(str(r) for r in sorted(ag)))
 
     lines = []
     lines.append("")
-    lines.append(_sep_line(f"{domain_name} 并行域 - 实际集合通信耗时", 70))
-    lines.append("  实际集合通信耗时 = 组内通信耗时最短的卡的值")
+    lines.append(_sep_line(f"{domain_name} 并行域 - 集合通信带宽（越小越慢）", 70))
+    lines.append("  带宽 = count / 组内最快 10% 最短耗时均值；每组每个 opType 取 count 最大的条目为代表")
     lines.append("")
 
-    min_vals = [s[1] for s in group_stats]
-    max_min = max(min_vals) if min_vals else 1
-
-    lines.append(f"  {'#':>3}  {'Group':>20}  {'实际耗时(min)':>14}  {'组内均值':>10}  {'组内最大':>10}  柱状图")
-    lines.append(f"  {'---':>3}  {'--------------------':>20}  {'--------------':>14}  {'----------':>10}  {'----------':>10}  -------")
-
-    for i, (label, min_v, max_v, mean_v, vals, group) in enumerate(group_stats, 1):
-        bar = _bar(min_v, max_min)
-        is_abnormal = label in abnormal_set
-        marker = " ***" if is_abnormal else ""
-        lines.append(
-            f"  {i:>3}  {label:>20}  {_fmt_ns(min_v):>14}  "
-            f"{_fmt_ns(mean_v):>10}  {_fmt_ns(max_v):>10}  {bar}{marker}"
-        )
-
-    lines.append("")
-    overall_mean = sum(min_vals) / len(min_vals)
-    overall_min = min(min_vals)
-    overall_max = max(min_vals)
-    lines.append(f"  总组数: {len(group_stats)}  |  总均值: {_fmt_ns(overall_mean)}  |  范围: {_fmt_ns(overall_min)} ~ {_fmt_ns(overall_max)}")
-    if overall_min > 0:
-        lines.append(f"  最大/最小比: {overall_max / overall_min:.2f}x")
+    for op in op_types:
+        rows = []
+        for g in domain_groups:
+            reps = utils.group_representative_bandwidth(step_data, domain_name, g)
+            bw = next((b for o, _c, b in reps if o == op), None)
+            if bw is None:
+                continue
+            rows.append((",".join(str(r) for r in sorted(g)), bw))
+        if not rows:
+            continue
+        rows.sort(key=lambda x: x[1])  # 升序：带宽最小（最慢）在前
+        max_bw = max(b for _, b in rows)
+        lines.append(f"  [opType={op}]")
+        lines.append(f"  {'#':>3}  {'Group':>20}  {'带宽':>14}  柱状图")
+        lines.append(f"  {'---':>3}  {'--------------------':>20}  {'--------------':>14}  -------")
+        for i, (label, bw) in enumerate(rows, 1):
+            bar = _bar(bw, max_bw)
+            marker = " ***" if label in abnormal_set else ""
+            lines.append(f"  {i:>3}  {label:>20}  {bw:>14.4g}  {bar}{marker}")
+        lines.append("")
 
     if abnormal_set:
-        lines.append("  *** = 异常 Group")
+        lines.append("  *** = 异常 Group（带宽显著偏小）")
     lines.append("")
+    return "\n".join(lines)
 
+
+def _comm_bandwidth_overview(
+    step_data: Dict[str, Dict[int, float]],
+    parallels: Dict[str, List[List[int]]],
+) -> str:
+    """各域集合通信带宽概览（每域每 opType 的组间带宽范围）。"""
+    lines = []
+    lines.append("")
+    lines.append(_sep_line("各域集合通信带宽概览", 70))
+    lines.append("  仅展示各域带宽分布，不参与检测")
+    lines.append("")
+    any_row = False
+    for domain_name, domain_groups in (parallels or {}).items():
+        if not domain_name or not domain_groups:
+            continue
+        cols = utils.domain_bandwidth_cols(step_data, domain_name)
+        if not cols:
+            continue
+        for op in sorted({op for op, _c, _col in cols}):
+            bws = []
+            for g in domain_groups:
+                reps = utils.group_representative_bandwidth(step_data, domain_name, g)
+                bw = next((b for o, _c, b in reps if o == op), None)
+                if bw is not None:
+                    bws.append(bw)
+            if not bws:
+                continue
+            any_row = True
+            lo, hi = min(bws), max(bws)
+            ratio = (hi / lo) if lo > 0 else float('inf')
+            lines.append(f"  {domain_name}/{op}: 组间带宽 {lo:.4g} ~ {hi:.4g}  "
+                         f"（最大/最小 {ratio:.2f}x，{len(bws)} 组）")
+    if not any_row:
+        return ""
+    lines.append("")
     return "\n".join(lines)
 
 
@@ -347,119 +370,6 @@ def _detection_summary(
     return "\n".join(lines)
 
 
-def _comm_total_section(
-    step_data: Dict[str, Dict[int, float]],
-    parallels: Dict[str, List[List[int]]],
-) -> str:
-    """
-    生成总通信耗时排序（对所有并行域的通信耗时求和）
-
-    遍历所有并行域，将每张卡在各域中的通信耗时相加得到总通信时间。
-    如果没有域级别的 Duration 数据，则使用 ZP_Duration 作为备选。
-    """
-    # 找出所有并行域对应的 _Duration key（包含所有域）
-    parallel_names = [n for n in (list(parallels.keys()) if parallels else [])
-                      if n]
-    domain_keys = [f"{name}_Duration" for name in parallel_names]
-
-    # 检查是否有有效的域 Duration 数据
-    has_domain_data = False
-    for dk in domain_keys:
-        if dk in step_data:
-            vals = [v for v in step_data[dk].values() if v != -99999 and v > 0]
-            if vals:
-                has_domain_data = True
-                break
-
-    # 检查是否还有 _Duration（空域名）也应该加入
-    if "" in (list(parallels.keys()) if parallels else []):
-        if "_Duration" in step_data:
-            domain_keys.append("_Duration")
-
-    if has_domain_data:
-        # 方法1: 对各域 Duration 求和
-        comm_totals: Dict[int, float] = {}
-        for dk in domain_keys:
-            if dk not in step_data:
-                continue
-            for rank, val in step_data[dk].items():
-                if val != -99999 and val > 0:
-                    comm_totals[rank] = comm_totals.get(rank, 0) + val
-
-        subtitle = "各域通信耗时求和: " + ", ".join(
-            dk.replace("_Duration", "") for dk in domain_keys
-            if dk in step_data and any(v > 0 and v != -99999 for v in step_data[dk].values())
-        )
-    else:
-        # 方法2: 备选，使用 ZP_Duration
-        zp_dur = step_data.get("ZP_Duration", {})
-        comm_totals = {k: v for k, v in zp_dur.items() if v != -99999 and v > 0}
-        subtitle = "无域通信数据，使用 ZP_Duration（总通信耗时）"
-
-    if not comm_totals:
-        return ""
-
-    # 与 _metric_section 相同的格式输出
-    sorted_items = sorted(comm_totals.items(), key=lambda x: x[1], reverse=True)
-    values = [v for _, v in sorted_items]
-    max_value = values[0] if values else 1
-    mean_val = sum(values) / len(values)
-    n = len(values)
-
-    lines = []
-    lines.append("")
-    lines.append(_sep_line("总通信耗时排序", 70))
-    lines.append(f"  {subtitle}")
-    lines.append("  仅展示总通信耗时分布，不参与检测，通信异常检测以通信组({xp}_Duration)为单位")
-    lines.append(f"  展示 Top {TOP_N} 最慢 + Bottom {BOTTOM_N} 最快")
-    lines.append("")
-
-    total = len(sorted_items)
-    display_items = []
-    display_items.extend(sorted_items[:TOP_N])
-    if total > TOP_N + BOTTOM_N:
-        display_items.append(None)
-    if BOTTOM_N > 0:
-        display_items.extend(sorted_items[-BOTTOM_N:] if total > TOP_N else [])
-
-    top_max = sorted_items[0][1] if sorted_items else 1
-
-    lines.append(f"  {'#':>3}  {'Rank':>6}  {'耗时':>10}  {'占比':>8}  柱状图")
-    lines.append(f"  {'---':>3}  {'------':>6}  {'----------':>10}  {'--------':>8}  -------")
-
-    idx = 0
-    for item in display_items:
-        if item is None:
-            mid = total - TOP_N - BOTTOM_N
-            lines.append(f"  ...  ......  ..........  ........  (中间 {mid} 卡略)")
-            continue
-        rank, val = item
-        idx += 1
-        bar = _bar(val, top_max)
-        ratio = val / mean_val if mean_val > 0 else 1
-        lines.append(f"  {idx:>3}  {rank:>6}  {_fmt_ns(val):>10}  {ratio:>7.2f}x  {bar}")
-
-    # 统计信息
-    lines.append("")
-    lines.append(f"  {'-- 统计信息':-<40}")
-    sorted_vals = sorted(values)
-    median_val = sorted_vals[n // 2] if n % 2 == 1 else \
-        (sorted_vals[n // 2 - 1] + sorted_vals[n // 2]) / 2
-    max_val = sorted_vals[-1]
-    min_val = sorted_vals[0]
-    lines.append(f"    总卡数:      {n}")
-    lines.append(f"    总通信最大:  {_fmt_ns(max_val)}")
-    lines.append(f"    总通信最小:  {_fmt_ns(min_val)}")
-    lines.append(f"    均值:        {_fmt_ns(mean_val)}")
-    lines.append(f"    中位数:      {_fmt_ns(median_val)}")
-    if n >= 2:
-        max_min_ratio = max_val / min_val if min_val > 0 else float('inf')
-        lines.append(f"    最大/最小比:  {max_min_ratio:.2f}x")
-    lines.append("")
-
-    return "\n".join(lines)
-
-
 def generate_report(
     step_data: Dict[str, Dict[int, float]],
     parallels: Dict[str, List[List[int]]],
@@ -517,67 +427,27 @@ def generate_report(
 
         sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_map))
 
-    # Part 2: 每个并行域的通信耗时
+    # Part 2: 每个并行域的集合通信带宽（跳过 pp / embd：不在带宽白名单）
     if parallels:
         comm_abnormal = detection_result.get("comm", {}) if detection_result else {}
 
-        for domain_name, domain_groups in parallels.items():
-            if not domain_name or not domain_groups:
-                continue
-
-            duration_key = f"{domain_name}_Duration"
-            if duration_key in step_data and step_data[duration_key]:
-                comm_data = step_data[duration_key]
-            else:
-                raw_data = step_data.get(domain_name, {})
-                if not raw_data:
-                    continue
-                comm_data = raw_data
-
-            valid_comm = _filter_valid(comm_data)
-            if not valid_comm:
-                continue
-
-            abnormal_groups = []
-            for group_key in comm_abnormal:
-                try:
-                    ranks = [int(r) for r in group_key.split(",")]
-                    abnormal_groups.append(ranks)
-                except (ValueError, AttributeError):
-                    pass
-
-            sections.append(_comm_section(domain_name, domain_groups, comm_data, abnormal_groups))
-
-    # Part 3: 各并行域 per-rank 通信耗时排序（不加和）
-    if parallels:
-        comm_abnormal = detection_result.get("comm", {}) if detection_result else {}
-        abnormal_comm_ranks = set()
+        abnormal_groups = []
         for group_key in comm_abnormal:
             try:
-                for r in group_key.split(","):
-                    abnormal_comm_ranks.add(int(r))
+                ranks = [int(r) for r in group_key.split(",")]
+                abnormal_groups.append(ranks)
             except (ValueError, AttributeError):
                 pass
 
-        for domain_name in parallels:
-            if not domain_name:
+        for domain_name, domain_groups in parallels.items():
+            if not domain_name or not domain_groups or domain_name in ("pp", "embd"):
                 continue
-            duration_key = f"{domain_name}_Duration"
-            if duration_key not in step_data:
-                continue
-            filtered = _filter_valid(step_data[duration_key])
-            if not filtered:
-                continue
-            sections.append(_metric_section(
-                duration_key,
-                step_data[duration_key],
-                list(abnormal_comm_ranks) if abnormal_comm_ranks else None,
-                note=f"仅展示{domain_name}通信耗时分布，不参与检测，通信异常检测以通信组({{xp}}_Duration)为单位",
-            ))
+            sections.append(_comm_bandwidth_section(
+                domain_name, domain_groups, step_data, abnormal_groups))
 
-    # 总通信耗时排序（置于最后，各域通信耗时的汇总展示，仅展示、不参与检测）
+    # 各域集合通信带宽概览（置于最后）
     if parallels:
-        sections.append(_comm_total_section(step_data, parallels))
+        sections.append(_comm_bandwidth_overview(step_data, parallels))
 
     sections.append(_sep_line("", 70))
     sections.append("")

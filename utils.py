@@ -13,6 +13,66 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 
 
+def parse_bandwidth_col(prefix: str, col: str):
+    """
+    解析带宽列名 "<opType>_<count>"（给定域前缀，如 "tp_"），返回 (opType, count)。
+    非带宽列（含 Duration/Count 诊断列或非数字尾）返回 (None, 0)。
+    """
+    if not col.startswith(prefix):
+        return None, 0
+    rest = col[len(prefix):]
+    if rest.startswith("_"):
+        rest = rest[1:]
+    idx = rest.rfind("_")
+    if idx <= 0 or idx == len(rest) - 1:
+        return None, 0
+    op_type = rest[:idx]
+    try:
+        count = int(rest[idx + 1:])
+    except ValueError:
+        return None, 0
+    if op_type in ("Duration", "Count"):
+        return None, 0
+    return op_type, count
+
+
+def domain_bandwidth_cols(step_data: Dict[str, Dict[int, float]], domain: str) -> List[Any]:
+    """返回该域的所有带宽列 [(opType, count, col), ...]，按 (opType, count) 排序。"""
+    prefix = domain + "_"
+    out = []
+    for col in step_data:
+        op_type, count = parse_bandwidth_col(prefix, col)
+        if op_type is None:
+            continue
+        out.append((op_type, count, col))
+    out.sort(key=lambda x: (x[0], x[1]))
+    return out
+
+
+def group_representative_bandwidth(
+    step_data: Dict[str, Dict[int, float]], domain: str, group: List[int]
+) -> List[Any]:
+    """
+    对某组，每个 opType 取 count 最大的有效带宽作为代表（与检测逻辑一致）。
+    返回 [(opType, count, bw), ...]（按 opType 排序）。
+    """
+    by_op: Dict[str, Any] = {}
+    for op_type, count, col in domain_bandwidth_cols(step_data, domain):
+        by_rank = step_data.get(col) or {}
+        v = None
+        for r in group:
+            rv = by_rank.get(r)
+            if rv is not None and rv != -99999 and rv > 0:
+                v = rv
+                break
+        if v is None:
+            continue
+        cur = by_op.get(op_type)
+        if cur is None or count > cur[0]:
+            by_op[op_type] = (count, v)
+    return [(op_type, cnt, bw) for op_type, (cnt, bw) in sorted(by_op.items())]
+
+
 def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None):
     """
     将检测结果写入 JSON 文件并打印到控制台

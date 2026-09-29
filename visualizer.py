@@ -1,18 +1,18 @@
 """
-可视化模块 - 为慢节点检测结果生成 Markdown 格式报告
+可视化模块 - 控制台实时反馈 + 生成文本报告
 
 功能:
-1. KERNEL_AICORE / ZP_Host 排序柱状图（Markdown 版本）
-2. 每个并行域的集合通信耗时图（Markdown 版本）
-3. 检测结果摘要
+1. 单卡指标排序（控制台）
+2. 各并行域集合通信带宽排序（控制台）
+3. 调用 markdown_viz 生成 analysis_result/detection_report.log
 """
 
 import os
 import logging
 from typing import Dict, List, Optional
-from collections import defaultdict
 
 import markdown_viz
+import utils
 
 logger = logging.getLogger("[VISUALIZER]")
 
@@ -34,20 +34,8 @@ def _format_ns(value: float) -> str:
         return f"{value:.0f}ns"
 
 
-def plot_metric_bar(
-    data: Dict[int, float],
-    metric_name: str,
-    output_path: str,
-    threshold_value: float = None,
-    threshold_label: str = None,
-    abnormal_ranks: Optional[List[int]] = None,
-):
-    """
-    生成单个指标的 Markdown 柱状图（替代原有 matplotlib 版本）
-
-    注意: output_path 参数保留是为了兼容，实际输出为 Markdown 报告的一部分
-    """
-    # 直接输出到控制台作为实时反馈
+def plot_metric_bar(data: Dict[int, float], metric_name: str):
+    """控制台实时反馈：单个指标按值降序打印各卡。"""
     filtered = _filter_valid(data)
     if not filtered:
         logger.warning(f"{metric_name} 无有效数据")
@@ -61,42 +49,42 @@ def plot_metric_bar(
         print(f"{rank_str:>8}  {_format_ns(val):>12}")
 
 
-def plot_communication_per_domain(
+def plot_comm_bandwidth(
     domain_name: str,
     domain_groups: List[List[int]],
-    comm_data: Dict[int, float],
-    output_path: str,
+    step_data: Dict[str, Dict[int, float]],
     abnormal_groups: Optional[List[List[int]]] = None,
 ):
     """
-    生成并行域通信耗时 Markdown 图表（替代原有 matplotlib 版本）
-
-    注意: output_path 参数保留是为了兼容，实际输出为 Markdown 报告的一部分
+    控制台实时反馈：各并行域集合通信带宽（越小越慢）。
+    每个 opType 每组取 count 最大的条目为代表，按带宽升序打印（最慢在前）。
     """
-    group_stats = []
-    for group in domain_groups:
-        valid_vals = [comm_data.get(r, -99999) for r in group
-                      if comm_data.get(r, -99999) != -99999 and comm_data.get(r, -99999) > 0]
-        if not valid_vals:
-            continue
-
-        min_val = min(valid_vals)
-        max_val = max(valid_vals)
-        mean_val = sum(valid_vals) / len(valid_vals)
-        group_label = ",".join(str(r) for r in group)
-        group_stats.append((group_label, min_val, max_val, mean_val, valid_vals))
-
-    if not group_stats:
-        logger.warning(f"并行域 {domain_name} 无有效通信数据")
+    cols = utils.domain_bandwidth_cols(step_data, domain_name)
+    if not cols:
         return
 
-    group_stats.sort(key=lambda x: x[1], reverse=True)
+    abnormal_set = set()
+    if abnormal_groups:
+        for ag in abnormal_groups:
+            abnormal_set.add(",".join(str(r) for r in sorted(ag)))
 
-    print(f"\n【{domain_name} 并行域 - 实际集合通信耗时排序】")
-    print(f"{'Group':>20}  {'实际耗时(min)':>14}  {'组内均值':>14}  {'组内最大':>14}")
-    print("-" * 68)
-    for label, min_v, max_v, mean_v, vals in group_stats:
-        print(f"{label:>20}  {_format_ns(min_v):>14}  {_format_ns(mean_v):>14}  {_format_ns(max_v):>14}")
+    for op in sorted({o for o, _c, _col in cols}):
+        rows = []
+        for g in domain_groups:
+            reps = utils.group_representative_bandwidth(step_data, domain_name, g)
+            bw = next((b for o, _c, b in reps if o == op), None)
+            if bw is None:
+                continue
+            rows.append((",".join(str(r) for r in sorted(g)), bw))
+        if not rows:
+            continue
+        rows.sort(key=lambda x: x[1])  # 升序：带宽最小（最慢）在前
+        print(f"\n【{domain_name}/{op} 带宽排序（越小越慢）】")
+        print(f"{'Group':>20}  {'带宽':>14}")
+        print("-" * 40)
+        for label, bw in rows:
+            mark = " ***" if label in abnormal_set else ""
+            print(f"{label:>20}  {bw:>14.4g}{mark}")
 
 
 def run_visualization(
@@ -121,65 +109,25 @@ def run_visualization(
     result_dir = os.path.join(output_dir, "analysis_result")
     os.makedirs(result_dir, exist_ok=True)
 
-    # 先打印控制台实时反馈（含新增单卡指标列）
+    # 控制台：单卡指标实时反馈
     for metric_name in ["KERNEL_AICORE", "ZP_Host", "KERNEL_AIVEC", "MEMCPY_ASYNC"]:
         if metric_name in step_data:
-            plot_metric_bar(step_data[metric_name], metric_name, "")
+            plot_metric_bar(step_data[metric_name], metric_name)
 
-    # 控制台：总通信耗时排序（包含所有域）
+    # 控制台：各并行域集合通信带宽（跳过 pp / embd）
     if parallels:
-        domain_keys = [f"{name}_Duration" for name in parallels
-                       if name]
-        has_domain_data = any(
-            dk in step_data and any(v > 0 and v != -99999 for v in step_data[dk].values())
-            for dk in domain_keys
-        )
-        if has_domain_data:
-            comm_totals: Dict[int, float] = {}
-            for dk in domain_keys:
-                if dk not in step_data:
-                    continue
-                for rank, val in step_data[dk].items():
-                    if val != -99999 and val > 0:
-                        comm_totals[rank] = comm_totals.get(rank, 0) + val
-            label = "各域求和: " + ", ".join(
-                d.replace("_Duration", "") for d in domain_keys if d in step_data
-            )
-        else:
-            zp_dur = step_data.get("ZP_Duration", {})
-            comm_totals = {k: v for k, v in zp_dur.items() if v != -99999 and v > 0}
-            label = "无域通信数据，使用 ZP_Duration（总通信耗时）"
+        comm_abnormal = detection_result.get("comm", {}) if detection_result else {}
+        abnormal_groups = []
+        for group_key in comm_abnormal:
+            try:
+                abnormal_groups.append([int(r) for r in group_key.split(",")])
+            except (ValueError, AttributeError):
+                pass
 
-        if comm_totals:
-            print(f"\n【总通信耗时排序】{label}")
-            print(f"{'Rank':>8}  {'耗时':>12}")
-            print("-" * 24)
-            sorted_items = sorted(comm_totals.items(), key=lambda x: x[1], reverse=True)
-            for rank_str, val in sorted_items:
-                print(f"{rank_str:>8}  {_format_ns(val):>12}")
-
-    if parallels:
         for domain_name, domain_groups in parallels.items():
-            if not domain_name or not domain_groups:
+            if not domain_name or not domain_groups or domain_name in ("pp", "embd"):
                 continue
-            duration_key = f"{domain_name}_Duration"
-            if duration_key in step_data and step_data[duration_key]:
-                plot_communication_per_domain(
-                    domain_name, domain_groups, step_data[duration_key], ""
-                )
-
-    # 控制台：各并行域 per-rank 通信耗时排序（不加和）
-    if parallels:
-        for domain_name in parallels:
-            if not domain_name:
-                continue
-            duration_key = f"{domain_name}_Duration"
-            if duration_key not in step_data:
-                continue
-            filtered = _filter_valid(step_data[duration_key])
-            if not filtered:
-                continue
-            plot_metric_bar(step_data[duration_key], duration_key, "")
+            plot_comm_bandwidth(domain_name, domain_groups, step_data, abnormal_groups)
 
     # 生成完整 Markdown 报告
     report_path = markdown_viz.write_report(
