@@ -262,72 +262,58 @@ def detection_zp_bubble_data(npu_data: Dict[int, float], local_result: config.De
             local_result.add_single("npu_bubble", npu_id, value)
 
 
-def process_cpu_data(ranks_data: List[float]):
-    """
-    按每 4 张卡为一组，对单个时刻的数据计算组内均值并覆盖原值
-    对应 Go 代码中的 processCPUData 函数
-    优化：去掉最大值、最小值后再计算均值
-    """
-    if not ranks_data:
-        return
-
-    group_size = 4
-    n = len(ranks_data)
-    i = 0
-
-    while i < n:
-        end = min(i + group_size, n)
-        group_data = ranks_data[i:end]
-
-        # 去掉最大值和最小值后计算均值
-        if len(group_data) > 2:
-            sorted_data = sorted(group_data)
-            trimmed_data = sorted_data[1:-1]  # 去掉最小和最大
-            mean = sum(trimmed_data) / len(trimmed_data)
-        else:
-            # 数据不足 3 个时，直接计算均值
-            mean = sum(group_data) / len(group_data)
-
-        for k in range(i, end):
-            ranks_data[k] = mean
-        i = end
+def _trimmed_mean(group_data: List[float]) -> float:
+    """组内去最大值、最小值后求均值；不足 3 个时直接求均值。"""
+    if len(group_data) > 2:
+        sorted_data = sorted(group_data)
+        trimmed_data = sorted_data[1:-1]  # 去掉最小和最大
+        return sum(trimmed_data) / len(trimmed_data)
+    return sum(group_data) / len(group_data)
 
 
 def process_cpu_data_by_node(
     have_data_ranks: List[int],
     ranks_data: List[float]
-):
+) -> List[str]:
     """
-    按物理节点分组计算组内均值并覆盖原值
-    节点信息取自内存 config.HostRankMap（解析阶段从 HOST_INFO 表填充，不生成文件）
-    每节点组内使用与 process_cpu_data 相同的去首尾均值方法
+    按物理节点分组计算组内均值并覆盖原值，返回每个 rank 对应的**节点显示名**列表
+    （与 have_data_ranks 一一对应）。
+
+    节点分组用内存 config.HostRankMap（解析阶段从 HOST_INFO 表填充，hostUid）；
+    节点显示名用 config.get_node_name（优先 hostName）。无节点映射时回退按 4 卡分组，
+    节点名用 rank 区间（如 "rank0-3"）。
     """
     node_map = config.get_host_rank_map()
-    if not node_map:
-        # 无节点信息时，回退到原有按 4 分组
-        process_cpu_data(ranks_data)
-        return
+    labels = [None] * len(have_data_ranks)
 
-    # 按节点分组：收集每个节点下的卡及对应的数据值
+    if not node_map:
+        # 回退：每 4 卡一组
+        n = len(have_data_ranks)
+        i = 0
+        while i < n:
+            end = min(i + 4, n)
+            mean = _trimmed_mean(ranks_data[i:end])
+            grp = have_data_ranks[i:end]
+            label = f"rank{grp[0]}-{grp[-1]}" if len(grp) > 1 else f"rank{grp[0]}"
+            for k in range(i, end):
+                ranks_data[k] = mean
+                labels[k] = label
+            i = end
+        return labels
+
+    # 按节点分组：收集每个节点下的卡索引
     node_groups = {}
     for i, rank in enumerate(have_data_ranks):
-        host = node_map.get(str(rank), str(rank))
-        node_groups.setdefault(host, []).append((i, ranks_data[i]))
+        uid = node_map.get(str(rank)) or f"rank{rank}"
+        node_groups.setdefault(uid, []).append(i)
 
-    for group in node_groups.values():
-        group_data = [v for _, v in group]
-        # 去掉最大值和最小值后计算均值
-        if len(group_data) > 2:
-            sorted_data = sorted(group_data)
-            trimmed_data = sorted_data[1:-1]  # 去掉最小和最大
-            mean = sum(trimmed_data) / len(trimmed_data)
-        else:
-            # 数据不足 3 个时，直接计算均值
-            mean = sum(group_data) / len(group_data)
-
-        # 覆盖该节点组内所有卡的值为组均值
-        for idx, _ in group:
-            ranks_data[idx] = mean
+    for idxs in node_groups.values():
+        mean = _trimmed_mean([ranks_data[i] for i in idxs])
+        label = config.get_node_name(have_data_ranks[idxs[0]])
+        for i in idxs:
+            ranks_data[i] = mean
+            labels[i] = label
+    return labels
 
 
 def get_slow_host_ranks_by_homogenize(
@@ -352,17 +338,25 @@ def get_slow_host_ranks_by_homogenize(
                 ranks_data.append(val)
 
     # 按物理节点分组计算组内均值（取代固定按 4 分组）—— 集群整体拉齐
-    process_cpu_data_by_node(have_data_ranks, ranks_data)
+    labels = process_cpu_data_by_node(have_data_ranks, ranks_data)
 
     # cpu 属 IO/CPU 类阈值
     abnormal_ranks, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
         have_data_ranks, ranks_data, config.get_io_threshold()
     )
 
+    # 同一节点内所有卡值相同（组内拉齐），按节点归并成一项，key 用节点显示名（hostName）
+    label_of_rank = {r: labels[i] for i, r in enumerate(have_data_ranks)}
+    node_deg = {}
     for i in range(min(len(abnormal_ranks), len(rank_deg_severitys))):
         rank = abnormal_ranks[i]
         degradation = rank_deg_severitys[i]
-        local_result.add_single("cpu", rank, degradation)
+        label = label_of_rank.get(rank, f"rank{rank}")
+        if label not in node_deg or degradation > node_deg[label]:
+            node_deg[label] = degradation
+
+    for label, degradation in node_deg.items():
+        local_result.add_single("cpu", label, degradation)
 
     return abnormal_ranks
 

@@ -134,6 +134,7 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     生成某类别在汇总表中的 (异常卡, 劣化指数, 物理设备) 三列文本。
 
     - 单卡类别: 异常卡="rank 0, 3"；劣化指数="0:1.397，3:1.398"
+    - cpu:     异常卡="worker3"（节点显示名 hostName）；劣化指数="worker3:3.719"
     - comm:    异常卡="tp[0, 1]"；劣化指数="tp[0, 1]:2.5"
     - pp_comm: 异常卡="0->4"；劣化指数="0->4:2.5"
     物理设备列列出涉及卡的 hostName:Device，过长时截断。
@@ -143,16 +144,19 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     if category == "pp_comm":
         cards_parts = []
         deg_parts = []
+        dev_parts = []
         for key, val in sorted_items:
             ranks = _parse_ranks_from_key(key)
             label = f"{ranks[0]}->{ranks[-1]}"
             cards_parts.append(label)
             deg_parts.append(f"{label}:{val:g}")
+            dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))
         cards_str = "，".join(cards_parts)
         deg_str = "，".join(deg_parts)
     elif category == "comm":
         cards_parts = []
         deg_parts = []
+        dev_parts = []
         for key, val in sorted_items:
             ranks = _parse_ranks_from_key(key)
             domain_name = _domain_of_group(parallels, key)
@@ -160,8 +164,18 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
             label = f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
             cards_parts.append(label)
             deg_parts.append(f"{label}:{val:g}")
+            dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))
         cards_str = "，".join(cards_parts)
         deg_str = "，".join(deg_parts)
+    elif category == "cpu":
+        # cpu 检测按物理节点拉齐，key 是节点显示名（hostName），不是 rank
+        cards_str = "，".join(key for key, _ in sorted_items)
+        deg_str = "，".join(f"{key}:{val:g}" for key, val in sorted_items)
+        node_ranks = config.get_node_ranks_map()
+        dev_parts = [
+            ", ".join(_rank_to_device(r) for r in node_ranks.get(key, [])) or "-"
+            for key, _ in sorted_items
+        ]
     else:
         # 单卡类别：按 rank 升序，逐卡列出
         abnormal_ranks = []
@@ -169,16 +183,14 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
             abnormal_ranks.extend(_parse_ranks_from_key(key))
         abnormal_ranks = sorted(set(abnormal_ranks))
         deg_parts = []
+        dev_parts = []
         for r in abnormal_ranks:
             v = items.get(str(r))
             deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
+            dev_parts.append(_rank_to_device(r))
         cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
         deg_str = "，".join(deg_parts)
 
-    dev_parts = [
-        ", ".join(_rank_to_device(r) for r in _parse_ranks_from_key(key))
-        for key, _ in sorted_items
-    ]
     dev_str = _truncate_display("; ".join(dev_parts))
 
     return cards_str, deg_str, dev_str

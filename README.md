@@ -113,7 +113,7 @@ python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
 | `npu_bubble` | `ZP_Bubble` | 单阈值 < 5000ns |
-| `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
+| `cpu` | `ZP_Host` | 按物理节点拉齐 + 通用算法（异常项 key=hostName） |
 
 ## 算法流程
 

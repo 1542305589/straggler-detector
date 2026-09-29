@@ -87,6 +87,29 @@ def reset_rank_device_map():
     RankDeviceMap.clear()
 
 
+def get_node_name(rank) -> str:
+    """节点显示名：优先 hostName（RankDeviceMap），退化 hostUid（HostRankMap），再退化 rank{n}。"""
+    info = RankDeviceMap.get(str(rank))
+    if info and info.get("host_name"):
+        return info["host_name"]
+    uid = HostRankMap.get(str(rank))
+    if uid:
+        return uid
+    return f"rank{rank}"
+
+
+def get_node_ranks_map() -> dict:
+    """返回 {节点显示名: [rank, ...]}（由 HostRankMap + RankDeviceMap 现算，不落盘）。"""
+    ranks = set(HostRankMap.keys()) | set(RankDeviceMap.keys())
+    m = {}
+    for r in ranks:
+        try:
+            m.setdefault(get_node_name(int(r)), []).append(int(r))
+        except (TypeError, ValueError):
+            continue
+    return {k: sorted(v) for k, v in m.items()}
+
+
 def set_job_type(job_type: str):
     """设置 Job 类型（training/rollout）"""
     global JobType

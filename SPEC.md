@@ -234,8 +234,8 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 ### 8.6 慢 CPU 卡 cpu（get_slow_host_ranks_by_homogenize）
 
 - 收集 `ZP_Host` 有效值（排除 -99999）。
-- `process_cpu_data_by_node`：按**物理节点**（`config.HostRankMap`）分组，组内去首尾后求均值覆盖组内卡值；无节点映射时回退 `process_cpu_data`（按 4 卡分组 + 去首尾均值）。
-- 通用算法 max，写入 `cpu`。
+- `process_cpu_data_by_node`：按**物理节点**（`config.HostRankMap`，hostUid）分组，组内去首尾后求均值覆盖组内卡值，并返回每个 rank 的节点显示名；无节点映射时回退按 4 卡分组（节点名用 `rank0-3` 区间）。
+- 通用算法 max；因同一节点组内卡值相同，异常按**节点归并成一项**，写入 `cpu`，key 用节点显示名（`config.get_node_name`，优先 `hostName`，退化 hostUid / `rank{n}`）。
 
 ### 8.7 PP 慢通信 pp_comm（detect_pp_slow_domain）
 
@@ -283,7 +283,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 单卡 / 大值 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 单卡 / 大值 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 单卡 / 大值 |
-| `cpu` | `ZP_Host` | 单卡 / 大值 |
+| `cpu` | `ZP_Host` | 节点级（key=hostName）/ 大值 |
 | `npu_bubble` | `ZP_Bubble` | 单卡 / 小值（固定 <5000ns） |
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 通信域组级别 |
 
@@ -325,4 +325,4 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 7. **7 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`, `pp_comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。
-10. **CPU/节点分组**：使用内存 `config.HostRankMap`（源自 `HOST_INFO.hostUid`），不落盘文件；无映射时回退按 4 卡。
+10. **CPU/节点分组**：使用内存 `config.HostRankMap`（源自 `HOST_INFO.hostUid`），不落盘文件；无映射时回退按 4 卡。异常项 key 用节点显示名（`config.get_node_name`，优先 `hostName`），汇报时经 `config.get_node_ranks_map()` 反查该节点的 rank 集合。
