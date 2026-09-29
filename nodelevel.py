@@ -557,39 +557,46 @@ def detect_pp_slow_domain(
     """
     PP 流水线慢通信检测（另一方案，对应 PP 域）。
 
-    数据来源：PP 等待回填写进 CSV 的动态列 "PP_Wait"（每卡「PP 接收(Recv)结束 →
-    紧接着下一次集合通信结束」的时间之和；Send 不计）。同属一个 PP 组的卡求和 → d_g。
+    数据来源：PP 链路重叠回填写进 CSV 的动态列 "PP_Overlap"（某卡作为收方时，其入边
+    链路 Send/Recv 时间窗重叠时长）。PP 组取自 parallel_group_info 的 pp 项；若无 PP
+    分组（parallels 无 "pp"），则不检测（避免把 CP/Ring Attention 误当 PP）。
 
-    慢 PP 组的接收方晚进集合通信 → d_g 偏小 → Δ_g = max(d) − d_g 最大（越大越异常）。
-    以 Δ_g / 会话时长 > PP_WAIT_THRESHOLD（默认 5%）判异常，写入类别 "pp_comm"。
+    检测：按 PP 组内 stage 位置分组，把各 PP 组相邻两 stage 组成的链路(s->r)的
+    重叠时长放到同一组内做通用检测（max 方向，重叠越长→该链路传输越慢）；异常按
+    "发送方->接收方"（组键 [s, r]）写入类别 "pp_comm"。
     """
     groups = parallels.get(ppParallelDomainName)
     if not groups or len(groups) < 2:
         return
 
-    pp_wait = step_data.get(config.PP_WAIT_COLUMN, {})
-    if not pp_wait:
+    overlap = step_data.get(config.PP_OVERLAP_COLUMN, {})
+    if not overlap:
         return
 
-    # 每组 PP 等待之和（过滤 -99999 / 缺失）
-    group_sums = []
-    for g in groups:
-        vals = [pp_wait[r] for r in g if r in pp_wait and pp_wait[r] != -99999]
-        if not vals:
+    # 组内升序视为 stage 顺序（rank = pp_stage * tp_size + tp_rank）
+    sorted_groups = [sorted(g) for g in groups]
+    max_len = max(len(g) for g in sorted_groups)
+
+    for t in range(max_len - 1):
+        links = []  # (sender, receiver, value)
+        for g in sorted_groups:
+            if len(g) <= t + 1:
+                continue
+            s, r = g[t], g[t + 1]
+            v = overlap.get(r)
+            if v is None or v == -99999 or v <= 0:
+                continue
+            links.append((s, r, v))
+        if len(links) < 2:
             continue
-        group_sums.append((g, sum(vals)))
-    if len(group_sums) < 2:
-        return
 
-    # 会话时长：取 StepDuration 最大值作为会话代理（聚合 step 覆盖整段 profiling）
-    step_dur = step_data.get("StepDuration", {})
-    valid_durs = [v for v in step_dur.values() if v and v != -99999 and v > 0]
-    session = max(valid_durs) if valid_durs else 0
-    if session <= 0:
-        return
-
-    max_sum = max(s for _, s in group_sums)
-    for g, s in group_sums:
-        score = (max_sum - s) / session
-        if score > config.PP_WAIT_THRESHOLD:
-            local_result.add_group("pp_comm", g, score)
+        recv_ranks = [r for _, r, _ in links]
+        values = [v for _, _, v in links]
+        abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
+            recv_ranks, values, config.PP_OVERLAP_MULTIPLIER, high_is_anomaly=True
+        )
+        for rk, deg in zip(abnormal_recv, degs):
+            for s, r, _ in links:
+                if r == rk:
+                    local_result.add_group("pp_comm", [s, r], deg)
+                    break

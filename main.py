@@ -136,7 +136,7 @@ def _backfill_slow_domain(job_path: str, db_files: list = None):
     except Exception as e:
         logger.warning(f"慢通信带宽回填失败：{e}")
     try:
-        profilingdataparse.backfill_pp_wait_duration(job_path, db_files)
+        profilingdataparse.backfill_pp_overlap(job_path, db_files)
     except Exception as e:
         logger.warning(f"PP 等待回填失败：{e}")
 
@@ -262,7 +262,7 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
         logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
     # === 步骤 2: 获取并行域和有效 ranks ===
-    parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path, db_files=db_files)
+    parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path)
 
     if not parallels or not valid_ranks:
         logger.error("获取并行域/卡数失败")
