@@ -50,15 +50,15 @@ CATEGORY_LABELS = {
     "npu_bubble": "NPU空泡(npu_bubble)",
 }
 
-# 类别短标签（用于最终输出汇总表的第一列）
-SHORT_CATEGORY_LABELS = {
-    "KERNEL_AICORE": "慢计算卡",
-    "kernel_aivec": "矢量计算",
-    "memcpy_async": "内存搬运",
-    "comm": "慢通信域",
-    "pp_comm": "PP慢通信",
-    "cpu": "慢CPU卡",
-    "npu_bubble": "NPU空泡",
+# 最终汇总表"类别"列显示名（大小写对齐 op_metric 的指标列名）
+CATEGORY_DISPLAY = {
+    "KERNEL_AICORE": "KERNEL_AICORE",
+    "kernel_aivec": "KERNEL_AIVEC",
+    "memcpy_async": "MEMCPY_ASYNC",
+    "comm": "comm",
+    "pp_comm": "pp_comm",
+    "cpu": "cpu",
+    "npu_bubble": "npu_bubble",
 }
 
 # 类别 -> step_data 中对应的单卡指标列（用于展示全部卡值）
@@ -357,80 +357,6 @@ def _fmt_ns(value: float) -> str:
         return f"{value:.0f}ns"
 
 
-def _cell_metric_summary(metric_col: str, abnormal_ranks, step_data) -> str:
-    """
-    数据要点：对某指标列，展示异常卡的值、其他卡范围与倍数。
-    例：rank0=1.76ms，其他≈568~574us（约 2.9 倍）
-    """
-    ranks_map = {}
-    if step_data:
-        ranks_map = step_data.get(metric_col) or {}
-    # 过滤无效值（-99999 / <=0），key 转 int
-    valid = {}
-    for r, v in ranks_map.items():
-        try:
-            ri = int(r)
-        except (TypeError, ValueError):
-            continue
-        if v != -99999 and v > 0:
-            valid[ri] = v
-    if not valid:
-        return "无详细数据"
-
-    anom_set = set(abnormal_ranks)
-    anom_vals = [(r, valid[r]) for r in sorted(anom_set) if r in valid]
-    normal_vals = [v for r, v in valid.items() if r not in anom_set]
-
-    parts = [f"rank{r}={_fmt_ns(v)}" for r, v in anom_vals]
-    if normal_vals:
-        nmin, nmax = min(normal_vals), max(normal_vals)
-        parts.append(f"其他≈{_fmt_ns(nmin)}~{_fmt_ns(nmax)}"
-                     if nmin != nmax else f"其他≈{_fmt_ns(nmin)}")
-
-    text = "，".join(parts)
-    if anom_vals and normal_vals:
-        max_anom = max(v for _, v in anom_vals)
-        normal_avg = sum(normal_vals) / len(normal_vals)
-        mult = max_anom / normal_avg if normal_avg > 0 else 0.0
-        text += f"（约 {mult:.1f} 倍）"
-    return text or "无详细数据"
-
-
-def _cell_comm_summary(items: dict, parallels: dict, step_data: dict) -> str:
-    """
-    通信域类别的数据要点：对每个异常组，展示该组所属域的算子带宽（越小越慢）。
-    例：tp[0, 1]: allgather(cnt=1024)=1.23e-3，alltoallv(cnt=2048)=...
-    """
-    parts = []
-    for key in items:
-        ranks = _parse_ranks_from_key(key)
-        dom = _domain_of_group(parallels, key)
-        label = f"{dom}[{', '.join(str(r) for r in ranks)}]" if dom else \
-            "[" + ", ".join(str(r) for r in ranks) + "]"
-        reps = utils.group_representative_bandwidth(step_data, dom, ranks) if dom else []
-        if not reps:
-            parts.append(f"{label}: 无带宽数据")
-            continue
-        bw_str = "，".join(f"{o}(cnt={c})={b:.4g}" for o, c, b in reps)
-        parts.append(f"{label}: {bw_str}")
-    return "；".join(parts) if parts else "无详细数据"
-
-
-def _cell_pp_summary(items: dict, step_data: dict) -> str:
-    """PP 慢通信的数据要点：展示每个异常 PP 链路的重叠时长（PP_Overlap，收方取数）。"""
-    overlap = step_data.get(config.PP_OVERLAP_COLUMN, {}) if step_data else {}
-    if not overlap:
-        return "无详细数据"
-    parts = []
-    for key in items:
-        ranks = _parse_ranks_from_key(key)
-        receiver = ranks[-1]  # add_group 键为排序后的 [sender, receiver]
-        v = overlap.get(receiver)
-        show = f"{ranks[0]}->{ranks[-1]}"
-        parts.append(f"{show}={_fmt_ns(v)}" if v is not None and v != -99999 else f"{show}=无数据")
-    return "，".join(parts) if parts else "无详细数据"
-
-
 def _disp_len(text: str) -> int:
     """估算字符串在终端中的显示宽度（CJK/全角字符按 2 列计）。"""
     return sum(2 if 0x2E80 <= ord(ch) <= 0x9FFF or 0xFF00 <= ord(ch) <= 0xFFEF else 1
@@ -504,13 +430,13 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
     参数:
         result: 检测结果 {category: {key: degradation}}
-        parallels: 并行域信息（可选，用于通信域类别的域时长列）
-        step_data: 单 step 快照数据（可选，用于数据要点的各卡值）
+        parallels: 并行域信息（可选，用于通信组带域名展示）
+        step_data: 保留兼容（当前未使用）
 
     返回:
-        Unicode 框线表格字符串；无任何异常时返回标题行 + 表头 + “无异常”提示。
+        Unicode 框线表格字符串；无任何异常时返回表头 + “无异常”提示。
     """
-    headers = ["类别", "异常卡", "劣化指数", "劣化阈值", "数据要点"]
+    headers = ["类别", "异常卡", "劣化指数", "劣化阈值"]
 
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
@@ -533,37 +459,41 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         if not items:
             continue
 
-        # 异常卡列：解析出涉及的所有 rank
-        abnormal_ranks = []
-        for key in items:
-            abnormal_ranks.extend(_parse_ranks_from_key(key))
-        abnormal_ranks = sorted(set(abnormal_ranks))
+        sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
-        # 异常卡列 + 劣化指数列（逐项一一对应，有几张异常卡就写几个劣化指数）
-        if category in COMM_GROUP_CATEGORIES:
-            # 组键类别（comm / pp_comm）：按劣化值降序，逐项列出，劣化指数与之顺序对应
-            sorted_items = sorted(items.items(), key=lambda x: -x[1])
+        # 异常卡列 + 劣化指数列（劣化指数用 "key:值" 与异常卡一一对应）
+        if category == "pp_comm":
             cards_parts = []
             deg_parts = []
             for key, val in sorted_items:
                 ranks = _parse_ranks_from_key(key)
-                if category == "pp_comm":
-                    # PP 链路：[sender, receiver] -> "sender->receiver"
-                    cards_parts.append(f"{ranks[0]}->{ranks[-1]}")
-                    deg_parts.append(f"{val:.3f}")
-                    continue
+                label = f"{ranks[0]}->{ranks[-1]}"
+                cards_parts.append(label)
+                deg_parts.append(f"{label}:{val:g}")
+            cards_str = "，".join(cards_parts)
+            deg_str = "，".join(deg_parts)
+        elif category == "comm":
+            cards_parts = []
+            deg_parts = []
+            for key, val in sorted_items:
+                ranks = _parse_ranks_from_key(key)
                 domain_name = _domain_of_group(parallels, key)
                 inner = ", ".join(str(r) for r in ranks)
-                cards_parts.append(f"{domain_name}[{inner}]" if domain_name else f"[{inner}]")
-                deg_parts.append(f"{val:.3f}")
+                label = f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
+                cards_parts.append(label)
+                deg_parts.append(f"{label}:{val:g}")
             cards_str = "，".join(cards_parts)
             deg_str = "，".join(deg_parts)
         else:
-            # 单卡类别：按 rank 升序，逐卡列出，劣化指数带 rank 前缀与之对应
+            # 单卡类别：按 rank 升序，逐卡列出
+            abnormal_ranks = []
+            for key in items:
+                abnormal_ranks.extend(_parse_ranks_from_key(key))
+            abnormal_ranks = sorted(set(abnormal_ranks))
             deg_parts = []
             for r in abnormal_ranks:
                 v = items.get(str(r))
-                deg_parts.append(f"{r}:{v:.3f}" if v is not None else f"{r}:?")
+                deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
             cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
             deg_str = "，".join(deg_parts)
 
@@ -577,23 +507,12 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         else:
             th_str = f"{threshold['compute']:g}×"
 
-        # 类别列
-        label = CATEGORY_LABELS.get(category, category)
-        short = SHORT_CATEGORY_LABELS.get(category)
-        category_str = f"{category}（{short}）" if short else label
+        # 类别列（大小写对齐 op_metric 指标列名）
+        category_str = CATEGORY_DISPLAY.get(category, category)
 
-        # 数据要点列
-        if category == "pp_comm":
-            summary = _cell_pp_summary(items, step_data)
-        elif category in COMM_GROUP_CATEGORIES:
-            summary = _cell_comm_summary(items, parallels, step_data)
-        else:
-            metric_col = CATEGORY_METRIC.get(category)
-            summary = _cell_metric_summary(metric_col, abnormal_ranks, step_data) if metric_col else "无详细数据"
-
-        rows.append([category_str, cards_str, deg_str, th_str, summary])
+        rows.append([category_str, cards_str, deg_str, th_str])
 
     if not rows:
-        return _render_box_table(headers, [["无异常", "-", "-", "-", "该维度全部卡表现正常"]])
+        return _render_box_table(headers, [["无异常", "-", "-", "-"]])
 
     return _render_box_table(headers, rows)
