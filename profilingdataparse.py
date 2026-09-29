@@ -1391,44 +1391,143 @@ def _collect_pp_groups(rank_to_info: Dict[int, Dict[str, Any]]) -> List[List[int
     return groups
 
 
-def _load_pp_ops(conn: sqlite3.Connection) -> Dict[str, List[Dict[str, Any]]]:
-    """加载某 rank 的全部通信算子，按 Send / Recv 归类（带名字与起止时间）。"""
-    ops = _load_all_comm_ops(conn, _merged_step(conn))
-    return {
-        "send": [o for o in ops if _is_pp_send(o["name"])],
-        "recv": [o for o in ops if _is_pp_recv(o["name"])],
-    }
+def _is_batch_send_recv(name: str) -> bool:
+    """是否为 BatchSendRecv（兼容 batch_send_recv 等下划线命名）。"""
+    return "batchsendrecv" in _strip_vendor_prefix(name).lower().replace("_", "")
 
 
-def _link_overlap(
-    sends: List[Dict[str, Any]], recvs: List[Dict[str, Any]]
-) -> Optional[int]:
-    """
-    一条 PP 链路的重叠时长 = 该链路上每个「收方 Recv」与「发方 Send」时间窗重叠的
-    最大值之和。重叠 = min(send.end, recv.end) − max(send.start, recv.start)（>0 才计）。
-    无任何有效重叠时返回 None。
-    """
-    total = 0
-    found = False
-    for rc in recvs:
-        best = 0
-        for sd in sends:
-            ov = min(sd["end"], rc["end"]) - max(sd["start"], rc["start"])
-            if ov > best:
-                best = ov
-        if best > 0:
-            total += best
-            found = True
-    return total if found else None
+def _is_p2p_op(name: str) -> bool:
+    """判断算子名是否为 PP 点对点传输（Send / Recv / BatchSendRecv）。"""
+    s = _leading_letters(_strip_vendor_prefix(name)).lower()
+    return (s.startswith("send") or s.startswith("recv") or s.startswith("receive")
+            or _is_batch_send_recv(name))
+
+
+def _p2p_dir(name: str) -> str:
+    """点对点算子的方向：send / recv / both（BatchSendRecv 兼顾收发），无法判定返回 ""。"""
+    both = _is_batch_send_recv(name)
+    send = both or _is_pp_send(name)
+    recv = both or _is_pp_recv(name)
+    if send and recv:
+        return "both"
+    if send:
+        return "send"
+    if recv:
+        return "recv"
+    return ""
+
+
+def _p2p_slot(name: str) -> Optional[int]:
+    """从算子名提取传输序号 `..._{grp}_{slot}_N` 的 slot，用于上下游对齐；取不到返回 None。"""
+    m = re.search(r"_(\d+)_\d+$", name or "")
+    return int(m.group(1)) if m else None
+
+
+def _overlap_time(a_s: int, a_e: int, b_s: int, b_e: int) -> int:
+    return max(0, min(a_e, b_e) - max(a_s, b_s))
+
+
+def _load_p2p_ops(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
+    """加载某 rank 的全部 PP 点对点算子（Send/Recv/BatchSendRecv），含 count 与 slot。"""
+    if not table_exists(conn, "COMMUNICATION_OP"):
+        return []
+    step = _merged_step(conn)
+    cursor = conn.execute(
+        "SELECT opName, startNs, endNs, count FROM COMMUNICATION_OP "
+        "WHERE startNs >= ? AND endNs <= ?",
+        (step.start_ns, step.end_ns),
+    )
+    rows = cursor.fetchall()
+    if not rows:
+        return []
+    ids = {r[0] for r in rows}
+    name_map = _string_map_by_ids(conn, list(ids))
+    out = []
+    for op, s, e, c in rows:
+        name = name_map.get(op, "")
+        if _is_p2p_op(name):
+            try:
+                cnt = int(c) if c is not None else None
+            except (TypeError, ValueError):
+                cnt = None
+            out.append({"name": name, "start": s, "end": e,
+                        "count": cnt, "slot": _p2p_slot(name), "dir": _p2p_dir(name)})
+    return out
+
+
+def _count_close(a: Dict, b: Dict, tol: float) -> bool:
+    """两端 count 相对差是否在容差内（任一缺 count 时不以此过滤）。"""
+    ca, cb = a.get("count"), b.get("count")
+    if ca is None or cb is None:
+        return True
+    denom = max(ca, cb)
+    return denom == 0 or abs(ca - cb) / denom <= tol
+
+
+def _pair_batch_by_slot(ops_s: List[Dict], ops_r: List[Dict]) -> List[tuple]:
+    """batch 模式：两端 BatchSendRecv 按 slot 配对。"""
+    r_by_slot = {o["slot"]: o for o in ops_r
+                 if o["slot"] is not None and o["dir"] == "both"}
+    pairs = []
+    for o in ops_s:
+        if o["dir"] != "both":
+            continue
+        p = r_by_slot.get(o["slot"])
+        if p is not None:
+            pairs.append((o, p))
+    return pairs
+
+
+def _pair_send_recv_by_slot(ops_s: List[Dict], ops_r: List[Dict], tol: float) -> List[tuple]:
+    """send/recv 模式：发方 Send ↔ 收方 Recv 按 slot 配对，且两端 count 相对差 ≤ tol。"""
+    r_by_slot = {}
+    for o in ops_r:
+        if o["slot"] is not None and o["dir"] == "recv":
+            r_by_slot.setdefault(o["slot"], []).append(o)
+    pairs = []
+    for o in ops_s:
+        if o["dir"] != "send":
+            continue
+        for p in r_by_slot.get(o["slot"], []):
+            if _count_close(o, p, tol):
+                pairs.append((o, p))
+                break
+    return pairs
+
+
+def _pair_by_time(ops_s: List[Dict], ops_r: List[Dict],
+                  send_dirs: tuple, recv_dirs: tuple, tol: float) -> List[tuple]:
+    """时间贪心兜底：发方算子匹配 start 最接近的收方算子（按方向 + count 容差）。"""
+    senders = [o for o in ops_s if o["dir"] in send_dirs]
+    recvs = [o for o in ops_r if o["dir"] in recv_dirs]
+    pairs = []
+    used = set()
+    for a in sorted(senders, key=lambda o: o["start"]):
+        best = None
+        for j, b in enumerate(recvs):
+            if j in used or not _count_close(a, b, tol):
+                continue
+            diff = abs(b["start"] - a["start"])
+            if best is None or diff < best[0]:
+                best = (diff, j)
+        if best is not None:
+            used.add(best[1])
+            pairs.append((a, recvs[best[1]]))
+    return pairs
 
 
 def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
     """
-    回填每卡的 PP 链路重叠时长列（PP_Overlap），供 PP 慢通信检测使用。
+    回填每卡的 PP 链路重叠时长（PP_Overlap）与传输字节数（PP_Count），供 PP 慢通信检测使用。
 
-    PP 组取自 parallel_group_info 的 pp 项（读不到则整段跳过）；对每个 PP 组相邻两
-    stage 组成的链路 (s->r)，匹配发方 s 的 Send 与收方 r 的 Recv 的时间窗重叠，结果
-    写回收方 r 的 CSV。检测端按 "发送方->接收方" 报告。
+    PP 组取自 parallel_group_info 的 pp 项（读不到则整段跳过）。对每个 PP 组相邻两 stage 组成
+    的链路 (s->r)，用两端（发方 s / 收方 r）的点对点算子（Send / Recv / BatchSendRecv）按
+    传输序号（或时间）对齐后求窗口交集，得到该链路实际传输时间；同时累加 count 得到传输字节
+    数。结果写入收方 r 的 CSV（每卡一个数值）。
+
+    匹配模式为**全局**：只要 PP 链路上出现 BatchSendRecv，就整次用 batch 匹配（两端
+    BatchSendRecv 按 slot 配对，显示 "<->"）；否则用 Send/Recv 单向匹配（发方 Send ↔
+    收方 Recv，按 slot 且 count 相对差 ≤ PP_COUNT_TOLERANCE，显示 "->"）。
     """
     if db_files is None:
         db_files = discover_db_files(input_path)
@@ -1464,33 +1563,50 @@ def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
         return
 
     write_root = config.get_output_path() or input_path
-    ops_cache: Dict[int, Dict[str, List[Dict[str, Any]]]] = {}
+    ops_cache: Dict[int, List[Dict[str, Any]]] = {}
 
-    def rank_ops(rank: int) -> Dict[str, List[Dict[str, Any]]]:
+    def rank_p2p(rank: int) -> List[Dict[str, Any]]:
         if rank not in ops_cache:
             info = rank_to_info.get(rank)
             if info is None:
-                ops_cache[rank] = {"send": [], "recv": []}
+                ops_cache[rank] = []
             else:
                 try:
                     conn = sqlite3.connect(info["path"])
-                    ops_cache[rank] = _load_pp_ops(conn)
+                    ops_cache[rank] = _load_p2p_ops(conn)
                     conn.close()
                 except Exception:
-                    ops_cache[rank] = {"send": [], "recv": []}
+                    ops_cache[rank] = []
         return ops_cache[rank]
+
+    # 全局模式判定：PP 链路上出现 BatchSendRecv 就整次用 batch 匹配，否则 Send/Recv
+    batch_mode = any(o["dir"] == "both"
+                     for g in pp_groups for rank in g for o in rank_p2p(rank))
+    config.set_pp_batch_mode(batch_mode)
+    tol = config.PP_COUNT_TOLERANCE
 
     for g in pp_groups:
         for t in range(len(g) - 1):
             s, r = g[t], g[t + 1]
-            sends = rank_ops(s)["send"]
-            recvs = rank_ops(r)["recv"]
-            if not sends or not recvs:
+            ops_s = rank_p2p(s)
+            ops_r = rank_p2p(r)
+            if batch_mode:
+                pairs = _pair_batch_by_slot(ops_s, ops_r)
+                if not pairs:
+                    pairs = _pair_by_time(ops_s, ops_r, ("both",), ("both",), tol)
+            else:
+                pairs = _pair_send_recv_by_slot(ops_s, ops_r, tol)
+                if not pairs:
+                    pairs = _pair_by_time(ops_s, ops_r, ("send",), ("recv",), tol)
+            if not pairs:
                 continue
-            val = _link_overlap(sends, recvs)
-            if val is None:
-                continue
+            total_overlap = sum(_overlap_time(a["start"], a["end"], b["start"], b["end"])
+                                for a, b in pairs)
+            total_count = sum((a.get("count") or 0) for a, _ in pairs)
             path = os.path.join(write_root, "op_metric", f"global_rank_{r}.csv")
-            _backfill_bandwidth_csv(path, {config.PP_OVERLAP_COLUMN: repr(float(val))})
+            _backfill_bandwidth_csv(path, {
+                config.PP_OVERLAP_COLUMN: repr(int(total_overlap)),
+                config.PP_COUNT_COLUMN: repr(int(total_count)),
+            })
 
     logger.info("[SLOW-DOMAIN] PP 链路重叠回填完成")

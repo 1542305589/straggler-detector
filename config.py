@@ -29,12 +29,30 @@ CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
 SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
 SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
 
-# ---- PP 流水线慢通信检测（另一方案：PP 链路 Send/Recv 重叠时间）----
+# ---- PP 流水线慢通信检测（另一方案：PP 链路重叠时间）----
 # PP 组从 parallel_group_info 的 pp 项读取（读不到则不检测 PP，避免把 CP/Ring Attention 误当 PP）。
-# 对每个 stage 位置，把各 PP 组相邻两 stage 配成链路(s->r)；链路的指标 = 该链路收方 Recv
-# 与发方 Send 算子的时间窗重叠时长（跨所有 step 求和）。跨链路做 kmeans（max 方向，
-# 重叠越长→传输越慢），异常按 "发送方->接收方" 报告；阈值用 COMM_THRESHOLD。
+# 对每个 stage 位置，把各 PP 组相邻两 stage 配成链路(s->r)；链路指标 = 两端点对点算子的
+# 时间窗重叠时长（跨所有 step 求和）。匹配模式全局一致：出现 BatchSendRecv 用 batch（<->），
+# 否则 Send/Recv 单向（->）；同一 stage 要求所有链路都匹配上才比较。跨链路做 kmeans（max 方向，
+# 重叠越长→传输越慢），异常按组键 [s, r] 报告；阈值用 COMM_THRESHOLD。
 PP_OVERLAP_COLUMN = "PP_Overlap"   # 每卡"其入边链路 Send/Recv 重叠时长"的动态列名
+PP_COUNT_COLUMN = "PP_Count"       # 每卡"其入边 PP 链路传输总字节数"的动态列名（用于 count 分组，规避包大小差异）
+PP_COUNT_TOLERANCE = 0.05          # PP 链路按 count 分组的相对容差（默认 5%）：吸收 padding/对齐噪声，隔离真的大/小包与 fp32/bf16 差异
+# PP 匹配模式（全局）：只要 PP 链路上出现 BatchSendRecv 算子，就整次用 batch 匹配（箭头 <->）；
+# 否则用 Send/Recv 单向匹配（箭头 ->）。由 profilingdataparse.backfill_pp_overlap 判定并写入。
+PP_BATCH_MODE = False
+
+
+def set_pp_batch_mode(flag: bool):
+    """设置 PP 匹配模式：True=batch_send_recv（<->），False=send/recv（->）。"""
+    global PP_BATCH_MODE
+    PP_BATCH_MODE = bool(flag)
+
+
+def get_pp_batch_mode() -> bool:
+    """是否使用 BatchSendRecv 匹配模式。"""
+    return PP_BATCH_MODE
+
 
 # 集群数据标志：由 nodelevel_data_handler 在检测时判定（Case A 集群 / Case B 非集群）
 IsClusterData = False

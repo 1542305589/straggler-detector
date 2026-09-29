@@ -108,7 +108,7 @@ python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_Overlap`（PP 链路 Send/Recv 时间窗重叠） | 按 stage 位置聚类（max 方向，报 `发送方->接收方`） |
+| `pp_comm` | `PP_Overlap` + `PP_Count`（PP 链路重叠 / 传输字节数） | 按 stage 位置聚类（max 方向，按 count 容差细分；batch `<->` / send-recv `->`） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |

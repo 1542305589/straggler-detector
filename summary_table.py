@@ -142,12 +142,13 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
     if category == "pp_comm":
+        arrow = "<->" if config.get_pp_batch_mode() else "->"
         cards_parts = []
         deg_parts = []
         dev_parts = []
         for key, val in sorted_items:
             ranks = _parse_ranks_from_key(key)
-            label = f"{ranks[0]}->{ranks[-1]}"
+            label = f"{ranks[0]}{arrow}{ranks[-1]}"
             cards_parts.append(label)
             deg_parts.append(f"{label}:{val:g}")
             dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))

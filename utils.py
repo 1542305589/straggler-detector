@@ -122,8 +122,9 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
         for i, (key, value) in enumerate(kvs):
             # 处理显示 key
             if category == "pp_comm":
-                # PP 链路：key 为 "sender,receiver"，显示为 "sender->receiver"
-                display_key = key.replace(",", "->")
+                # PP 链路：key 为 "sender,receiver"；batch 模式（BatchSendRecv）显示双向 <->，否则单向 ->
+                arrow = "<->" if config.get_pp_batch_mode() else "->"
+                display_key = key.replace(",", arrow)
             elif is_group_category:
                 ranks = key.split(",")
                 # 查找这个 group 属于哪个域
