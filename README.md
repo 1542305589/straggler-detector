@@ -26,14 +26,14 @@ straggler-detector/
 
 ```python
 import main
-result = main.run_detection("/path/to/data", degradation=0.3, clean="ask")
+result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask")
 ```
 
 ### 命令行执行
 
 ```bash
 cd "C:\Users\n30082019\.claude\skills\straggler-detector"
-python main.py path=/your/data/path degradation=0.3 clean=ask
+python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
 ```
 
 ## 参数说明
@@ -41,10 +41,13 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `path` | 数据目录路径（必需） | - |
-| `degradation` | 劣化阈值 | 0.3 |
+| `compute` | 计算类阈值（KERNEL_AICORE / kernel_aivec） | 1.3 |
+| `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
+| `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
 | `clean` | `yes`/`no`/`ask`：是否清理中间数据并重新解析 | `ask` |
 
-> **执行前必须询问用户**是否删除已有中间数据（`op_metric` 等），得到明确答复后再执行：删除 → `clean=yes`，保留 → `clean=no`。
+> `npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。
+> **执行前必须询问用户**三组阈值（计算/IO/通信）与是否删除已有中间数据（`op_metric` 等），得到明确答复后再执行：删除 → `clean=yes`，保留 → `clean=no`。
 
 ## 输入数据格式
 
@@ -100,7 +103,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 | 类别 | 指标列 | 检测方式 |
 |------|--------|----------|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_Wait`（PP 接收结束至下一次集合通信结束） | 按 PP 组求和后取差值占比（Δ/会话 > 5%） |
+| `pp_comm` | `PP_Overlap`（PP 链路 Send/Recv 时间窗重叠） | 按 stage 位置聚类（max 方向，报 `发送方->接收方`） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -141,7 +144,7 @@ python main.py path=/your/data/path degradation=0.3 clean=ask
 
 ## 核心算法（kmeans_detector.py）
 
-`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`，慢通信（comm）用固定带宽比率阈值 `1.3`；`npu_bubble` 用固定阈值 `< 5000ns`。
+`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组（skill 调用时询问用户）：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。
 
 检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤；无命名通信域时退化按 hostUid 物理节点分组（通信域组间指标直接跳过）。
 

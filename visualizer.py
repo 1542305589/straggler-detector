@@ -107,7 +107,6 @@ def run_visualization(
     output_dir: str,
     detection_result: Optional[Dict[str, Dict[str, float]]] = None,
     data_path: str = "",
-    degradation: float = 0.3,
 ):
     """
     运行所有可视化，生成 Markdown 报告
@@ -118,8 +117,7 @@ def run_visualization(
         valid_ranks: 有效 rank 列表
         output_dir: 输出目录
         detection_result: 检测结果（用于异常高亮）
-        input_path: 原始数据目录（用于报告中显示）
-        degradation: 劣化阈值
+        data_path: 原始数据目录（用于报告中显示）
     """
     result_dir = os.path.join(output_dir, "analysis_result")
     os.makedirs(result_dir, exist_ok=True)
@@ -189,7 +187,6 @@ def run_visualization(
         step_data, parallels, valid_ranks, result_dir,
         detection_result=detection_result,
         input_path=data_path,
-        degradation=degradation,
     )
 
     # 生成 HTML 报告（内嵌 matplotlib 图表；matplotlib 缺失时降级为纯表格）
@@ -198,7 +195,6 @@ def run_visualization(
             step_data, parallels, valid_ranks, result_dir,
             detection_result=detection_result,
             input_path=data_path,
-            degradation=degradation,
         )
     except Exception as e:  # HTML 报告为附加产物，失败不应中断主流程
         logger.warning(f"HTML 报告生成失败：{e}")

@@ -4,7 +4,7 @@ Slow Node Detection - Python 版本主入口
 对应 Go 代码中的 main.go 和 export_interface.go
 
 用法:
-    python main.py path=/xxx degradation=0.3
+    python main.py path=/xxx compute=1.3 io=2.5 comm=1.3
     或作为 skill 被 Claude Code 调用
 """
 
@@ -37,14 +37,22 @@ def parse_args(args: list) -> Dict[str, Any]:
     对应 Go 代码中的 main 函数参数解析逻辑
 
     支持的参数:
-        path=xxx          - 数据目录路径（必需）
-        degradation=xxx   - 劣化阈值（可选，默认 0.3）
+        path=xxx     - 数据目录路径（必需）
+        compute=xxx  - 计算类阈值（可选，默认 1.3）
+        io=xxx       - IO/CPU 类阈值（可选，默认 2.5）
+        comm=xxx     - 通信类阈值（可选，默认 1.3）
+        clean=xxx    - yes/no/ask
     """
     result = {
         'path': None,
-        'degradation': 0.3,  # 默认值
+        'compute': 1.3,
+        'io': 2.5,
+        'comm': 1.3,
         'clean': 'ask'       # ask / yes / no
     }
+
+    def _bad(name, val, default):
+        logger.warning(f"Invalid {name} value '{val}', using default {default}")
 
     for arg in args:
         if '=' not in arg:
@@ -58,15 +66,15 @@ def parse_args(args: list) -> Dict[str, Any]:
 
         if key == 'path':
             result['path'] = val
-        elif key == 'degradation':
+        elif key in ('compute', 'io', 'comm'):
             try:
                 f = float(val)
                 if f > 0:
-                    result['degradation'] = f
+                    result[key] = f
                 else:
-                    logger.warning(f"Invalid degradation value '{val}', using default 0.3")
+                    _bad(key, val, result[key])
             except ValueError:
-                logger.warning(f"Invalid degradation value '{val}', using default 0.3")
+                _bad(key, val, result[key])
         elif key == 'clean':
             if val.lower() in ('yes', 'no', 'ask'):
                 result['clean'] = val.lower()
@@ -172,16 +180,16 @@ def _find_colocate_worlds(input_path: str) -> List[dict]:
     return worlds
 
 
-def _process_colocate_root(input_path: str, worlds: List[dict], degradation: float,
+def _process_colocate_root(input_path: str, worlds: List[dict], thresholds: tuple,
                            clean_mode: str, skip_parsing: bool) -> Dict[str, Any]:
     """
     verl colocate 场景主流程：训练/rollout 各自一个“世界”，分别解析+检测，
     结果输出到 <root>/detection_output/training 与 <root>/detection_output/rollout。
-    只在入口确认一次 degradation 与 clean，避免每个世界重复提问。
+    只在入口确认一次阈值（计算/IO/通信）与 clean，避免每个世界重复提问。
     """
     config.set_file_path(input_path)
-    degradation = utils.confirm_degradation(degradation)
-    config.set_thresholds(degradation)
+    thresholds = utils.confirm_thresholds(thresholds)
+    config.set_thresholds(*thresholds)
 
     if skip_parsing:
         clean_decision = False
@@ -201,7 +209,7 @@ def _process_colocate_root(input_path: str, worlds: List[dict], degradation: flo
             logger.warning(f"[SLOWNODE ALGO] {role} 世界备注：{world['note']}")
         try:
             results[role] = _process_single_job(
-                input_path, degradation, clean_mode, output_path=out_path,
+                input_path, thresholds, clean_mode, output_path=out_path,
                 db_files=world["dbs"], skip_confirm=True, clean_decision=clean_decision)
         except Exception as e:
             logger.error(f"[SLOWNODE ALGO] {role} 世界检测失败：{e}")
@@ -209,7 +217,7 @@ def _process_colocate_root(input_path: str, worlds: List[dict], degradation: flo
     return results
 
 
-def _process_single_job(job_path: str, degradation: float, clean_mode: str, output_path: str = None,
+def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
                         db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     """
     对单个 job 目录执行完整检测流程（解析 → 并行域 → 定界检测 → 结果 → 报告 → 可视化）。
@@ -217,9 +225,10 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
 
     参数:
         job_path: 输入数据目录（含原始 db）
+        thresholds: (计算类, IO/CPU 类, 通信类) 阈值元组
         output_path: 检测结果输出目录；为 None 时输出到 job_path 自身（单 job 场景）
         db_files: 显式指定待解析的 db 列表（colocate 场景按角色世界传入）；None 时递归 job_path
-        skip_confirm: True 时不重复提问 degradation（调用方已确认一次）
+        skip_confirm: True 时不重复提问阈值（调用方已确认一次）
         clean_decision: 已确定的清理结果（True=清理重解析 / False=保留）；None 时按 clean_mode 处理
     """
     # 设置全局配置（含 job 类型检测所需的 FilePath）
@@ -228,11 +237,11 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
         config.set_output_path(output_path)
 
     if not skip_confirm:
-        # 总是向用户提问劣化阈值 degradation（传入值作为默认/回退）
-        degradation = utils.confirm_degradation(degradation)
-    config.set_thresholds(degradation)
+        # 总是向用户提问三组阈值（传入值作为默认/回退）
+        thresholds = utils.confirm_thresholds(thresholds)
+    config.set_thresholds(*thresholds)
 
-    logger.info(f"开始慢节点检测 - 路径：{job_path}, 劣化阈值：{degradation}")
+    logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
     logger.info(f"检测结果输出目录：{config.get_output_path()}")
 
     # 检测结果清理与输出目录（output_path），而非原始数据目录
@@ -288,7 +297,7 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
     if last_step_data:
         visualizer.run_visualization(
             last_step_data, parallels, valid_ranks, config.get_output_path(),
-            detection_result=result, degradation=degradation,
+            detection_result=result,
             data_path=job_path,
         )
 
@@ -298,7 +307,7 @@ def _process_single_job(job_path: str, degradation: float, clean_mode: str, outp
     # === 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout） ===
     try:
         summary = joint_analysis.build_summary_table(
-            result, parallels, last_step_data, degradation)
+            result, parallels, last_step_data)
         _safe_print(summary)
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测
         logger.warning(f"生成汇总表失败：{e}")
@@ -314,13 +323,13 @@ def main():
     args = sys.argv[1:]
 
     if len(args) < 1:
-        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [degradation=0.3]")
+        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [clean=ask]")
         sys.exit(1)
 
     # 解析参数
     parsed = parse_args(args)
     input_path = parsed['path']
-    degradation = parsed['degradation']
+    thresholds = (parsed['compute'], parsed['io'], parsed['comm'])
     clean_mode = parsed['clean']
 
     if not input_path:
@@ -332,19 +341,17 @@ def main():
         logger.error(f"[SLOWNODE ALGO] Invalid directory: {input_path}")
         sys.exit(1)
 
-    # 校验 degradation 范围
-    if degradation < 0:
-        logger.warning("[WARN] Degradation threshold cannot be negative. Reset to default 0.3.")
-        degradation = 0.3
-    elif degradation > 1:
-        logger.warning("[WARN] Degradation threshold is greater than 1. Please verify if this is intentional.")
+    # 校验阈值范围
+    for name, v in zip(("compute", "io", "comm"), thresholds):
+        if v <= 0:
+            logger.warning(f"[WARN] {name} threshold must be > 0. Please verify.")
 
     # === verl colocate：同层多 worker*_ascend_pt 且含训练+rollout，先分组再分开检测 ===
     colocate_worlds = _find_colocate_worlds(input_path)
     if colocate_worlds:
         logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
                     f"{[w['role'] for w in colocate_worlds]}")
-        return _process_colocate_root(input_path, colocate_worlds, degradation, clean_mode, False)
+        return _process_colocate_root(input_path, colocate_worlds, thresholds, clean_mode, False)
 
     # === 判断是否为“父目录含多 job 子目录”场景 ===
     sub_jobs = _find_job_subdirs(input_path)
@@ -358,23 +365,26 @@ def main():
         for job in sub_jobs:
             logger.info(f"===== 处理 job：{job} =====")
             job_output = os.path.join(output_root, os.path.basename(job))
-            results[job] = _process_single_job(job, degradation, clean_mode, output_path=job_output)
+            results[job] = _process_single_job(job, thresholds, clean_mode, output_path=job_output)
         return results
 
     # === 默认：单个 job 目录直接处理（输出到输入目录自身，向后兼容） ===
     config.set_output_path("")
-    return _process_single_job(input_path, degradation, clean_mode)
+    return _process_single_job(input_path, thresholds, clean_mode)
 
 
-def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool = False, clean: str = 'ask') -> Dict[str, Dict[str, float]]:
+def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: float = 1.3,
+                  skip_parsing: bool = False, clean: str = 'ask') -> Dict[str, Dict[str, float]]:
     """
     作为 skill 被调用的入口函数
 
     参数:
         input_path: 数据目录路径
-        degradation: 劣化阈值（默认 0.3）
+        compute: 计算类阈值（KERNEL_AICORE / kernel_aivec，默认 1.3）
+        io: IO/CPU 类阈值（cpu / memcpy_async，默认 2.5）
+        comm: 通信类阈值（comm / pp_comm，默认 1.3）
         skip_parsing: 是否跳过清理和重新解析，直接使用已有的 op_metric 数据（默认 False）
-                     当 skip_parsing=True 时相当于 clean='no'
+                      当 skip_parsing=True 时相当于 clean='no'
         clean: 清理模式（'ask' / 'yes' / 'no'），仅在 skip_parsing=False 时生效
                'ask' - 交互式询问（默认，需终端 TTY）
                'yes' - 强制清理并重新解析
@@ -383,18 +393,20 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
+    thresholds = (compute, io, comm)
+
     # === verl colocate：同层多 worker*_ascend_pt 且含训练+rollout，先分组再分开检测 ===
     colocate_worlds = _find_colocate_worlds(input_path)
     if colocate_worlds:
         logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
                     f"{[w['role'] for w in colocate_worlds]}")
-        return _process_colocate_root(input_path, colocate_worlds, degradation, clean, skip_parsing)
+        return _process_colocate_root(input_path, colocate_worlds, thresholds, clean, skip_parsing)
 
     # 设置全局配置（先设置，后续步骤可能用到）
     config.set_file_path(input_path)
-    # 总是向用户提问劣化阈值 degradation（传入值作为默认/回退）
-    degradation = utils.confirm_degradation(degradation)
-    config.set_thresholds(degradation)
+    # 总是向用户提问三组阈值（传入值作为默认/回退）
+    thresholds = utils.confirm_thresholds(thresholds)
+    config.set_thresholds(*thresholds)
 
     if skip_parsing:
         logger.info("跳过数据解析，直接使用已有的 op_metric 数据")
@@ -416,7 +428,7 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
             else:
                 logger.info("跳过清理和重新解析，直接使用已有的 op_metric 数据")
 
-    logger.info(f"开始慢节点检测 - 路径：{input_path}, 劣化阈值：{degradation}")
+    logger.info(f"开始慢节点检测 - 路径：{input_path}, 阈值(计算/IO/通信)：{thresholds}")
 
     # 步骤 2: 获取并行域和有效 ranks
     parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(input_path)
@@ -442,7 +454,7 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
     if last_step_data:
         visualizer.run_visualization(
             last_step_data, parallels, valid_ranks, input_path,
-            detection_result=result, degradation=degradation,
+            detection_result=result,
             data_path=input_path,
         )
 
@@ -452,7 +464,7 @@ def run_detection(input_path: str, degradation: float = 0.3, skip_parsing: bool 
     # 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout）
     try:
         summary = joint_analysis.build_summary_table(
-            result, parallels, last_step_data, degradation)
+            result, parallels, last_step_data)
         _safe_print(summary)
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测
         logger.warning(f"生成汇总表失败：{e}")

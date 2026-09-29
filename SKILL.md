@@ -38,21 +38,25 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 ### 命令行执行
 
 ```bash
-python main.py path=/path/to/data degradation=0.3 clean=ask
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
 ```
 
 参数说明：
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
 | `path` | 数据目录路径（必需） | - |
-| `degradation` | 劣化阈值 | 0.3 |
+| `compute` | 计算类阈值（KERNEL_AICORE / kernel_aivec） | 1.3 |
+| `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
+| `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
 | `clean` | `yes`/`no`/`ask`：是否清理中间数据并重新解析 | `ask` |
+
+（`npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。）
 
 ### 作为 Python 模块调用
 
 ```python
 import main
-result = main.run_detection("/path/to/data", degradation=0.3, clean="ask")
+result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask")
 ```
 
 ## 执行规则（重要）
@@ -61,7 +65,12 @@ result = main.run_detection("/path/to/data", degradation=0.3, clean="ask")
 
 每次执行检测前，**必须依次询问以下参数**，等用户明确答复后再执行，**禁止跳过询问环节**：
 
-1. **劣化阈值 degradation**（默认 `0.3`，回车/不指定则用默认）：决定异常判定倍率——计算/IO/Host 类倍率 = `1+1×degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`，慢通信（comm）用固定带宽比率阈值 `1.3`，`npu_bubble` 固定阈值 `< 5000ns`。用户给出数值后，命令中加 `degradation=<用户值>`。
+1. **三组检测阈值**（均回车/不指定则用默认值）：
+   - 计算类阈值 `compute`（KERNEL_AICORE / kernel_aivec），默认 `1.3`
+   - IO/CPU 类阈值 `io`（cpu / memcpy_async），默认 `2.5`
+   - 通信类阈值 `comm`（comm / pp_comm），默认 `1.3`
+   - `npu_bubble` 固定硬阈值 `< 5000ns`，不询问。
+   用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
@@ -120,8 +129,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 ## 算法说明
 
-检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×倍率）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。异常倍率由 `degradation` 决定：计算/IO/Host 类 = `1+1×degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`，慢通信（comm）用固定带宽比率阈值 `1.3`；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
+检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
 
-**PP 慢通信（`pp_comm`）另一方案**：PP 传输（Send/Recv）不在带宽白名单内，单独检测。**只在 `parallel_group_info` 明确声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。解析后回填每卡「其入边链路（发方 Send ↔ 收方 Recv）时间窗重叠时长」（`PP_Overlap`）；检测时按 PP 组内 **stage 位置**把各 PP 组的相邻两 stage 链路（`0->4, 1->5, …`）放一组做 kmeans（**max 方向，重叠越长→传输越慢**），异常以 `发送方->接收方`（如 `0->4`）报告。阈值 `PP_OVERLAP_MULTIPLIER`（默认 1.3）。
+**PP 慢通信（`pp_comm`）另一方案**：PP 传输（Send/Recv）不在带宽白名单内，单独检测。**只在 `parallel_group_info` 明确声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。解析后回填每卡「其入边链路（发方 Send ↔ 收方 Recv）时间窗重叠时长」（`PP_Overlap`）；检测时按 PP 组内 **stage 位置**把各 PP 组的相邻两 stage 链路（`0->4, 1->5, …`）放一组做 kmeans（**max 方向，重叠越长→传输越慢**），异常以 `发送方->接收方`（如 `0->4`）报告。阈值用通信类 `comm`（默认 1.3）。
 
 **PP 分组来源**：PP 组直接读 `parallel_group_info` 的 `pp` 项（`group_name=="pp"` 的 `global_ranks`），读不到则不检测。同一 PP 组内 rank 升序视为 stage 顺序；相邻两 stage 组成一条链路（`s->r`），发方 Send 与收方 Recv 的算子时间窗若有重叠即匹配，重叠时长作为该链路指标。
