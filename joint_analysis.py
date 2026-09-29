@@ -356,7 +356,7 @@ def generate_joint_report(result: dict, parallels: dict = None, step_data: dict 
 
 # ---- 最终输出汇总表（渲染到调用 skill 的 agent 的 stdout，不进任何 log 文件） ----
 
-# 计算/IO/Host 类（倍率 = 1 + degradation）单卡类别集合
+# 计算类单卡类别集合
 COMPUTE_METRIC_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec")
 # 组键类别（display_key 带域名）
 COMM_GROUP_CATEGORIES = ("comm", "pp_comm")
@@ -534,8 +534,7 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
     return ""
 
 
-def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None,
-                        degradation: float = None) -> str:
+def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None) -> str:
     """
     生成逐类别汇总的 Unicode 框线表格字符串（渲染到调用方 agent 的最终输出，不进任何 log 文件）。
 
@@ -543,14 +542,10 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         result: 检测结果 {category: {key: degradation}}
         parallels: 并行域信息（可选，用于通信域类别的域时长列）
         step_data: 单 step 快照数据（可选，用于数据要点的各卡值）
-        degradation: 劣化阈值（默认取 config.Degradation，用于计算劣化阈值列）
 
     返回:
         Unicode 框线表格字符串；无任何异常时返回标题行 + 表头 + “无异常”提示。
     """
-    if degradation is None:
-        degradation = config.Degradation
-
     headers = ["类别", "异常卡", "劣化指数", "劣化阈值", "数据要点"]
 
     ordered_categories = [
@@ -563,9 +558,10 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
 
     rows = []
     threshold = {
-        "compute": config.get_compute_multiplier(),
-        "comm": config.get_comm_multiplier(),
-        "bubble": 5000,
+        "compute": config.get_compute_threshold(),
+        "io": config.get_io_threshold(),
+        "comm": config.get_comm_threshold(),
+        "bubble": config.BUBBLE_THRESHOLD_NS,
     }
 
     for category in all_categories:
@@ -608,17 +604,14 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
             deg_str = "，".join(deg_parts)
 
         # 劣化阈值列
-        d_str = f"{degradation:g}"
         if category == "npu_bubble":
-            th_str = "<5000ns"
-        elif category == "comm":
-            th_str = f"{config.SLOW_COMM_RATIO:g}×"
-        elif category == "pp_comm":
-            th_str = f"{config.PP_OVERLAP_MULTIPLIER:g}×"
-        elif category in config.COMM_MULTIPLIER_CATEGORIES:
-            th_str = f"{threshold['comm']:g}×（1 + 5 × {d_str}）"
+            th_str = f"<{threshold['bubble']}ns"
+        elif category in ("comm", "pp_comm"):
+            th_str = f"{threshold['comm']:g}×"
+        elif category in config.IO_CATEGORIES:
+            th_str = f"{threshold['io']:g}×"
         else:
-            th_str = f"{threshold['compute']:g}×（1 + 1 × {d_str}）"
+            th_str = f"{threshold['compute']:g}×"
 
         # 类别列
         label = CATEGORY_LABELS.get(category, category)

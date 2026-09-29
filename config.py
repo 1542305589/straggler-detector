@@ -9,19 +9,16 @@ OutputPath = ""  # 检测结果输出目录；为空时回退到 FilePath（单 
 # 常量
 ZP_BUBBLE_ABNORMAL_BOUNDARY = 50000  # 50us
 
-# ---- 新核心检测算法（KMeans + Z-score + 肘部法）参数 ----
-# 异常判据：簇均值 > 基线簇均值 × 倍率（倍率 = 1 + 放缩倍数 × degradation）。
-# 不再使用固定 2.0 倍率；degradation 由运行时提问用户确定。
-Degradation = 0.3            # 劣化阈值基础值（运行时提问，未提问时用默认 0.3）
-
-# 放缩倍数分组：
-# - 计算/IO/Host 类指标（KERNEL_AICORE, kernel_aivec）→ 倍率 = 1 + degradation
-# - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5*degradation
-# - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，与 degradation 无关）
-Utilization_ComputeMultiplier = 0.0   # 计算类倍率 = 1 + 1*degradation（运行时 set_thresholds 计算）
-Utilization_CommMultiplier = 0.0      # 通信类倍率 = 1 + 5*degradation（运行时 set_thresholds 计算）
-CALC_MULTIPLIER_BASE = 1.0    # 计算/IO/Host 类放缩倍数基数
-COMM_MULTIPLIER_BASE = 5.0    # 通信类放缩倍数基数
+# ---- 检测阈值（skill 调用时逐组询问用户；已删除“阈值基数”设定）----
+# 异常判据：簇均值 > 基线簇均值 × 阈值。每组共用一个固定倍率阈值：
+#   计算类（KERNEL_AICORE / kernel_aivec） → COMPUTE_THRESHOLD（默认 1.3）
+#   IO/CPU 类（cpu / memcpy_async）        → IO_THRESHOLD（默认 2.5）
+#   通信类（comm / pp_comm）               → COMM_THRESHOLD（默认 1.3）
+#   npu_bubble                            → 固定硬阈值 BUBBLE_THRESHOLD_NS（< 5000ns，不询问）
+COMPUTE_THRESHOLD = 1.3      # 计算类阈值
+IO_THRESHOLD = 2.5           # IO/CPU 类阈值
+COMM_THRESHOLD = 1.3         # 通信类阈值
+BUBBLE_THRESHOLD_NS = 5000   # npu_bubble 固定硬阈值（ns）
 
 MAX_K = 10                  # 肘部法最大簇数上限
 MAX_ITERATIONS = 300        # Lloyd 迭代轮数上限
@@ -29,7 +26,6 @@ RECURSION_DEPTH = 10        # 异常递归检测深度上限
 CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
 
 # ---- 慢通信带宽检测（对应 Go DetectSlowDomainByBandwidth）----
-SLOW_COMM_RATIO = 1.3            # 慢通信带宽聚类的比率阈值
 SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
 SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
 
@@ -37,8 +33,7 @@ SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低�
 # PP 组从 parallel_group_info 的 pp 项读取（读不到则不检测 PP，避免把 CP/Ring Attention 误当 PP）。
 # 对每个 stage 位置，把各 PP 组相邻两 stage 配成链路(s->r)；链路的指标 = 该链路收方 Recv
 # 与发方 Send 算子的时间窗重叠时长（跨所有 step 求和）。跨链路做 kmeans（max 方向，
-# 重叠越长→传输越慢），异常按 "发送方->接收方" 报告。
-PP_OVERLAP_MULTIPLIER = 1.3        # PP 链路重叠时长聚类的倍率阈值
+# 重叠越长→传输越慢），异常按 "发送方->接收方" 报告；阈值用 COMM_THRESHOLD。
 PP_OVERLAP_COLUMN = "PP_Overlap"   # 每卡"其入边链路 Send/Recv 重叠时长"的动态列名
 
 # 集群数据标志：由 nodelevel_data_handler 在检测时判定（Case A 集群 / Case B 非集群）
@@ -194,35 +189,39 @@ def get_output_path() -> str:
     return OutputPath if OutputPath else FilePath
 
 
-def set_thresholds(degradation: float):
-    """根据 degradation 设置阈值"""
-    global Degradation, Utilization_ComputeMultiplier, Utilization_CommMultiplier
-    Degradation = degradation
-    Utilization_ComputeMultiplier = 1 + CALC_MULTIPLIER_BASE * degradation
-    Utilization_CommMultiplier = 1 + COMM_MULTIPLIER_BASE * degradation
+def set_thresholds(compute: float = 1.3, io: float = 2.5, comm: float = 1.3):
+    """设置检测阈值（skill 调用时询问用户后调用）"""
+    global COMPUTE_THRESHOLD, IO_THRESHOLD, COMM_THRESHOLD
+    COMPUTE_THRESHOLD = compute
+    IO_THRESHOLD = io
+    COMM_THRESHOLD = comm
 
 
-def get_compute_multiplier() -> float:
-    """计算/IO/Host 类指标的异常倍率（1 + degradation）"""
-    return Utilization_ComputeMultiplier if Utilization_ComputeMultiplier > 0 else 1 + CALC_MULTIPLIER_BASE * Degradation
+def get_compute_threshold() -> float:
+    """计算类（KERNEL_AICORE / kernel_aivec）阈值"""
+    return COMPUTE_THRESHOLD
 
 
-def get_comm_multiplier() -> float:
-    """通信域类指标的异常倍率（1 + 5*degradation）"""
-    return Utilization_CommMultiplier if Utilization_CommMultiplier > 0 else 1 + COMM_MULTIPLIER_BASE * Degradation
+def get_io_threshold() -> float:
+    """IO/CPU 类（cpu / memcpy_async）阈值"""
+    return IO_THRESHOLD
 
 
-# 使用通信类倍率（1 + 5×degradation）的检测类别
-# 注意：comm 改用固定 SLOW_COMM_RATIO（带宽聚类），不在此列。
-COMM_MULTIPLIER_CATEGORIES = ("memcpy_async", "cpu")
+def get_comm_threshold() -> float:
+    """通信类（comm / pp_comm）阈值"""
+    return COMM_THRESHOLD
 
 
-def get_multiplier_for_category(category: str) -> float:
-    """返回某检测类别的异常倍率。
+# 类别 → 阈值组
+COMPUTE_CATEGORIES = ("KERNEL_AICORE", "kernel_aivec")
+IO_CATEGORIES = ("cpu", "memcpy_async")
+COMM_CATEGORIES = ("comm", "pp_comm")
 
-    - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 1 + 5×degradation
-    - 其余计算/IO/Host 类 → 1 + 1×degradation
-    """
-    if category in COMM_MULTIPLIER_CATEGORIES:
-        return get_comm_multiplier()
-    return get_compute_multiplier()
+
+def get_threshold_for_category(category: str) -> float:
+    """返回某检测类别所属组的阈值（npu_bubble 走固定硬阈值，不在此函数内）。"""
+    if category in IO_CATEGORIES:
+        return IO_THRESHOLD
+    if category in COMM_CATEGORIES:
+        return COMM_THRESHOLD
+    return COMPUTE_THRESHOLD

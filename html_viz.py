@@ -213,24 +213,16 @@ def _type_names():
 
 
 def _category_threshold(category: str) -> str:
-    """返回某检测类别对应的劣化阈值显示文本（倍率 + 计算式说明）。
+    """返回某检测类别对应的劣化阈值显示文本（按类别组取阈值）。
 
-    - 慢通信（comm）→ 固定比率阈值 SLOW_COMM_RATIO（带宽聚类，如 1.3×）
-    - PP 慢通信（pp_comm）→ 固定倍率阈值 PP_OVERLAP_MULTIPLIER（如 1.3×）
-    - 内存搬运（memcpy_async）与慢 CPU（cpu）→ 倍率 = 1 + 5×基数（如 0.3 → 2.5×（1 + 5 × 0.3））
-    - 其余计算/IO/Host 类 → 倍率 = 1 + 1×基数（如 0.3 → 1.3×（1 + 1 × 0.3））
-    - npu_bubble → 固定硬阈值 <5000ns
+    - 计算类（KERNEL_AICORE / kernel_aivec）→ COMPUTE_THRESHOLD（默认 1.3）
+    - IO/CPU 类（cpu / memcpy_async）→ IO_THRESHOLD（默认 2.5）
+    - 通信类（comm / pp_comm）→ COMM_THRESHOLD（默认 1.3）
+    - npu_bubble → 固定硬阈值 < BUBBLE_THRESHOLD_NS
     """
     if category == "npu_bubble":
-        return "<5000ns"
-    if category == "comm":
-        return f"{config.SLOW_COMM_RATIO:g}×"
-    if category == "pp_comm":
-        return f"{config.PP_OVERLAP_MULTIPLIER:g}×"
-    d_str = f"{config.Degradation:g}"
-    if category in config.COMM_MULTIPLIER_CATEGORIES:
-        return f"{config.get_comm_multiplier():g}×（1 + 5 × {d_str}）"
-    return f"{config.get_compute_multiplier():g}×（1 + 1 × {d_str}）"
+        return f"<{config.BUBBLE_THRESHOLD_NS}ns"
+    return f"{config.get_threshold_for_category(category):g}×"
 
 
 def _rank_to_device(rank: int) -> str:
@@ -327,7 +319,6 @@ def generate_html_report(
     output_dir: str,
     detection_result: Optional[Dict[str, Dict[str, float]]] = None,
     input_path: str = "",
-    degradation: float = 0.3,
 ) -> str:
     """
     生成自包含 HTML 报告字符串（图表内嵌 base64）。
@@ -342,9 +333,11 @@ def generate_html_report(
     abnormal_categories = [c for c, items in detection_result.items() if items]
     abnormal_items_total = sum(len(items) for items in detection_result.values())
 
+    th_str = (f"{config.get_compute_threshold():g}/{config.get_io_threshold():g}/"
+              f"{config.get_comm_threshold():g}")
     cards = [
         ("有效 Rank 数", f"{len(valid_ranks)}", ""),
-        ("劣化阈值基数", f"{degradation}", ""),
+        ("阈值(计算/IO/通信)", th_str, ""),
         ("Job 类型", config.get_job_type(), ""),
         ("异常类别", f"{len(abnormal_categories)}", "bad" if abnormal_categories else "good"),
         ("异常项数", f"{abnormal_items_total}", "bad" if abnormal_items_total else "good"),
@@ -530,7 +523,6 @@ def write_html_report(
     output_dir: str,
     detection_result: Optional[Dict[str, Dict[str, float]]] = None,
     input_path: str = "",
-    degradation: float = 0.3,
 ) -> str:
     """
     生成并写入 HTML 报告（analysis_result/detection_report.html）。
@@ -541,7 +533,6 @@ def write_html_report(
         step_data, parallels, valid_ranks, output_dir,
         detection_result=detection_result,
         input_path=input_path,
-        degradation=degradation,
     )
 
     os.makedirs(output_dir, exist_ok=True)

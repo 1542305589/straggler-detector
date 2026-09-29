@@ -182,9 +182,9 @@ def det_cal_for_one_group(
     if len(ranks) < minRanksInGroup:
         return [], []
 
-    # 调用通用检测算法（新核心），cal 属计算类 → 用计算类倍率
+    # 调用通用检测算法（新核心），cal 属计算类 → 用计算类阈值
     return kmeans_detector.general_anomaly_detection(
-        ranks, values, config.get_compute_multiplier()
+        ranks, values, config.get_compute_threshold()
     )
 
 
@@ -227,7 +227,7 @@ def get_slow_metric_ranks(
     对指定指标列（MEMCPY_ASYNC/KERNEL_AIVEC 等）检测慢卡
     参照 get_slow_calculate_ranks 的逻辑：在 cal 检测组内逐个组做齐次化聚类
     """
-    multiplier = config.get_multiplier_for_category(category)
+    multiplier = config.get_threshold_for_category(category)
     for npu_group in detection_groups:
         abnormal_ranks, rank_deg_severitys = det_metric_for_one_group(
             aligned_data, npu_group, column, multiplier)
@@ -245,7 +245,7 @@ def detection_zp_bubble_data(npu_data: Dict[int, float], local_result: config.De
     检测 ZP bubble
     对应 Go 代码中的 detectionZpBubbleData 函数
 
-    bubble < 5000ns 视为异常
+    bubble < BUBBLE_THRESHOLD_NS（5000ns）视为异常
     排除 -99999 和 ≤0 的无效数据
     """
     if not npu_data:
@@ -258,7 +258,7 @@ def detection_zp_bubble_data(npu_data: Dict[int, float], local_result: config.De
         # 排除 ≤0 的数据（数据缺失）
         if value <= 0:
             continue
-        if value < 5000:
+        if value < config.BUBBLE_THRESHOLD_NS:
             local_result.add_single("npu_bubble", npu_id, value)
 
 
@@ -354,9 +354,9 @@ def get_slow_host_ranks_by_homogenize(
     # 按物理节点分组计算组内均值（取代固定按 4 分组）—— 集群整体拉齐
     process_cpu_data_by_node(have_data_ranks, ranks_data)
 
-    # cpu 属通信类倍率（1 + 5×degradation）
+    # cpu 属 IO/CPU 类阈值
     abnormal_ranks, rank_deg_severitys = kmeans_detector.general_anomaly_detection(
-        have_data_ranks, ranks_data, config.get_multiplier_for_category("cpu")
+        have_data_ranks, ranks_data, config.get_io_threshold()
     )
 
     for i in range(min(len(abnormal_ranks), len(rank_deg_severitys))):
@@ -440,10 +440,10 @@ def detect_slow_domain_by_bandwidth(
     对每个集合通信域、每个 opType：
       1. 每组取 count 最大的条目作为代表（count 越大带宽越准）；
       2. 保留 count >= max×0.5 且 > SLOW_COMM_COUNT_FLOOR 的组（滤 count 噪声）；
-      3. 用通用检测（min 方向，带宽越小越慢）聚类代表带宽，阈值 = SLOW_COMM_RATIO。
+      3. 用通用检测（min 方向，带宽越小越慢）聚类代表带宽，阈值 = COMM_THRESHOLD。
     只报告在每个 opType 上都异常的组，劣化指数取各 opType 最大值。
     """
-    ratio = config.SLOW_COMM_RATIO
+    ratio = config.get_comm_threshold()
     if ratio <= 0:
         ratio = 1.3
 
@@ -593,7 +593,7 @@ def detect_pp_slow_domain(
         recv_ranks = [r for _, r, _ in links]
         values = [v for _, _, v in links]
         abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
-            recv_ranks, values, config.PP_OVERLAP_MULTIPLIER, high_is_anomaly=True
+            recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
         )
         for rk, deg in zip(abnormal_recv, degs):
             for s, r, _ in links:

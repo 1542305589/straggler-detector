@@ -80,7 +80,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
   ├── detect_slow_domain_by_bandwidth() → comm（HasNamedDomain 时）
-  ├── detect_pp_slow_domain()                → pp_comm（PP 等待占比）
+  ├── detect_pp_slow_domain()                → pp_comm（PP 链路重叠，报 发送方->接收方）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
         │
         ▼
@@ -96,18 +96,16 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 | 全局 | 作用 |
 |------|------|
 | `FilePath` / `OutputPath` | 输入数据目录 / 输出目录（多 job 场景独立；为空回退到 FilePath） |
-| `Degradation` | 劣化阈值基础值，默认 0.3（运行时 `confirm_degradation` 询问） |
-| `Utilization_ComputeMultiplier` | 计算/IO/Host 类倍率 = `1 + degradation` |
-| `Utilization_CommMultiplier` | 通信域类倍率 = `1 + 5×degradation` |
-| `CALC_MULTIPLIER_BASE` / `COMM_MULTIPLIER_BASE` | 放缩基数，1.0 / 5.0 |
+| `COMPUTE_THRESHOLD` / `IO_THRESHOLD` / `COMM_THRESHOLD` | 三组检测阈值，默认 1.3 / 2.5 / 1.3（运行时 `confirm_thresholds` 询问用户） |
+| `BUBBLE_THRESHOLD_NS` | npu_bubble 固定硬阈值，5000ns（不询问） |
 | `MAX_K` / `MAX_ITERATIONS` / `RECURSION_DEPTH` / `CONVERGENCE_EPS` | 算法参数：10 / 300 / 10 / 1e-9 |
-| `ZP_BUBBLE_ABNORMAL_BOUNDARY` | desc 保留，实际 bubble 用硬编码 5000ns |
+| `ZP_BUBBLE_ABNORMAL_BOUNDARY` | desc 保留，实际 bubble 用 `BUBBLE_THRESHOLD_NS` |
 | `IsClusterData` | 集群数据标志（Case A 集群 / Case B 非集群） |
 | `HasNamedDomain` | 是否有命名通信域标志（决定通信域组间指标是否检测） |
 | `HostRankMap` | `{rank: hostName/hostUid}`，解析阶段内存填充，**不生成文件** |
 | `JobType` | Job 类型（training/rollout，由优化器更新算子判断） |
 
-`set_thresholds(degradation)` 根据 degradation 计算两个倍率并写入全局。`DegradationData`（继承 dict）：
+`set_thresholds(compute, io, comm)` 写入三组阈值到全局；`get_threshold_for_category(category)` 按类别返回所属组阈值（计算类 / IO-CPU 类 / 通信类）。`DegradationData`（继承 dict）：
 - 结构 `{category: {key: value}}`，key 为单卡 `"0"` 或组 `"0,1,2"`。
 - `add_single(category, rank, degradation)`：单卡。
 - `add_group(category, ranks, degradation)`：组，按排序后 rank 集去重，保留最大劣化值。
@@ -132,11 +130,11 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 > 与旧版差异：旧 homogeneous（spacedetector）是递归二分——本版对**异常簇数据**继续聚类细分，而非对剩余正常数据剥离。
 
-### 5.2 异常倍率由 degradation 决定
+### 5.2 阈值分组（skill 调用时询问用户）
 
-- 计算/IO/Host 类（`KERNEL_AICORE`, `kernel_aivec`）→ 倍率 = `1 + degradation`
-- 内存搬运（`memcpy_async`）与慢 CPU（`cpu`）→ 倍率 = `1 + 5×degradation`
-- 慢通信（`comm`）→ 固定比率阈值 `SLOW_COMM_RATIO`（默认 1.3，带宽聚类，与 degradation 无关）
+- 计算类（`KERNEL_AICORE`, `kernel_aivec`）→ `COMPUTE_THRESHOLD`（默认 1.3）
+- IO/CPU 类（`cpu`, `memcpy_async`）→ `IO_THRESHOLD`（默认 2.5）
+- 通信类（`comm`, `pp_comm`）→ `COMM_THRESHOLD`（默认 1.3）
 - `npu_bubble` → 固定硬阈值 `< 5000ns`
 
 ---
@@ -224,7 +222,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.4 NPU 空泡 npu_bubble（detection_zp_bubble_data）
 
-排除 -99999 与 ≤0；`value < 5000`（ns，硬编码）记异常，写入 `npu_bubble`（小值异常）。
+排除 -99999 与 ≤0；`value < BUBBLE_THRESHOLD_NS`（默认 5000ns）记异常，写入 `npu_bubble`（小值异常）。
 
 ### 8.5 慢通信域带宽检测（detect_slow_domain_by_bandwidth）
 
@@ -232,7 +230,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 检测规则：
 - 遍历每个集合通信域（跳过 `pp` / `embd`，组数 <2 跳过）。
-- 对每个 opType：每组取 count 最大的条目作代表，保留 `count >= max×0.5` 且 `> SLOW_COMM_COUNT_FLOOR(10240)` 的组；用通用检测（**min 方向**，带宽越小越慢）聚类代表带宽，阈值 = `SLOW_COMM_RATIO`（默认 1.3）。
+- 对每个 opType：每组取 count 最大的条目作代表，保留 `count >= max×0.5` 且 `> SLOW_COMM_COUNT_FLOOR(10240)` 的组；用通用检测（**min 方向**，带宽越小越慢）聚类代表带宽，阈值 = `COMM_THRESHOLD`（默认 1.3）。
 - 只报告在每个 opType 上都异常的组，劣化指数取各 opType 最大值，写入 `comm`（组键，`display_key` 带域名）。
 
 **守卫**：`config.get_has_named_domain()` 为假（情况 A，无命名通信域）→ 无带宽列，直接跳过。
@@ -245,14 +243,14 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.7 PP 慢通信 pp_comm（detect_pp_slow_domain）
 
-PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测（只看 **Recv**，发送端不计）。
+PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测。**只在 `parallel_group_info` 声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。
 
-数据来源：解析后回填（`profilingdataparse.backfill_pp_wait_duration`）写进 CSV 动态列 `PP_Wait` = 每卡「PP 接收(Recv)结束 → 紧接着下一次集合通信结束」的**时间之和**（不再用集合通信自身的 end−start；下一条通信算子必须本身是集合通信，否则该次不计）。
+数据来源：解析后回填（`profilingdataparse.backfill_pp_overlap`）写进 CSV 动态列 `PP_Overlap` = 每卡作为收方时，其入边链路「发方 Send ↔ 收方 Recv」的**时间窗重叠时长**（`min(send.end, recv.end) − max(send.start, recv.start)`，多次求和）。
 
 检测规则（`detect_pp_slow_domain`）：
-- 同属一个 PP 组的卡求和 → `d_g`（过滤 -99999）。
-- 慢 PP 组的接收方晚进集合通信 → `d_g` 偏小 → `Δ_g = max(d) − d_g` 最大（越大越异常）。
-- `score_g = Δ_g / 会话时长`（会话时长取 `StepDuration` 最大值），`score_g > PP_WAIT_THRESHOLD`（默认 5%）判异常，写入 `pp_comm`（组键，`display_key` 带域名，劣化指数以百分比显示）。
+- PP 组取自 `parallel_group_info` 的 pp 项；组内 rank 升序视为 stage 顺序，相邻两 stage 组成链路 `s->r`。
+- 按 **stage 位置** 分组，把各 PP 组同一位置的链路放一组做 kmeans（**max 方向**，重叠越长→传输越慢），阈值 = `COMM_THRESHOLD`。
+- 异常写入 `pp_comm`（组键 `[s, r]`，显示为 `发送方->接收方`，如 `0->4`）。
 
 ---
 
@@ -320,13 +318,13 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ### 10.6 最终输出逐类别汇总表（build_summary_table）
 
-`build_summary_table(result, parallels=None, step_data=None, degradation=None) -> str`：生成 **Unicode 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`。
+`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **Unicode 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值 | 数据要点`。
 
 - **类别**：`{code}（{SHORT_CATEGORY_LABELS}）`，如 `KERNEL_AICORE（慢计算卡）`。
 - **异常卡**：由 result 各 key 解析 rank 列表（组键类别归并组内所有 rank），如 `rank 0` / `rank 0, 1`。
 - **劣化指数**：该类别的最大劣化值（3 位小数）。
-- **劣化阈值**：`npu_bubble` → `5000ns`；慢通信（comm）→ `SLOW_COMM_RATIO`（固定 1.3）；内存搬运（memcpy_async）与慢 CPU（cpu）→ `config.get_comm_multiplier()`（`1+5*deg`）；其余计算/IO/Host 类 → `config.get_compute_multiplier()`（`1+deg`）。
-- **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；无数据兜底 `无详细数据`。
+- **劣化阈值**：`npu_bubble` → `BUBBLE_THRESHOLD_NS`；通信类（comm / pp_comm）→ `COMM_THRESHOLD`；IO/CPU 类（cpu / memcpy_async）→ `IO_THRESHOLD`；计算类（KERNEL_AICORE / kernel_aivec）→ `COMPUTE_THRESHOLD`。
+- **数据要点**：单卡类别用 `CATEGORY_METRIC` 列 + 本地 `_fmt_ns`（ns→s/ms/us/ns），形如 `rank0=1.76ms，其他≈568~574us（约 3.1 倍）`（倍数 = 异常卡最大值/其他均值；min==max 时 `其他≈x`）；通信域类用域时长列（如 `tp_Duration`）；pp_comm 显示 `s->r=重叠时长`；无数据兜底 `无详细数据`。
 - 无任何异常时返回含"无异常"提示的单行表。
 
 ---
@@ -340,9 +338,9 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ## 12. 主入口（main.py）
 
-- CLI：`python main.py path=<dir> [degradation=0.3] [clean=ask|yes|no]`。
-- `run_detection(input_path, degradation=0.3, skip_parsing=False, clean='ask')`：skill 调用入口，返回 `{category: {key: degradation}}`。
-- 流程：确认 degradation → 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `generate_joint_report` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
+- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [clean=ask|yes|no]`。
+- `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask')`：skill 调用入口，返回 `{category: {key: degradation}}`。
+- 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `generate_joint_report` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 
 ---
 
@@ -351,9 +349,9 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 1. **单快照**：不跨 step 做时间序列分析；CSV 只落 1 条聚合数据。
 2. **倒数第二点**：多行 CSV 取 n-2 行，规避最后一行不完整。
 3. **无效标记 `-99999`**：贯穿解析、读取、各检测函数，用于跳过缺失数据。
-4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为倍率（由 degradation 决定）。
+4. **统一异常算法**：`kmeans_detector.general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分），唯一参数为阈值（由类别组决定，skill 调用时询问用户）。
 5. **异常簇递归细分**：对异常簇数据再次聚类，**更深层异常替换父层、更深层无异常保持父层**（减少误检）；**劣化指数**统一用第一次 KMeans（全数据）的基线簇均值作分母，分子是异常值本身，同一刻度可比。
-6. **倍率分组**：计算/IO/Host = `1+degradation`，内存搬运（memcpy_async）与慢 CPU（cpu）= `1+5×degradation`；慢通信（comm）= 固定 `SLOW_COMM_RATIO`（1.3）；PP 慢通信（pp_comm）= 固定 `PP_WAIT_THRESHOLD`（5%）。
+6. **阈值分组**：计算类（KERNEL_AICORE / kernel_aivec）= `COMPUTE_THRESHOLD`（默认 1.3）；IO/CPU 类（cpu / memcpy_async）= `IO_THRESHOLD`（默认 2.5）；通信类（comm / pp_comm）= `COMM_THRESHOLD`（默认 1.3）；`npu_bubble` 固定 `< 5000ns`。三组阈值在 skill 调用时询问用户。
 7. **7 类指标**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`, `npu_bubble`, `cpu`, `comm`, `pp_comm`。
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。
