@@ -19,7 +19,7 @@ from datetime import datetime
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import utils
-import joint_analysis
+import summary_table
 
 logger = logging.getLogger("[REPORT]")
 
@@ -290,7 +290,7 @@ def _detection_summary(
     valid_ranks: List[int],
     parallels: Dict[str, List[List[int]]] = None,
 ) -> str:
-    """生成检测结果摘要（Unicode 框线表 + 口径脚注）。"""
+    """生成检测结果摘要（ASCII 框线表 + 口径脚注）。"""
     headers = ["类别", "状态", "劣化阈值", "异常卡", "劣化指数", "物理设备"]
     ordered = ["KERNEL_AICORE", "kernel_aivec", "memcpy_async",
                "comm", "pp_comm", "cpu", "npu_bubble"]
@@ -301,27 +301,27 @@ def _detection_summary(
     rows = []
     for category in all_categories:
         items = detection_result.get(category) or {}
-        name = joint_analysis.CATEGORY_DISPLAY.get(category, category)
+        name = summary_table.CATEGORY_DISPLAY.get(category, category)
         th = _category_threshold(category)
         if items:
-            cards_str, deg_str, dev_str = joint_analysis._summary_cells(
+            cards_str, deg_str, dev_str = summary_table._summary_cells(
                 category, items, parallels)
             rows.append([name, "异常", th, cards_str, deg_str, dev_str or "-"])
         else:
             rows.append([name, "正常", th, "-", "-", "-"])
 
-    lines = [joint_analysis._render_box_table(headers, rows)]
+    lines = [summary_table._render_box_table(headers, rows)]
 
     desc_categories = [c for c in all_categories if c in CATEGORY_DESC]
     if desc_categories:
         name_width = max(
-            joint_analysis._disp_len(joint_analysis.CATEGORY_DISPLAY.get(c, c))
+            summary_table._disp_len(summary_table.CATEGORY_DISPLAY.get(c, c))
             for c in desc_categories
         )
         lines.append("  口径说明:")
         for category in desc_categories:
-            name = joint_analysis.CATEGORY_DISPLAY.get(category, category)
-            lines.append("    - " + joint_analysis._disp_ljust(name, name_width)
+            name = summary_table.CATEGORY_DISPLAY.get(category, category)
+            lines.append("    - " + summary_table._disp_ljust(name, name_width)
                          + ": " + CATEGORY_DESC[category])
 
     lines.append("")

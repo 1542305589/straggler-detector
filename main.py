@@ -22,7 +22,7 @@ import nodelevel
 import nodelevel_data_handler
 import utils
 import visualizer
-import joint_analysis
+import summary_table
 
 logging.basicConfig(
     level=logging.INFO,
@@ -290,9 +290,6 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     # 始终输出 JSON 结果文件（即使没有异常）
     utils.write_result(result, parallels)
 
-    # === 步骤 5.1: 故障联合分析报告 ===
-    joint_analysis.generate_joint_report(result, parallels, last_step_data, config.get_output_path())
-
     # === 步骤 6: 可视化 ===
     if last_step_data:
         visualizer.run_visualization(
@@ -306,7 +303,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
 
     # === 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout） ===
     try:
-        summary = joint_analysis.build_summary_table(
+        summary = summary_table.build_summary_table(
             result, parallels, last_step_data)
         _safe_print(summary)
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测
@@ -447,9 +444,6 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     # 始终输出 JSON 结果文件（即使没有异常）
     utils.write_result(result, parallels)
 
-    # 步骤 5.1: 故障联合分析报告
-    joint_analysis.generate_joint_report(result, parallels, last_step_data, input_path)
-
     # 步骤 6: 可视化
     if last_step_data:
         visualizer.run_visualization(
@@ -463,7 +457,7 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
 
     # 步骤 7: 最终输出逐类别汇总表（渲染到调用方 agent 的 stdout）
     try:
-        summary = joint_analysis.build_summary_table(
+        summary = summary_table.build_summary_table(
             result, parallels, last_step_data)
         _safe_print(summary)
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测

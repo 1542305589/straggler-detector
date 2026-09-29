@@ -1,6 +1,6 @@
 # Slow Node Detection - Python 版本
 
-检测 AI 训练/推理集群中的慢节点（straggler / 亚健康检测）。解析 Ascend PyTorch Profiler 生成的 `.db` 文件，识别慢计算卡、慢通信域、慢 CPU 卡、NPU 空泡，并生成故障联合分析报告。
+检测 AI 训练/推理集群中的慢节点（straggler / 亚健康检测）。解析 Ascend PyTorch Profiler 生成的 `.db` 文件，识别慢计算卡、慢通信域、慢 CPU 卡、NPU 空泡，并生成文本检测报告。
 
 ## 目录结构
 
@@ -13,7 +13,7 @@ straggler-detector/
 ├── profilingdataparse.py       # Profiling 数据解析（SQLite → CSV/JSON）
 ├── nodelevel.py                # 慢节点检测核心逻辑
 ├── nodelevel_data_handler.py   # 数据读取、检测组选择、节点分组
-├── joint_analysis.py           # 故障联合分析（传播链 + 根因 + 报告）
+├── summary_table.py            # 检测结果汇总表工具（ASCII 表格渲染 + 单元格格式化）
 ├── markdown_viz.py / visualizer.py  # 可视化报告
 ├── main.py                     # 主入口
 ├── skill.md                    # skill 说明（与 SKILL.md 同步）
@@ -83,23 +83,22 @@ python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
 
 ### 3. 报告文件
 
-- `joint_failure_analysis.log` — 故障联合分析报告（传播链 + 根因 + 条形图）
 - `analysis_result/detection_report.log` — 可视化详情报告
 
 ### 4. 最终输出逐类别汇总表（stdout）
 
-检测结束时在 stdout 打印一张 **Unicode 框线表格**，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。它渲染到**调用方 agent 的最终输出**，不进任何 log 文件；无异常时打印含"无异常"提示的单行表：
+检测结束时在 stdout 打印一张 **ASCII 框线表格**，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。它渲染到**调用方 agent 的最终输出**，不进任何 log 文件；无异常时打印含"无异常"提示的单行表：
 
 ```
-┌───────────────┬───────────┬──────────────────┬──────────┐
-│ 类别          │ 异常卡    │ 劣化指数         │ 劣化阈值 │
-├───────────────┼───────────┼──────────────────┼──────────┤
-│ KERNEL_AICORE │ rank 0, 3 │ 0:1.397，3:1.398 │ 1.3×     │
-├───────────────┼───────────┼──────────────────┼──────────┤
-│ comm          │ tp[0, 1]  │ tp[0, 1]:2.5     │ 1.3×     │
-├───────────────┼───────────┼──────────────────┼──────────┤
-│ pp_comm       │ 0->4      │ 0->4:2.5         │ 1.3×     │
-└───────────────┴───────────┴──────────────────┴──────────┘
++---------------+-----------+------------------+----------+
+| 类别          | 异常卡    | 劣化指数         | 劣化阈值 |
++---------------+-----------+------------------+----------+
+| KERNEL_AICORE | rank 0, 3 | 0:1.397，3:1.398 | 1.3x     |
++---------------+-----------+------------------+----------+
+| comm          | tp[0, 1]  | tp[0, 1]:2.5     | 1.3x     |
++---------------+-----------+------------------+----------+
+| pp_comm       | 0->4      | 0->4:2.5         | 1.3x     |
++---------------+-----------+------------------+----------+
 ```
 
 > 类别列用 op_metric 指标列名（如 `KERNEL_AIVEC`、`MEMCPY_ASYNC` 大写）；劣化指数列为 `项:值`（单卡 `rank:值`、通信组 `tp[0,1]:值`、PP 链路 `0->4:值`）。
@@ -145,7 +144,7 @@ python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
   ├── get_slow_host_ranks_by_homogenize()  → cpu
         │
         ▼
-输出：straggler_detection_result.json / joint_failure_analysis.log / detection_report.log
+输出：straggler_detection_result.json / analysis_result/detection_report.log
 ```
 
 ## 核心算法（kmeans_detector.py）
