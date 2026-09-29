@@ -122,9 +122,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 1. `op_metric/global_rank_*.csv` — 解析后的性能指标
 2. `op_metric/group_info_*.json` — 并行域信息
 3. `straggler_detection_result.json` — 检测结果（含全部类别）
-4. `joint_failure_analysis.log` — 故障联合分析报告
-5. `analysis_result/detection_report.log` — 可视化详情报告
-6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 Unicode 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
+4. `analysis_result/detection_report.log` — 可视化详情报告
+5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
 

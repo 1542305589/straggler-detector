@@ -1,6 +1,6 @@
 # straggler-detector 方案设计说明书（SPEC）
 
-> 本文档逐模块阐述 `straggler-detector` skill 的完整方案：架构、数据流、核心算法、各指标的定义与生成方式、检测逻辑、结果输出与故障联合分析。
+> 本文档逐模块阐述 `straggler-detector` skill 的完整方案：架构、数据流、核心算法、各指标的定义与生成方式、检测逻辑与结果输出。
 > 代码版本：Python 移植版，检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
 
 ---
@@ -15,16 +15,13 @@
 - 慢 CPU 卡（`cpu`）
 - NPU 空泡（`npu_bubble`）
 
-并基于硬件流水线的因果顺序，推断故障传播链、判定根因卡，生成整体联合分析报告。
-
 **输入**：Ascend PyTorch Profiler 生成的 `.db` 文件（每 NPU 一个）。
 **输出**：
 - `op_metric/global_rank_{N}.csv`（单快照性能指标）
 - `op_metric/group_info_{N}.json`（并行域拓扑）
 - `straggler_detection_result.json`（检测结果）
-- `joint_failure_analysis.log`（故障联合分析报告，log 格式）
 - `analysis_result/detection_report.log`（可视化详情报告）
-- **最终输出逐类别汇总表**（Unicode 框线表格，渲染到调用方 agent 的 stdout，**不进任何 log 文件**）
+- **最终输出逐类别汇总表**（ASCII 框线表格，渲染到调用方 agent 的 stdout，**不进任何 log 文件**）
 
 ---
 
@@ -41,7 +38,7 @@ straggler-detector/
 ├── nodelevel_data_handler.py   # 读取 op_metric CSV + group_info JSON，构建快照/并行域/节点组
 ├── markdown_viz.py             # 生成文本格式检测报告
 ├── visualizer.py               # 可视化编排（控制台 + 详情报告）
-├── joint_analysis.py           # 故障联合分析（传播链 + 根因 + log 报告）
+├── summary_table.py            # 检测结果汇总表工具（ASCII 表格渲染 + 单元格格式化）
 ├── main.py                     # 主入口 / skill 调用入口
 ├── skill.md                    # skill 使用说明（与 SKILL.md 同步）
 └── README.md / SPEC.md         # 使用说明 / 本文档
@@ -85,7 +82,6 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
         │
         ▼
 [utils.write_result]                        → straggler_detection_result.json
-[joint_analysis.generate_joint_report]      → joint_failure_analysis.log（含条形图）
 [visualizer.run_visualization]              → analysis_result/detection_report.log
 ```
 
@@ -271,23 +267,16 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ### 9.2 清理（utils）
 
-`clean_detection_outputs` 清理：`op_metric`、`straggler_analysis_output`、`analysis_result`、`straggler_detection_result.json`、`straggler_detection_result`。
+`clean_detection_outputs` 清理：`op_metric`、`straggler_analysis_output`、`analysis_result`、`straggler_detection_result.json`、`straggler_detection_result`、`joint_failure_analysis.log`。
 `confirm_clean` 交互式询问（skill 调用时**须先问用户**）。
 
 ---
 
-## 10. 故障联合分析（joint_analysis.py）
+## 10. 检测结果汇总（summary_table.py）
 
-### 10.1 硬件流水线因果模型
+`summary_table.py` 只保留 ASCII 框线表的底层渲染（`_render_box_table`）与「检测结果 → 表格单元格」的格式化（`_summary_cells`），供控制台最终汇总表与文本报告摘要复用。早期版本的「故障联合分析」（硬件流水线因果推断、传播链、根因卡判定、`joint_failure_analysis.log`）已移除。
 
-```
-计算(compute) → 通信(communication) → 等待/空转(wait)
-```
-- **计算阶段**：`KERNEL_AICORE`, `kernel_aivec`, `memcpy_async`（根因候选起点）
-- **通信阶段**：`comm`（受慢卡拖累）
-- **等待/空转**：`cpu`, `npu_bubble`（下游影响）
-
-### 10.2 类别与指标映射
+### 10.1 类别与指标映射
 
 | 类别 | 单卡指标列 | 检测方式 / 异常方向 |
 |------|-----------|----------|
@@ -298,27 +287,9 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 | `npu_bubble` | `ZP_Bubble` | 单卡 / 小值（固定 <5000ns） |
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 通信域组级别 |
 
-### 10.3 报告结构（joint_failure_analysis.log，log 格式）
+### 10.2 最终输出逐类别汇总表（build_summary_table）
 
-每行带 `[时间戳][JOINT]` 前缀与 `[INFO]/[WARN]` 级别。四大部分：
-
-1. **一、各列检测结果汇总**：每个类别输出标题行；异常类别先列异常项概览，再对单卡类展示该类别下全部卡并画文本条形图（`█`/`▒`，宽度 40，异常卡标 `<-- 异常`）；通信域类展示异常域及各卡域时长条形图。
-2. **二、故障传播链分析**：按流水线阶段列出命中卡，标注“根因候选 / 受慢卡拖累 / 下游影响”。
-3. **三、根因卡判定**：计算阶段（流水线最上游）命中卡判为根因。
-4. **四、结论与建议**：优先排查根因卡。
-
-### 10.4 根因判定规则
-
-`_determine_root_causes`：把各类别异常卡归并到各阶段；**计算阶段（KERNEL_AICORE/kernel_aivec/memcpy_async）命中的卡**即根因候选（其在最上游，变慢会通过集合通信传导到同域其他卡）。
-
-### 10.5 调用签名
-
-`generate_joint_report(result, parallels, step_data=None, output_dir=None)`
-- `step_data` 用于绘制全部卡（含正常卡）条形图，由 `main.py` 传入 `last_step_data`。
-
-### 10.6 最终输出逐类别汇总表（build_summary_table）
-
-`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **Unicode 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
+`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **ASCII 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
 
 - **类别**：`CATEGORY_DISPLAY`（大小写对齐 op_metric 指标列名），如 `KERNEL_AICORE`、`KERNEL_AIVEC`、`MEMCPY_ASYNC`、`comm`、`pp_comm`、`cpu`、`npu_bubble`（无括号描述）。
 - **异常卡**：由 result 各 key 解析——单卡 `rank 0, 3`；comm 组 `tp[0, 1]`；pp_comm 链路 `0->4`。
@@ -339,7 +310,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 - CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [clean=ask|yes|no]`。
 - `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask')`：skill 调用入口，返回 `{category: {key: degradation}}`。
-- 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `generate_joint_report` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
+- 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 
 ---
 
@@ -355,4 +326,3 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 8. **无命名域退化（情况 A）**：检测组按 hostUid 物理节点分组；通信域组间指标直接跳过；单卡指标在节点组内检测。
 9. **未命中优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标仍检测（HasNamedDomain=True），检出慢通信组时可带域名。
 10. **CPU/节点分组**：使用内存 `config.HostRankMap`（源自 `HOST_INFO.hostUid`），不落盘文件；无映射时回退按 4 卡。
-11. **输出为 log 格式**：联合分析报告用 `[JOINT]` 前缀 + 级别，含全部卡条形图。
