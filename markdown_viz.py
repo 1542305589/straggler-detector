@@ -237,7 +237,7 @@ def _comm_section(
 
 
 def _category_threshold(category: str) -> str:
-    """返回某检测类别对应的劣化阈值显示文本（按类别组取阈值，与 html_viz 保持一致）。
+    """返回某检测类别对应的劣化阈值显示文本（按类别组取阈值）。
 
     - 计算类（KERNEL_AICORE / kernel_aivec）→ COMPUTE_THRESHOLD（默认 1.3）
     - IO/CPU 类（cpu / memcpy_async）→ IO_THRESHOLD（默认 2.5）
@@ -281,7 +281,7 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
 
 
 def _item_device(category: str, key: str, parallels: dict) -> str:
-    """把一条异常项的 key 转成物理设备文本（与 html_viz 保持一致）。"""
+    """把一条异常项的 key 转成物理设备文本。"""
     if category in ("comm", "pp_comm"):
         try:
             ranks = [int(r) for r in key.split(",")]
