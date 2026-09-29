@@ -302,7 +302,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 ## 11. 可视化（visualizer.py + markdown_viz.py）
 
 - `visualizer.run_visualization`：控制台实时反馈 + 调用 `markdown_viz.write_report` 生成 `analysis_result/detection_report.log`。
-- `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、各域集合通信带宽排序、各域带宽概览。
+- `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、各域集合通信带宽排序、各域带宽概览。其中 `cpu`（ZP_Host）段按**物理节点**聚合展示（一行一个节点、标签列显示 hostName、节点值取去首尾均值、异常节点标 `***`）；无节点映射时退回逐卡。
 
 ---
 
