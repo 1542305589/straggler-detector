@@ -370,7 +370,12 @@ def _disp_ljust(text: str, width: int) -> str:
 
 
 def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
-    """渲染 Unicode 框线表格（┌─┬─┐），按列自动对齐（考虑 CJK 显示宽度）。"""
+    """渲染 ASCII 表格（+--+--+），按列自动对齐（考虑 CJK 显示宽度）。
+
+    使用 ASCII 边框而非 Unicode 框线：框线字符（─│┌┐等）属于 East Asian
+    Ambiguous 宽度，在 CJK 字体/终端下按 2 列渲染，会导致 Notepad、Linux cat
+    等纯文本环境错位；ASCII 的 + - | 固定 1 列，任何环境都能对齐。
+    """
     all_rows = [headers] + rows
     ncols = len(headers)
     widths = [0] * ncols
@@ -378,18 +383,18 @@ def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
         for i, cell in enumerate(row):
             widths[i] = max(widths[i], _disp_len(cell))
 
-    def _line(left, mid, right, fill="─"):
+    def _line(left, mid, right, fill="-"):
         # 单元格总宽 = 内容宽 + 左右各 1 空格边距（与数据行 " " + cell + " " 对齐）
         return left + mid.join(fill * (w + 2) for w in widths) + right
 
-    top = _line("┌", "┬", "┐")
-    mid = _line("├", "┼", "┤")
-    bot = _line("└", "┴", "┘")
+    top = _line("+", "+", "+")
+    mid = _line("+", "+", "+")
+    bot = _line("+", "+", "+")
     last_idx = len(all_rows) - 1
     lines = [top]
     for idx, row in enumerate(all_rows):
-        cells = "│" + "│".join(" " + _disp_ljust(cell, widths[i]) + " "
-                               for i, cell in enumerate(row)) + "│"
+        cells = "|" + "|".join(" " + _disp_ljust(cell, widths[i]) + " "
+                               for i, cell in enumerate(row)) + "|"
         lines.append(cells)
         # 表头后、以及非最后一行的数据行后画横线；最后一行直接接底边框，
         # 避免出现多余的分隔线（底部看起来像空行）
@@ -424,7 +429,7 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
     return ""
 
 
-# 物理设备列显示宽度上限（超出以 … 截断）
+# 物理设备列显示宽度上限（超出以 ... 截断）
 DEVICE_DISPLAY_LIMIT = 30
 
 
@@ -439,15 +444,16 @@ def _rank_to_device(rank: int) -> str:
 
 
 def _truncate_display(text: str, limit: int = DEVICE_DISPLAY_LIMIT) -> str:
-    """按显示宽度截断文本，超出部分以 … 结尾。"""
+    """按显示宽度截断文本，超出部分以 ... 结尾（ASCII，避免歧义宽）。"""
+    suffix = "..."
     if _disp_len(text) <= limit:
         return text
     out = ""
     for ch in text:
-        if _disp_len(out + ch) > limit - 1:
+        if _disp_len(out + ch) > limit - _disp_len(suffix):
             break
         out += ch
-    return out + "…"
+    return out + suffix
 
 
 def _summary_cells(category: str, items: dict, parallels: dict = None):
@@ -547,11 +553,11 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         if category == "npu_bubble":
             th_str = f"<{threshold['bubble']}ns"
         elif category in ("comm", "pp_comm"):
-            th_str = f"{threshold['comm']:g}×"
+            th_str = f"{threshold['comm']:g}x"
         elif category in config.IO_CATEGORIES:
-            th_str = f"{threshold['io']:g}×"
+            th_str = f"{threshold['io']:g}x"
         else:
-            th_str = f"{threshold['compute']:g}×"
+            th_str = f"{threshold['compute']:g}x"
 
         # 类别列（大小写对齐 op_metric 指标列名）
         category_str = CATEGORY_DISPLAY.get(category, category)

@@ -270,7 +270,7 @@ def _category_threshold(category: str) -> str:
     """
     if category == "npu_bubble":
         return f"<{config.BUBBLE_THRESHOLD_NS}ns"
-    return f"{config.get_threshold_for_category(category):g}×"
+    return f"{config.get_threshold_for_category(category):g}x"
 
 
 # 各检测类别的口径说明（置于汇总表下方脚注）
@@ -321,7 +321,7 @@ def _detection_summary(
         lines.append("  口径说明:")
         for category in desc_categories:
             name = joint_analysis.CATEGORY_DISPLAY.get(category, category)
-            lines.append("    · " + joint_analysis._disp_ljust(name, name_width)
+            lines.append("    - " + joint_analysis._disp_ljust(name, name_width)
                          + ": " + CATEGORY_DESC[category])
 
     lines.append("")
