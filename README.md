@@ -26,14 +26,14 @@ straggler-detector/
 
 ```python
 import main
-result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask")
+result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", pp_strategy="v6")
 ```
 
 ### 命令行执行
 
 ```bash
 cd "C:\Users\n30082019\.claude\skills\straggler-detector"
-python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 clean=ask
+python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 pp=v6 clean=ask
 ```
 
 ## 参数说明

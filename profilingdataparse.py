@@ -1610,3 +1610,124 @@ def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
             })
 
     logger.info("[SLOW-DOMAIN] PP 链路重叠回填完成")
+
+
+def _compute_pp_wait_value(ops: List[Dict[str, Any]], batch_mode: bool, variant: str) -> Optional[int]:
+    """
+    v6p：锚点（batch 模式下的 BatchSendRecv，或 send/recv 模式下的 Send/Recv）之后
+         **第一个集合通信**的时长（end−start）之和。
+    v6pp：同锚点，但值为「该集合通信 end − 锚点 end」的间隔之和（无下一次集合通信则不计）。
+    ops 已按 startNs 升序；无有效值返回 None。
+    """
+    total = 0
+    found = False
+    for i, o in enumerate(ops):
+        d = _p2p_dir(o["name"])
+        anchor = (d == "both") if batch_mode else (d in ("send", "recv"))
+        if not anchor:
+            continue
+        # 找其后第一个集合通信（跳过中间连续的点对点传输）
+        nxt = None
+        for j in range(i + 1, len(ops)):
+            if _p2p_dir(ops[j]["name"]) == "":
+                nxt = ops[j]
+                break
+        if nxt is None:
+            continue
+        if variant == "v6p":
+            total += nxt["end"] - nxt["start"]
+            found = True
+        else:  # v6pp
+            gap = nxt["end"] - o["end"]
+            if gap > 0:
+                total += gap
+                found = True
+    return total if found else None
+
+
+def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None,
+                     variant: str = "v6p"):
+    """
+    回填 v6p / v6pp 策略所需的每卡 PP 等待列。
+
+    v6p  → PP_WaitNext：每卡「锚点后第一个集合通信时长」之和
+    v6pp → PP_WaitGap ：每卡「锚点结束 → 下一次集合通信结束」间隔之和（无则不计）
+
+    锚点：batch 模式（PP 链路上出现 BatchSendRecv）下为 BatchSendRecv；否则为 Send / Recv。
+    同时按各 rank 合并窗口的最大值填充 config.PP_SESSION_NS（会话时长）。
+    """
+    if variant not in ("v6p", "v6pp"):
+        variant = "v6p"
+    if db_files is None:
+        db_files = discover_db_files(input_path)
+    if not db_files:
+        return
+
+    rank_to_info: Dict[int, Dict[str, Any]] = {}
+    for db_path in db_files:
+        rank_str = extract_global_rank_from_filename(db_path)
+        if rank_str is None:
+            continue
+        try:
+            rank = int(rank_str)
+        except ValueError:
+            continue
+        try:
+            conn = sqlite3.connect(db_path)
+        except Exception:
+            continue
+        try:
+            pgi = get_parallel_group_info(conn, None)
+        except Exception:
+            pgi = {}
+        conn.close()
+        rank_to_info[rank] = {"path": db_path, "pgi": pgi or {}}
+
+    if not rank_to_info:
+        return
+
+    pp_groups = _collect_pp_groups(rank_to_info)
+    if not pp_groups:
+        logger.info("[SLOW-DOMAIN] 无 PP 分组 metadata，跳过 PP 等待回填")
+        return
+
+    write_root = config.get_output_path() or input_path
+    all_ranks = sorted({r for g in pp_groups for r in g})
+    ops_cache: Dict[int, List[Dict[str, Any]]] = {}
+    session_ns = 0
+
+    def rank_ops(rank: int) -> List[Dict[str, Any]]:
+        nonlocal session_ns
+        if rank not in ops_cache:
+            ops_cache[rank] = []
+            info = rank_to_info.get(rank)
+            if info is not None:
+                try:
+                    conn = sqlite3.connect(info["path"])
+                    step = _merged_step(conn)
+                    ops_cache[rank] = _load_all_comm_ops(conn, step)
+                    conn.close()
+                    dur = step.end_ns - step.start_ns
+                    if 0 < dur < (1 << 62) and dur > session_ns:
+                        session_ns = dur
+                except Exception:
+                    ops_cache[rank] = []
+        return ops_cache[rank]
+
+    loaded = {r: rank_ops(r) for r in all_ranks}
+    batch_mode = any(_p2p_dir(o["name"]) == "both"
+                     for ops in loaded.values() for o in ops)
+    config.set_pp_batch_mode(batch_mode)
+    config.set_pp_session_ns(session_ns)
+
+    column = config.PP_WAIT_NEXT_COLUMN if variant == "v6p" else config.PP_WAIT_GAP_COLUMN
+    for rank in all_ranks:
+        val = _compute_pp_wait_value(loaded[rank], batch_mode, variant)
+        if val is None:
+            continue
+        path = os.path.join(write_root, "op_metric", f"global_rank_{rank}.csv")
+        _backfill_bandwidth_csv(path, {column: repr(float(val))})
+
+    logger.info(
+        f"[SLOW-DOMAIN] PP 等待回填完成（{variant}, batch_mode={batch_mode}, session={session_ns}ns）"
+    )
