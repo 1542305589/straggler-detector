@@ -320,6 +320,8 @@ def _category_threshold(category: str) -> str:
     """
     if category == "npu_bubble":
         return f"<{config.BUBBLE_THRESHOLD_NS}ns"
+    if category == "pp_comm" and config.get_pp_strategy() in ("v6p", "v6pp"):
+        return f">{config.PP_WAIT_RATIO_THRESHOLD * 100:g}%"
     return f"{config.get_threshold_for_category(category):g}x"
 
 

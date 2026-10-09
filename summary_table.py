@@ -142,13 +142,17 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
     if category == "pp_comm":
+        group_mode = config.get_pp_strategy() in ("v6p", "v6pp")
         arrow = "<->" if config.get_pp_batch_mode() else "->"
         cards_parts = []
         deg_parts = []
         dev_parts = []
         for key, val in sorted_items:
             ranks = _parse_ranks_from_key(key)
-            label = f"{ranks[0]}{arrow}{ranks[-1]}"
+            if group_mode:
+                label = "[" + ", ".join(str(r) for r in ranks) + "]"
+            else:
+                label = f"{ranks[0]}{arrow}{ranks[-1]}"
             cards_parts.append(label)
             deg_parts.append(f"{label}:{val:g}")
             dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))
@@ -238,6 +242,8 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         # 劣化阈值列
         if category == "npu_bubble":
             th_str = f"<{threshold['bubble']}ns"
+        elif category == "pp_comm" and config.get_pp_strategy() in ("v6p", "v6pp"):
+            th_str = f">{config.PP_WAIT_RATIO_THRESHOLD * 100:g}%"
         elif category in ("comm", "pp_comm"):
             th_str = f"{threshold['comm']:g}x"
         elif category in config.IO_CATEGORIES:

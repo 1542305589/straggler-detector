@@ -251,6 +251,18 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 - **同一 stage 位置要求所有链路都匹配上**（`PP_Overlap` 有效）才比较；任一条匹配不上则放弃该 stage 的检测。
 - 异常写入 `pp_comm`（组键 `[s, r]`，显示箭头随模式：batch `0<->4`、send/recv `0->4`）。
 
+**三套并存策略**（`config.PP_STRATEGY`，可用 `pp=` 参数或 skill 询问选择，默认 `v6`）：
+
+| 策略 | 口径 | 异常粒度 | 判据 |
+|------|------|----------|------|
+| `v6` | 链路两端点对点算子时间窗重叠（上文） | 链路 `[s, r]` | 按 stage 位置 kmeans（max 方向），`COMM_THRESHOLD` |
+| `v6p` | 每卡「锚点后第一个集合通信的时长」之和（列 `PP_WaitNext`） | 整个 PP 组 | `(max组和 − 本组和)/会话 > 10%`（组和越小越异常） |
+| `v6pp` | 每卡「锚点结束 → 下一次集合通信结束」间隔之和（列 `PP_WaitGap`） | 整个 PP 组 | 同 `v6p` |
+
+- 锚点：batch 模式（PP 链路上出现 `BatchSendRecv`）下为 `BatchSendRecv`；否则为 `Send` / `Recv`（Send 后的集合通信也计入）。"第一个集合通信"会跳过中间连续的点对点传输。
+- 会话时长 `config.PP_SESSION_NS` = 各 rank 合并 profiling 窗口 `end−start` 的最大值（`backfill_pp_wait` 解析时填充）。
+- `v6p`/`v6pp` 的异常项是整组 rank，汇总表/JSON 显示为 `[0, 2, 4, 6]`，劣化阈值显示 `>10%`。
+
 ---
 
 ## 9. 结果输出
@@ -311,8 +323,8 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ## 12. 主入口（main.py）
 
-- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [clean=ask|yes|no]`。
-- `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask')`：skill 调用入口，返回 `{category: {key: degradation}}`。
+- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [clean=ask|yes|no]`。
+- `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask', pp_strategy=None)`：skill 调用入口，`pp_strategy=None` 时交互式询问（默认 v6），返回 `{category: {key: degradation}}`。
 - 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 
 ---
