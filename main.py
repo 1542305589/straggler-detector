@@ -42,6 +42,7 @@ def parse_args(args: list) -> Dict[str, Any]:
         io=xxx       - IO/CPU 类阈值（可选，默认 2.5）
         comm=xxx     - 通信类阈值（可选，默认 1.3）
         pp=xxx       - PP 检测策略（可选，v6/v6p/v6pp，默认 v6）
+        no-align     - 关闭慢通信带宽跨 rank 对齐（可选；也可写 no-align=true）
         clean=xxx    - yes/no/ask
     """
     result = {
@@ -50,6 +51,7 @@ def parse_args(args: list) -> Dict[str, Any]:
         'io': 2.5,
         'comm': 1.3,
         'pp': 'v6',          # v6 / v6p / v6pp
+        'no_align': False,   # 慢通信带宽是否关闭跨 rank 对齐
         'clean': 'ask'       # ask / yes / no
     }
 
@@ -57,6 +59,9 @@ def parse_args(args: list) -> Dict[str, Any]:
         logger.warning(f"Invalid {name} value '{val}', using default {default}")
 
     for arg in args:
+        if arg == 'no-align':        # 裸参数形式 --no-align
+            result['no_align'] = True
+            continue
         if '=' not in arg:
             continue  # 忽略无效参数
 
@@ -82,6 +87,13 @@ def parse_args(args: list) -> Dict[str, Any]:
                 result['pp'] = val.lower()
             else:
                 logger.warning(f"Invalid pp value '{val}', using default 'v6'")
+        elif key == 'no-align':
+            if val.lower() in ('true', 'yes', '1'):
+                result['no_align'] = True
+            elif val.lower() in ('false', 'no', '0'):
+                result['no_align'] = False
+            else:
+                logger.warning(f"Invalid no-align value '{val}', using default false")
         elif key == 'clean':
             if val.lower() in ('yes', 'no', 'ask'):
                 result['clean'] = val.lower()
@@ -331,7 +343,7 @@ def main():
     args = sys.argv[1:]
 
     if len(args) < 1:
-        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [clean=ask]")
+        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [no-align] [clean=ask]")
         sys.exit(1)
 
     # 解析参数
@@ -340,6 +352,7 @@ def main():
     thresholds = (parsed['compute'], parsed['io'], parsed['comm'])
     clean_mode = parsed['clean']
     config.set_pp_strategy(parsed['pp'])
+    config.set_comm_no_align(parsed['no_align'])
 
     if not input_path:
         logger.error("[SLOWNODE ALGO] Missing required parameter: path=/your/data/dir")
@@ -384,7 +397,7 @@ def main():
 
 def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: float = 1.3,
                   skip_parsing: bool = False, clean: str = 'ask',
-                  pp_strategy: str = None) -> Dict[str, Dict[str, float]]:
+                  pp_strategy: str = None, no_align: bool = None) -> Dict[str, Dict[str, float]]:
     """
     作为 skill 被调用的入口函数
 
@@ -400,6 +413,7 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
                'yes' - 强制清理并重新解析
                'no'  - 跳过清理，使用已有数据
         pp_strategy: PP 检测策略（'v6' / 'v6p' / 'v6pp'）；为 None 时交互式询问用户（默认 v6）
+        no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 时交互式询问（默认否）
 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
@@ -409,6 +423,12 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
         config.set_pp_strategy(pp_strategy)
     else:
         config.set_pp_strategy(utils.confirm_pp_strategy())
+
+    # 慢通信带宽口径：显式传入优先，否则交互式询问
+    if no_align is None:
+        config.set_comm_no_align(utils.confirm_no_align())
+    else:
+        config.set_comm_no_align(bool(no_align))
 
     thresholds = (compute, io, comm)
 

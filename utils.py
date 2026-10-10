@@ -258,6 +258,26 @@ def confirm_pp_strategy(default: str = "v6") -> str:
         print("请输入 v6 / v6p / v6pp")
 
 
+def confirm_no_align(default: bool = False) -> bool:
+    """询问慢通信带宽是否关闭跨 rank 对齐（no-align，回车用默认）。
+
+    关闭（yes）→ 用全体 rank 的算子时长扁平池取前 10% 均值作带宽分母；
+    不关闭（no，默认）→ 跨 rank 时间窗对齐后取组内最短时长。
+    """
+    hint = "Y/n" if default else "y/N"
+    while True:
+        ans = input(
+            f"慢通信带宽是否关闭跨 rank 对齐（--no-align：用全体 rank 扁平池；{hint}）："
+        ).strip().lower()
+        if ans == "":
+            return default
+        if ans in ("y", "yes"):
+            return True
+        if ans in ("n", "no"):
+            return False
+        print("请输入 y 或 n")
+
+
 def clean_detection_outputs(input_path: str):
     """
     删除检测前需要清理的文件和目录

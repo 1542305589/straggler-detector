@@ -28,6 +28,20 @@ CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
 # ---- 慢通信带宽检测（对应 Go DetectSlowDomainByBandwidth）----
 SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
 SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
+# --no-align（对应 Go 的 --comm-flat）：带宽回填不做跨 rank 对齐，改用全体 rank 算子时长
+# 扁平池按 (opType,count) 直接取前 10% 均值作分母。默认 False（保持跨 rank 对齐口径）。
+COMM_NO_ALIGN = False
+
+
+def set_comm_no_align(flag: bool):
+    """设置慢通信带宽是否关闭跨 rank 对齐（True=扁平池，False=对齐）。"""
+    global COMM_NO_ALIGN
+    COMM_NO_ALIGN = bool(flag)
+
+
+def get_comm_no_align() -> bool:
+    """慢通信带宽是否关闭跨 rank 对齐。"""
+    return COMM_NO_ALIGN
 
 # ---- PP 流水线慢通信检测（另一方案：PP 链路重叠时间）----
 # PP 组从 parallel_group_info 的 pp 项读取（读不到则不检测 PP，避免把 CP/Ring Attention 误当 PP）。
