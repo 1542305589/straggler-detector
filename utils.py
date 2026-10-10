@@ -122,13 +122,9 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
         for i, (key, value) in enumerate(kvs):
             # 处理显示 key
             if category == "pp_comm":
-                if config.get_pp_strategy() in ("v6p", "v6pp"):
-                    # v6p/v6pp：比较域内逐 rank，key 是单个 rank
-                    display_key = key
-                else:
-                    # v6 链路：key 为 "sender,receiver"；batch 双向 <->，否则单向 ->
-                    arrow = "<->" if config.get_pp_batch_mode() else "->"
-                    display_key = key.replace(",", arrow)
+                # PP 链路：key 为 "sender,receiver"；batch 双向 <->，否则单向 ->
+                arrow = "<->" if config.get_pp_batch_mode() else "->"
+                display_key = key.replace(",", arrow)
             elif is_group_category:
                 ranks = key.split(",")
                 # 查找这个 group 属于哪个域
@@ -237,25 +233,6 @@ def confirm_thresholds(thresholds: tuple) -> tuple:
     io = _ask_threshold("IO/CPU 类阈值（cpu / memcpy_async）", io)
     comm = _ask_threshold("通信类阈值（comm / pp_comm）", comm)
     return (compute, io, comm)
-
-
-def confirm_pp_strategy(default: str = "v6") -> str:
-    """交互式询问 PP 慢通信检测策略（回车用默认）。
-
-    v6   —— 链路时间窗重叠 + stage 位置聚类（默认）
-    v6p  —— 记录锚点后第一个集合通信的时长，按 PP 组求和，Δ/会话 > 10%
-    v6pp —— 同 v6p，但值为「点对点结束 → 下一次集合通信结束」的间隔
-    """
-    options = {"": default, "v6": "v6", "v6p": "v6p", "v6pp": "v6pp",
-               "6": "v6", "6p": "v6p", "6pp": "v6pp"}
-    while True:
-        ans = input(
-            f"PP 检测策略（v6=重叠聚类[默认], v6p=后集合通信时长, "
-            f"v6pp=点对点→集合通信间隔；回车默认 {default}）: "
-        ).strip().lower()
-        if ans in options:
-            return options[ans]
-        print("请输入 v6 / v6p / v6pp")
 
 
 def confirm_no_align(default: bool = False) -> bool:

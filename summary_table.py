@@ -141,21 +141,7 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     """
     sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
-    if category == "pp_comm" and config.get_pp_strategy() in ("v6p", "v6pp"):
-        # v6p/v6pp：比较域内逐 rank，key 是单个 rank，按单卡类别展示
-        abnormal_ranks = []
-        for key in items:
-            abnormal_ranks.extend(_parse_ranks_from_key(key))
-        abnormal_ranks = sorted(set(abnormal_ranks))
-        deg_parts = []
-        dev_parts = []
-        for r in abnormal_ranks:
-            v = items.get(str(r))
-            deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
-            dev_parts.append(_rank_to_device(r))
-        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
-        deg_str = "，".join(deg_parts)
-    elif category == "pp_comm":
+    if category == "pp_comm":
         arrow = "<->" if config.get_pp_batch_mode() else "->"
         cards_parts = []
         deg_parts = []
@@ -252,8 +238,6 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         # 劣化阈值列
         if category == "npu_bubble":
             th_str = f"<{threshold['bubble']}ns"
-        elif category == "pp_comm" and config.get_pp_strategy() in ("v6p", "v6pp"):
-            th_str = f">{config.PP_WAIT_RATIO_THRESHOLD * 100:g}%"
         elif category in ("comm", "pp_comm"):
             th_str = f"{threshold['comm']:g}x"
         elif category in config.IO_CATEGORIES:

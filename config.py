@@ -69,42 +69,6 @@ def get_pp_batch_mode() -> bool:
     return PP_BATCH_MODE
 
 
-# PP 检测策略（并存可切换）：
-#   v6   —— 链路时间窗重叠 + 按 stage 位置 kmeans（默认）
-#   v6p  —— 记录锚点后第一个集合通信的时长，比较域（TP>CP>DP）内逐 rank，Δ/会话 > 10%
-#   v6pp —— 同 v6p，但值为「点对点结束 → 下一次集合通信结束」的间隔
-PP_STRATEGY = "v6"
-PP_WAIT_RATIO_THRESHOLD = 0.10        # v6p/v6pp：Δ / 会话时长 的比例阈值（10%）
-PP_WAIT_NEXT_COLUMN = "PP_WaitNext"   # v6p：每卡「锚点后第一个集合通信时长」之和
-PP_WAIT_GAP_COLUMN = "PP_WaitGap"     # v6pp：每卡「锚点结束→下一次集合通信结束」间隔之和
-PP_SESSION_NS = 0                     # 会话时长（各 rank 合并窗口 end−start 最大值），解析时填充
-
-
-def set_pp_strategy(strategy: str):
-    """设置 PP 检测策略（v6 / v6p / v6pp；非法值回退 v6）。"""
-    global PP_STRATEGY
-    PP_STRATEGY = strategy if strategy in ("v6", "v6p", "v6pp") else "v6"
-
-
-def get_pp_strategy() -> str:
-    """获取 PP 检测策略。"""
-    return PP_STRATEGY
-
-
-def set_pp_session_ns(ns):
-    """设置会话时长（ns）；非正数记为 0。"""
-    global PP_SESSION_NS
-    try:
-        PP_SESSION_NS = int(ns) if ns and int(ns) > 0 else 0
-    except (TypeError, ValueError):
-        PP_SESSION_NS = 0
-
-
-def get_pp_session_ns() -> int:
-    """获取会话时长（ns）。"""
-    return PP_SESSION_NS
-
-
 # 集群数据标志：由 nodelevel_data_handler 在检测时判定（Case A 集群 / Case B 非集群）
 IsClusterData = False
 
