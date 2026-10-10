@@ -222,7 +222,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.5 慢通信域带宽检测（detect_slow_domain_by_bandwidth）
 
-数据来源：解析后带宽回填（`profilingdataparse.backfill_slow_domain_bandwidth`）写进 CSV 的动态列 `<domain>_<opType>_<count>`（跨卡对齐集合通信算子，带宽 = count / 组内最快 10% 最短耗时均值）。
+数据来源：解析后带宽回填（`profilingdataparse.backfill_slow_domain_bandwidth`）写进 CSV 的动态列 `<domain>_<opType>_<count>`。**带宽分母**默认（跨卡对齐）：按 wall-clock 时间窗把每次集合通信 occurrence 跨 rank 对齐，每个 occurrence 取**组内最短时长**，再对全部 occurrence 的最短时长升序取**前 10% 均值**，`带宽 = count / 该均值`；传 `no-align`（对应 Go 的 `--comm-flat`）时改为**不做跨卡对齐**：把组内**全体 rank** 符合条件的算子时长按 `(opType,count)` 汇成扁平池，直接取池内前 10% 均值作分母。
 
 检测规则：
 - 遍历每个集合通信域（跳过 `pp` / `embd`，组数 <2 跳过）。
@@ -326,7 +326,7 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ## 12. 主入口（main.py）
 
-- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [clean=ask|yes|no]`。
+- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [no-align] [clean=ask|yes|no]`。
 - `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask', pp_strategy=None)`：skill 调用入口，`pp_strategy=None` 时交互式询问（默认 v6），返回 `{category: {key: degradation}}`。
 - 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 

@@ -1081,6 +1081,35 @@ def _compute_bandwidth_from_ops(
     return res
 
 
+def _compute_bandwidth_from_ops_flat(
+    members: Dict[int, List[BwOp]], ranks: List[int]
+) -> Dict[Tuple[str, int], float]:
+    """
+    --no-align（对应 Go computeBandwidthFromOpsFlat）：不做跨 rank 对齐，把组内全体 rank
+    符合条件的算子时长按 (opType,count) 汇成一个扁平池，直接取池内前 10% 均值作分母，
+    带宽 = count / 该均值。
+    """
+    combos: Dict[Tuple[str, int], List[int]] = {}
+    for r in ranks:
+        for op in members.get(r, []):
+            d = op.end - op.start
+            if d > 0:
+                combos.setdefault((op.op_type, op.count), []).append(d)
+
+    res: Dict[Tuple[str, int], float] = {}
+    for k, durs in combos.items():
+        valid = [d for d in durs if d > 0]
+        if not valid:
+            continue
+        valid.sort()
+        n = int(math.ceil(len(valid) * 0.10))
+        if n < 1:
+            n = 1
+        mean_dur = sum(valid[:n]) / n
+        res[k] = k[1] / mean_dur
+    return res
+
+
 def _merged_step(conn: sqlite3.Connection) -> StepTime:
     """把该 rank 的所有 step 时间窗合并为一个覆盖整段 profiling 的窗口。"""
     steps = get_all_step_times(conn)
@@ -1299,7 +1328,10 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
         if not valid:
             continue
 
-        res = _compute_bandwidth_from_ops(members, ranks)
+        if config.get_comm_no_align():
+            res = _compute_bandwidth_from_ops_flat(members, ranks)
+        else:
+            res = _compute_bandwidth_from_ops(members, ranks)
         if not res:
             continue
 

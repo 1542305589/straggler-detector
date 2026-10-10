@@ -38,7 +38,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 ### 命令行执行
 
 ```bash
-python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp=v6 clean=ask
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp=v6 no-align clean=ask
 ```
 
 参数说明：
@@ -56,7 +56,7 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp=v6 clean=ask
 
 ```python
 import main
-result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", pp_strategy="v6")
+result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", pp_strategy="v6", no_align=False)
 ```
 
 ## 执行规则（重要）
