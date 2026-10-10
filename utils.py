@@ -123,8 +123,8 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
             # 处理显示 key
             if category == "pp_comm":
                 if config.get_pp_strategy() in ("v6p", "v6pp"):
-                    # v6p/v6pp：异常项是整组 PP ranks，显示为 [r0, r1, ...]
-                    display_key = "[" + ", ".join(key.split(",")) + "]"
+                    # v6p/v6pp：比较域内逐 rank，key 是单个 rank
+                    display_key = key
                 else:
                     # v6 链路：key 为 "sender,receiver"；batch 双向 <->，否则单向 ->
                     arrow = "<->" if config.get_pp_batch_mode() else "->"

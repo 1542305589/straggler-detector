@@ -141,18 +141,28 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     """
     sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
-    if category == "pp_comm":
-        group_mode = config.get_pp_strategy() in ("v6p", "v6pp")
+    if category == "pp_comm" and config.get_pp_strategy() in ("v6p", "v6pp"):
+        # v6p/v6pp：比较域内逐 rank，key 是单个 rank，按单卡类别展示
+        abnormal_ranks = []
+        for key in items:
+            abnormal_ranks.extend(_parse_ranks_from_key(key))
+        abnormal_ranks = sorted(set(abnormal_ranks))
+        deg_parts = []
+        dev_parts = []
+        for r in abnormal_ranks:
+            v = items.get(str(r))
+            deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
+            dev_parts.append(_rank_to_device(r))
+        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
+        deg_str = "，".join(deg_parts)
+    elif category == "pp_comm":
         arrow = "<->" if config.get_pp_batch_mode() else "->"
         cards_parts = []
         deg_parts = []
         dev_parts = []
         for key, val in sorted_items:
             ranks = _parse_ranks_from_key(key)
-            if group_mode:
-                label = "[" + ", ".join(str(r) for r in ranks) + "]"
-            else:
-                label = f"{ranks[0]}{arrow}{ranks[-1]}"
+            label = f"{ranks[0]}{arrow}{ranks[-1]}"
             cards_parts.append(label)
             deg_parts.append(f"{label}:{val:g}")
             dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))

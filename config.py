@@ -56,7 +56,7 @@ def get_pp_batch_mode() -> bool:
 
 # PP 检测策略（并存可切换）：
 #   v6   —— 链路时间窗重叠 + 按 stage 位置 kmeans（默认）
-#   v6p  —— v0 风格：记录锚点后第一个集合通信的时长，按 PP 组求和，Δ/会话 > 10%
+#   v6p  —— 记录锚点后第一个集合通信的时长，比较域（TP>CP>DP）内逐 rank，Δ/会话 > 10%
 #   v6pp —— 同 v6p，但值为「点对点结束 → 下一次集合通信结束」的间隔
 PP_STRATEGY = "v6"
 PP_WAIT_RATIO_THRESHOLD = 0.10        # v6p/v6pp：Δ / 会话时长 的比例阈值（10%）
