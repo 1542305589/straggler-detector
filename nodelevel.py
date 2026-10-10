@@ -527,23 +527,41 @@ def _collect_op_types(group_bws: List[List[Dict[str, Any]]]) -> set:
     return s
 
 
-def _detect_pp_group_ratio(
+def _pp_compare_groups(parallels: Dict[str, List[List[int]]]) -> List[List[int]]:
+    """
+    v6p/v6pp 的比较域分组：命名域优先级 **TP > CP > DP**；都没有时用 PP 的 **stage 转置**
+    （把各 PP 组同一 stage 位置的成员归一组，如 x1P=2,x2P=2,PP=2 → [0,1,2,3] / [4,5,6,7]）。
+    """
+    for domain in ("tp", "cp", "dp"):
+        gs = parallels.get(domain)
+        if gs:
+            return [sorted(g) for g in gs if len(g) >= 2]
+    pp = parallels.get(ppParallelDomainName)
+    if not pp:
+        return []
+    n = max(len(g) for g in pp)
+    out = []
+    for k in range(n):
+        members = [sorted(g)[k] for g in pp if len(g) > k]
+        if len(members) >= 2:
+            out.append(sorted(members))
+    return out
+
+
+def _detect_pp_rank_ratio(
     parallels: Dict[str, List[List[int]]],
     step_data: Dict[str, Dict[int, float]],
     local_result: config.DegradationData,
     strategy: str,
 ):
     """
-    v6p / v6pp 策略：按 PP 组求和 → 与最大组求差 → 占会话时长比例 > 10% 判异常。
+    v6p / v6pp 策略：按比较域（TP > CP > DP，退化用 PP stage）分组，域内**逐 rank** 与组内
+    最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`，`> 10%` 判异常（偏小异常）。
+    异常项 = 单个 rank（add_single）。
 
     指标列：v6p → PP_WaitNext（锚点后第一个集合通信时长之和）；
             v6pp → PP_WaitGap（锚点结束→下一次集合通信结束间隔之和）。
-    方向：组和越小越异常（Δ = max组和 − 本组和）。异常项=整个 PP 组，劣化指数 = Δ/会话时长。
     """
-    groups = parallels.get(ppParallelDomainName)
-    if not groups or len(groups) < 2:
-        return
-
     column = config.PP_WAIT_NEXT_COLUMN if strategy == "v6p" else config.PP_WAIT_GAP_COLUMN
     vals = step_data.get(column, {})
     if not vals:
@@ -553,20 +571,19 @@ def _detect_pp_group_ratio(
     if session <= 0:
         return
 
-    group_sums = []
-    for g in groups:
-        vs = [vals[r] for r in g if r in vals and vals[r] != -99999]
-        if not vs:
-            continue
-        group_sums.append((sorted(g), sum(vs)))
-    if len(group_sums) < 2:
+    compare_groups = _pp_compare_groups(parallels)
+    if not compare_groups:
         return
 
-    max_sum = max(s for _, s in group_sums)
-    for g, s in group_sums:
-        score = (max_sum - s) / session
-        if score > config.PP_WAIT_RATIO_THRESHOLD:
-            local_result.add_group("pp_comm", g, score)
+    for g in compare_groups:
+        pairs = [(r, vals[r]) for r in g if r in vals and vals[r] != -99999]
+        if len(pairs) < 2:
+            continue
+        max_t = max(v for _, v in pairs)
+        for r, v in pairs:
+            score = (max_t - v) / session
+            if score > config.PP_WAIT_RATIO_THRESHOLD:
+                local_result.add_single("pp_comm", r, score)
 
 
 def detect_pp_slow_domain(
@@ -586,10 +603,10 @@ def detect_pp_slow_domain(
     组键 [s, r] 写入类别 "pp_comm"（显示箭头随匹配模式：batch → "<->"，send/recv → "->"）。
     同一 stage 位置要求所有链路都匹配上才比较（任一条匹配不上则放弃该 stage）。
     """
-    # v6p / v6pp：走「PP 组求和 + Δ/会话 > 10%」的另一套口径
+    # v6p / v6pp：走「比较域内逐 rank（max−本值）/会话 > 10%」的另一套口径
     strategy = config.get_pp_strategy()
     if strategy in ("v6p", "v6pp"):
-        _detect_pp_group_ratio(parallels, step_data, local_result, strategy)
+        _detect_pp_rank_ratio(parallels, step_data, local_result, strategy)
         return
 
     groups = parallels.get(ppParallelDomainName)
