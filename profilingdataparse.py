@@ -1417,18 +1417,12 @@ def _p2p_dir(name: str) -> str:
     return ""
 
 
-def _p2p_slot(name: str) -> Optional[int]:
-    """从算子名提取传输序号 `..._{grp}_{slot}_N` 的 slot，用于上下游对齐；取不到返回 None。"""
-    m = re.search(r"_(\d+)_\d+$", name or "")
-    return int(m.group(1)) if m else None
-
-
 def _overlap_time(a_s: int, a_e: int, b_s: int, b_e: int) -> int:
     return max(0, min(a_e, b_e) - max(a_s, b_s))
 
 
 def _load_p2p_ops(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """加载某 rank 的全部 PP 点对点算子（Send/Recv/BatchSendRecv），含 count 与 slot。"""
+    """加载某 rank 的全部 PP 点对点算子（Send/Recv/BatchSendRecv），含 count 与方向。"""
     if not table_exists(conn, "COMMUNICATION_OP"):
         return []
     step = _merged_step(conn)
@@ -1451,68 +1445,48 @@ def _load_p2p_ops(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
             except (TypeError, ValueError):
                 cnt = None
             out.append({"name": name, "start": s, "end": e,
-                        "count": cnt, "slot": _p2p_slot(name), "dir": _p2p_dir(name)})
+                        "count": cnt, "dir": _p2p_dir(name)})
     return out
 
 
-def _count_close(a: Dict, b: Dict, tol: float) -> bool:
-    """两端 count 相对差是否在容差内（任一缺 count 时不以此过滤）。"""
-    ca, cb = a.get("count"), b.get("count")
-    if ca is None or cb is None:
-        return True
-    denom = max(ca, cb)
-    return denom == 0 or abs(ca - cb) / denom <= tol
+def _pair_pp(ops_s: List[Dict], ops_r: List[Dict],
+             send_dirs: tuple, recv_dirs: tuple) -> List[tuple]:
+    """
+    PP 链路两端配对：对每个发方算子（`dir ∈ send_dirs`），在收方算子（`dir ∈ recv_dirs`）里找
+    **时间窗重叠最大**的一个配对（一对一，收方不重复用）；若完全没有重叠，退化为取 start 时间
+    最近、且差值 ≤ `PP_PAIR_FALLBACK_NS` 的收方算子。
 
-
-def _pair_batch_by_slot(ops_s: List[Dict], ops_r: List[Dict]) -> List[tuple]:
-    """batch 模式：两端 BatchSendRecv 按 slot 配对。"""
-    r_by_slot = {o["slot"]: o for o in ops_r
-                 if o["slot"] is not None and o["dir"] == "both"}
-    pairs = []
-    for o in ops_s:
-        if o["dir"] != "both":
-            continue
-        p = r_by_slot.get(o["slot"])
-        if p is not None:
-            pairs.append((o, p))
-    return pairs
-
-
-def _pair_send_recv_by_slot(ops_s: List[Dict], ops_r: List[Dict], tol: float) -> List[tuple]:
-    """send/recv 模式：发方 Send ↔ 收方 Recv 按 slot 配对，且两端 count 相对差 ≤ tol。"""
-    r_by_slot = {}
-    for o in ops_r:
-        if o["slot"] is not None and o["dir"] == "recv":
-            r_by_slot.setdefault(o["slot"], []).append(o)
-    pairs = []
-    for o in ops_s:
-        if o["dir"] != "send":
-            continue
-        for p in r_by_slot.get(o["slot"], []):
-            if _count_close(o, p, tol):
-                pairs.append((o, p))
-                break
-    return pairs
-
-
-def _pair_by_time(ops_s: List[Dict], ops_r: List[Dict],
-                  send_dirs: tuple, recv_dirs: tuple, tol: float) -> List[tuple]:
-    """时间贪心兜底：发方算子匹配 start 最接近的收方算子（按方向 + count 容差）。"""
-    senders = [o for o in ops_s if o["dir"] in send_dirs]
+    完全不依赖算子名里的 slot 序号，也不看 count——不同 rank 的点对点算子数可以不同，按序号
+    对齐会把不同次传输配到一起（重叠算成 0 → 漏检）。
+    """
+    senders = sorted((o for o in ops_s if o["dir"] in send_dirs), key=lambda o: o["start"])
     recvs = [o for o in ops_r if o["dir"] in recv_dirs]
+    fallback = config.PP_PAIR_FALLBACK_NS
     pairs = []
     used = set()
-    for a in sorted(senders, key=lambda o: o["start"]):
-        best = None
+    for a in senders:
+        best_j = None
+        best_ov = 0
         for j, b in enumerate(recvs):
-            if j in used or not _count_close(a, b, tol):
+            if j in used:
                 continue
-            diff = abs(b["start"] - a["start"])
-            if best is None or diff < best[0]:
-                best = (diff, j)
-        if best is not None:
-            used.add(best[1])
-            pairs.append((a, recvs[best[1]]))
+            ov = _overlap_time(a["start"], a["end"], b["start"], b["end"])
+            if ov > best_ov:
+                best_ov = ov
+                best_j = j
+        if best_j is None:
+            # 无任何时间窗重叠 → 时间近邻兜底
+            best_dt = None
+            for j, b in enumerate(recvs):
+                if j in used:
+                    continue
+                dt = abs(b["start"] - a["start"])
+                if dt <= fallback and (best_dt is None or dt < best_dt):
+                    best_dt = dt
+                    best_j = j
+        if best_j is not None:
+            used.add(best_j)
+            pairs.append((a, recvs[best_j]))
     return pairs
 
 
@@ -1521,13 +1495,13 @@ def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
     回填每卡的 PP 链路重叠时长（PP_Overlap）与传输字节数（PP_Count），供 PP 慢通信检测使用。
 
     PP 组取自 parallel_group_info 的 pp 项（读不到则整段跳过）。对每个 PP 组相邻两 stage 组成
-    的链路 (s->r)，用两端（发方 s / 收方 r）的点对点算子（Send / Recv / BatchSendRecv）按
-    传输序号（或时间）对齐后求窗口交集，得到该链路实际传输时间；同时累加 count 得到传输字节
-    数。结果写入收方 r 的 CSV（每卡一个数值）。
+    的链路 (s->r)，用两端（发方 s / 收方 r）的点对点算子（Send / Recv / BatchSendRecv）配对
+    后求窗口交集（重叠优先，无重叠则时间近邻兜底），得到该链路实际传输时间；同时累加 count
+    得到传输字节数。结果写入收方 r 的 CSV（每卡一个数值）。
 
     匹配模式为**全局**：只要 PP 链路上出现 BatchSendRecv，就整次用 batch 匹配（两端
-    BatchSendRecv 按 slot 配对，显示 "<->"）；否则用 Send/Recv 单向匹配（发方 Send ↔
-    收方 Recv，按 slot 且 count 相对差 ≤ PP_COUNT_TOLERANCE，显示 "->"）。
+    BatchSendRecv 配对，显示 "<->"）；否则用 Send/Recv 单向匹配（发方 Send ↔ 收方 Recv，
+    显示 "->"）。配对不依赖算子名序号（slot），也不看 count。
     """
     if db_files is None:
         db_files = discover_db_files(input_path)
@@ -1583,7 +1557,6 @@ def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
     batch_mode = any(o["dir"] == "both"
                      for g in pp_groups for rank in g for o in rank_p2p(rank))
     config.set_pp_batch_mode(batch_mode)
-    tol = config.PP_COUNT_TOLERANCE
 
     for g in pp_groups:
         for t in range(len(g) - 1):
@@ -1591,13 +1564,9 @@ def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
             ops_s = rank_p2p(s)
             ops_r = rank_p2p(r)
             if batch_mode:
-                pairs = _pair_batch_by_slot(ops_s, ops_r)
-                if not pairs:
-                    pairs = _pair_by_time(ops_s, ops_r, ("both",), ("both",), tol)
+                pairs = _pair_pp(ops_s, ops_r, ("both",), ("both",))
             else:
-                pairs = _pair_send_recv_by_slot(ops_s, ops_r, tol)
-                if not pairs:
-                    pairs = _pair_by_time(ops_s, ops_r, ("send",), ("recv",), tol)
+                pairs = _pair_pp(ops_s, ops_r, ("send",), ("recv",))
             if not pairs:
                 continue
             total_overlap = sum(_overlap_time(a["start"], a["end"], b["start"], b["end"])

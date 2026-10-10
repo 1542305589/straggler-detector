@@ -616,15 +616,13 @@ def detect_pp_slow_domain(
     overlap = step_data.get(config.PP_OVERLAP_COLUMN, {})
     if not overlap:
         return
-    counts = step_data.get(config.PP_COUNT_COLUMN, {})
-    tol = getattr(config, 'PP_COUNT_TOLERANCE', 0.05)
 
     # 组内升序视为 stage 顺序（rank = pp_stage * tp_size + tp_rank）
     sorted_groups = [sorted(g) for g in groups]
     max_len = max(len(g) for g in sorted_groups)
 
     for t in range(max_len - 1):
-        links = []  # {s, r, value, count}
+        links = []  # {s, r, value}
         complete = True
         for g in sorted_groups:
             if len(g) <= t + 1:
@@ -635,36 +633,20 @@ def detect_pp_slow_domain(
             if v is None or v == -99999 or v <= 0:
                 complete = False  # 链路匹配失败/无数据
                 break
-            links.append({"s": s, "r": r, "value": v, "count": counts.get(r) or 0})
+            links.append({"s": s, "r": r, "value": v})
         if not complete:
             continue  # A2：该 stage 只要有一条匹配不上，放弃整个 stage 的比较
         if len(links) < 2:
             continue
 
-        # 按 count 相对容差分组：只比较"承载同样数据量"的链路，规避大包/小包差异
-        count_groups = []
-        for L in links:
-            placed = False
-            for cg in count_groups:
-                ref = cg[0]["count"]
-                denom = max(ref, L["count"])
-                if denom and abs(ref - L["count"]) / denom <= tol:
-                    cg.append(L)
-                    placed = True
+        # 同一边界的链路直接一起比重叠时长（不按 count 分桶：同边界本应同大小，差异多为匹配假象）
+        recv_ranks = [x["r"] for x in links]
+        values = [x["value"] for x in links]
+        abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
+            recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
+        )
+        for rk, deg in zip(abnormal_recv, degs):
+            for x in links:
+                if x["r"] == rk:
+                    local_result.add_group("pp_comm", [x["s"], x["r"]], deg)
                     break
-            if not placed:
-                count_groups.append([L])
-
-        for cg in count_groups:
-            if len(cg) < 2:
-                continue
-            recv_ranks = [x["r"] for x in cg]
-            values = [x["value"] for x in cg]
-            abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
-                recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
-            )
-            for rk, deg in zip(abnormal_recv, degs):
-                for x in cg:
-                    if x["r"] == rk:
-                        local_result.add_group("pp_comm", [x["s"], x["r"]], deg)
-                        break

@@ -243,11 +243,13 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 数据来源：解析后回填（`profilingdataparse.backfill_pp_overlap`）写进 CSV 动态列 `PP_Overlap` = 每卡作为收方时，其入边链路两端点对点算子的**时间窗重叠时长**（`min(a.end, b.end) − max(a.start, b.start)`，多次求和），以及 `PP_Count` = 该链路传输字节数。
 
-**匹配模式（全局）**：解析时判定一次——PP 链路上只要出现 `BatchSendRecv` 就整次用 batch 匹配（两端 `BatchSendRecv` 按 slot 配对，显示 `<->`）；否则用 Send/Recv 单向匹配（发方 `Send` ↔ 收方 `Recv`，按 slot 且两端 count 相对差 ≤ `PP_COUNT_TOLERANCE`，显示 `->`）。时间贪心为 slot 取不到时的兜底，同样按模式+方向过滤。模式写入 `config.PP_BATCH_MODE`。
+**匹配模式（全局）**：解析时判定一次——PP 链路上只要出现 `BatchSendRecv` 就整次用 batch 匹配（两端 `BatchSendRecv` 配对，显示 `<->`）；否则用 Send/Recv 单向匹配（发方 `Send` ↔ 收方 `Recv`，显示 `->`）。模式写入 `config.PP_BATCH_MODE`。
+
+**两端配对**（`_pair_pp`，不依赖算子名序号）：对每个发方算子，在收方里找**时间窗重叠最大**的算子（一对一）；若完全没有重叠，退化为取 `start` 时间最近、且差值 ≤ `PP_PAIR_FALLBACK_NS`（5ms）的收方算子。不同 rank 的点对点算子数可以不同，按序号对齐会把不同次传输配到一起导致漏检。
 
 检测规则（`detect_pp_slow_domain`）：
 - PP 组取自 `parallel_group_info` 的 pp 项；组内 rank 升序视为 stage 顺序，相邻两 stage 组成链路。
-- 按 **stage 位置** 分组，把各 PP 组同一位置的链路放一组做 kmeans（**max 方向**，重叠越长→传输越慢），阈值 = `COMM_THRESHOLD`。组内再按 `PP_Count` 相对容差细分，只比较承载量相近的链路。
+- 按 **stage 位置** 分组，把各 PP 组同一位置的链路放一组做 kmeans（**max 方向**，重叠越长→传输越慢），阈值 = `COMM_THRESHOLD`。同一边界的链路直接一起比（**不按 count 分桶**：同边界本应同大小，差异多为匹配假象）。
 - **同一 stage 位置要求所有链路都匹配上**（`PP_Overlap` 有效）才比较；任一条匹配不上则放弃该 stage 的检测。
 - 异常写入 `pp_comm`（组键 `[s, r]`，显示箭头随模式：batch `0<->4`、send/recv `0->4`）。
 
