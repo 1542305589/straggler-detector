@@ -36,8 +36,9 @@ SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低�
 # 否则 Send/Recv 单向（->）；同一 stage 要求所有链路都匹配上才比较。跨链路做 kmeans（max 方向，
 # 重叠越长→传输越慢），异常按组键 [s, r] 报告；阈值用 COMM_THRESHOLD。
 PP_OVERLAP_COLUMN = "PP_Overlap"   # 每卡"其入边链路 Send/Recv 重叠时长"的动态列名
-PP_COUNT_COLUMN = "PP_Count"       # 每卡"其入边 PP 链路传输总字节数"的动态列名（用于 count 分组，规避包大小差异）
-PP_COUNT_TOLERANCE = 0.05          # PP 链路按 count 分组的相对容差（默认 5%）：吸收 padding/对齐噪声，隔离真的大/小包与 fp32/bf16 差异
+PP_COUNT_COLUMN = "PP_Count"       # 每卡"其入边 PP 链路传输总字节数"的动态列名（仅记录，v6 已不用于分组）
+PP_COUNT_TOLERANCE = 0.05          # （已弃用）PP 链路 count 容差分组；v6 现按重叠优先配对、同边界直接比，不再按 count 分桶
+PP_PAIR_FALLBACK_NS = 5_000_000    # PP 两端配对无重叠时的时间近邻兜底上限（5ms）：取 start 最近且差值 ≤ 此值的算子
 # PP 匹配模式（全局）：只要 PP 链路上出现 BatchSendRecv 算子，就整次用 batch 匹配（箭头 <->）；
 # 否则用 Send/Recv 单向匹配（箭头 ->）。由 profilingdataparse.backfill_pp_overlap 判定并写入。
 PP_BATCH_MODE = False
