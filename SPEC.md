@@ -77,7 +77,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
   ├── detect_slow_domain_by_bandwidth() → comm（HasNamedDomain 时）
-  ├── detect_pp_slow_domain()                → pp_comm（PP 链路重叠，batch <-> / send-recv ->）
+  ├── detect_pp_slow_domain()                → pp_comm（点对点→集合通信间隔，逐 rank 比较）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
         │
         ▼
@@ -239,32 +239,14 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.7 PP 慢通信 pp_comm（detect_pp_slow_domain）
 
-PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测。**只在 `parallel_group_info` 声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。
+PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `parallel_group_info` 的 pp 项；读不到时退回按比较域（见下）。
 
-数据来源：解析后回填（`profilingdataparse.backfill_pp_overlap`）写进 CSV 动态列 `PP_Overlap` = 每卡作为收方时，其入边链路两端点对点算子的**时间窗重叠时长**（`min(a.end, b.end) − max(a.start, b.start)`，多次求和），以及 `PP_Count` = 该链路传输字节数。
+数据来源：解析后回填（`profilingdataparse.backfill_pp_wait`）写进 CSV 动态列 `PP_WaitGap` = 每卡「点对点传输**结束** → 其**下一次集合通信结束**」的间隔之和（无下一次集合通信则不计）。锚点：batch 模式（PP 链路上出现 `BatchSendRecv`）下为 `BatchSendRecv`；否则为 `Send` / `Recv`（找其后第一个集合通信，跳过中间连续的点对点）。会话时长 `config.PP_SESSION_NS` = 各 rank 合并 profiling 窗口 `end−start` 的最大值（解析时填充）。
 
-**匹配模式（全局）**：解析时判定一次——PP 链路上只要出现 `BatchSendRecv` 就整次用 batch 匹配（两端 `BatchSendRecv` 配对，显示 `<->`）；否则用 Send/Recv 单向匹配（发方 `Send` ↔ 收方 `Recv`，显示 `->`）。模式写入 `config.PP_BATCH_MODE`。
-
-**两端配对**（`_pair_pp`，不依赖算子名序号）：对每个发方算子，在收方里找**时间窗重叠最大**的算子（一对一）；若完全没有重叠，退化为取 `start` 时间最近、且差值 ≤ `PP_PAIR_FALLBACK_NS`（5ms）的收方算子。不同 rank 的点对点算子数可以不同，按序号对齐会把不同次传输配到一起导致漏检。
-
-检测规则（`detect_pp_slow_domain`）：
-- PP 组取自 `parallel_group_info` 的 pp 项；组内 rank 升序视为 stage 顺序，相邻两 stage 组成链路。
-- 按 **stage 位置** 分组，把各 PP 组同一位置的链路放一组做 kmeans（**max 方向**，重叠越长→传输越慢），阈值 = `COMM_THRESHOLD`。同一边界的链路直接一起比（**不按 count 分桶**：同边界本应同大小，差异多为匹配假象）。
-- **同一 stage 位置要求所有链路都匹配上**（`PP_Overlap` 有效）才比较；任一条匹配不上则放弃该 stage 的检测。
-- 异常写入 `pp_comm`（组键 `[s, r]`，显示箭头随模式：batch `0<->4`、send/recv `0->4`）。
-
-**三套并存策略**（`config.PP_STRATEGY`，可用 `pp=` 参数或 skill 询问选择，默认 `v6`）：
-
-| 策略 | 口径 | 异常粒度 | 判据 |
-|------|------|----------|------|
-| `v6` | 链路两端点对点算子时间窗重叠（上文） | 链路 `[s, r]` | 按 stage 位置 kmeans（max 方向），`COMM_THRESHOLD` |
-| `v6p` | 每卡「锚点后第一个集合通信的时长」之和（列 `PP_WaitNext`） | 单个 rank | 比较域内 `(组内最大 − 本 rank)/会话 > 10%`（偏小异常） |
-| `v6pp` | 每卡「锚点结束 → 下一次集合通信结束」间隔之和（列 `PP_WaitGap`） | 单个 rank | 同 `v6p` |
-
-- 锚点：batch 模式（PP 链路上出现 `BatchSendRecv`）下为 `BatchSendRecv`；否则为 `Send` / `Recv`（Send 后的集合通信也计入）。"第一个集合通信"会跳过中间连续的点对点传输。
-- 会话时长 `config.PP_SESSION_NS` = 各 rank 合并 profiling 窗口 `end−start` 的最大值（`backfill_pp_wait` 解析时填充）。
-- **比较域**（`v6p`/`v6pp`）：命名域优先级 **TP > CP > DP**（有 `tp` 用 `tp` 分组，否则 `cp`，否则 `dp`）；都没有时用 **PP stage 转置**（各 PP 组同一 stage 位置的成员归一组）。
-- `v6p`/`v6pp` 异常项是**单个 rank**，汇总表「异常卡」列显示 `rank 0, 3`，劣化阈值显示 `>10%`。
+检测规则（`detect_pp_slow_domain` → `_detect_pp_rank_ratio`）：
+- **比较域**（`_pp_compare_groups`）：命名域优先级 **TP > CP > DP**（有 `tp` 用 `tp` 分组，否则 `cp`，否则 `dp`）；都没有时用 **PP stage 转置**（各 PP 组同一 stage 位置的成员归一组）。
+- 域内**逐 rank** 与组内最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`；`> 10%` 判异常（**偏小异常**）。
+- 异常项是**单个 rank**（`add_single`），汇总表「异常卡」列显示 `rank 0, 3`，劣化阈值显示 `>10%`。
 
 ---
 
@@ -326,8 +308,8 @@ PP 传输（Send/Recv）不在带宽白名单内，单独用另一方案检测�
 
 ## 12. 主入口（main.py）
 
-- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [no-align] [clean=ask|yes|no]`。
-- `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask', pp_strategy=None)`：skill 调用入口，`pp_strategy=None` 时交互式询问（默认 v6），返回 `{category: {key: degradation}}`。
+- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask|yes|no]`。
+- `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask', no_align=None)`：skill 调用入口，返回 `{category: {key: degradation}}`。
 - 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 
 ---

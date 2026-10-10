@@ -41,7 +41,6 @@ def parse_args(args: list) -> Dict[str, Any]:
         compute=xxx  - 计算类阈值（可选，默认 1.3）
         io=xxx       - IO/CPU 类阈值（可选，默认 2.5）
         comm=xxx     - 通信类阈值（可选，默认 1.3）
-        pp=xxx       - PP 检测策略（可选，v6/v6p/v6pp，默认 v6）
         no-align     - 关闭慢通信带宽跨 rank 对齐（可选；也可写 no-align=true）
         clean=xxx    - yes/no/ask
     """
@@ -50,7 +49,6 @@ def parse_args(args: list) -> Dict[str, Any]:
         'compute': 1.3,
         'io': 2.5,
         'comm': 1.3,
-        'pp': 'v6',          # v6 / v6p / v6pp
         'no_align': False,   # 慢通信带宽是否关闭跨 rank 对齐
         'clean': 'ask'       # ask / yes / no
     }
@@ -82,11 +80,6 @@ def parse_args(args: list) -> Dict[str, Any]:
                     _bad(key, val, result[key])
             except ValueError:
                 _bad(key, val, result[key])
-        elif key == 'pp':
-            if val.lower() in ('v6', 'v6p', 'v6pp'):
-                result['pp'] = val.lower()
-            else:
-                logger.warning(f"Invalid pp value '{val}', using default 'v6'")
         elif key == 'no-align':
             if val.lower() in ('true', 'yes', '1'):
                 result['no_align'] = True
@@ -163,11 +156,7 @@ def _backfill_slow_domain(job_path: str, db_files: list = None):
     except Exception as e:
         logger.warning(f"慢通信带宽回填失败：{e}")
     try:
-        strategy = config.get_pp_strategy()
-        if strategy in ("v6p", "v6pp"):
-            profilingdataparse.backfill_pp_wait(job_path, db_files, variant=strategy)
-        else:
-            profilingdataparse.backfill_pp_overlap(job_path, db_files)
+        profilingdataparse.backfill_pp_wait(job_path, db_files)
     except Exception as e:
         logger.warning(f"PP 等待回填失败：{e}")
 
@@ -343,7 +332,7 @@ def main():
     args = sys.argv[1:]
 
     if len(args) < 1:
-        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [pp=v6|v6p|v6pp] [no-align] [clean=ask]")
+        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask]")
         sys.exit(1)
 
     # 解析参数
@@ -351,7 +340,6 @@ def main():
     input_path = parsed['path']
     thresholds = (parsed['compute'], parsed['io'], parsed['comm'])
     clean_mode = parsed['clean']
-    config.set_pp_strategy(parsed['pp'])
     config.set_comm_no_align(parsed['no_align'])
 
     if not input_path:
@@ -397,7 +385,7 @@ def main():
 
 def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: float = 1.3,
                   skip_parsing: bool = False, clean: str = 'ask',
-                  pp_strategy: str = None, no_align: bool = None) -> Dict[str, Dict[str, float]]:
+                  no_align: bool = None) -> Dict[str, Dict[str, float]]:
     """
     作为 skill 被调用的入口函数
 
@@ -412,18 +400,11 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
                'ask' - 交互式询问（默认，需终端 TTY）
                'yes' - 强制清理并重新解析
                'no'  - 跳过清理，使用已有数据
-        pp_strategy: PP 检测策略（'v6' / 'v6p' / 'v6pp'）；为 None 时交互式询问用户（默认 v6）
         no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 时交互式询问（默认否）
 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
-    # PP 检测策略：显式传入优先，否则交互式询问（skill 调用）
-    if pp_strategy in ("v6", "v6p", "v6pp"):
-        config.set_pp_strategy(pp_strategy)
-    else:
-        config.set_pp_strategy(utils.confirm_pp_strategy())
-
     # 慢通信带宽口径：显式传入优先，否则交互式询问
     if no_align is None:
         config.set_comm_no_align(utils.confirm_no_align())

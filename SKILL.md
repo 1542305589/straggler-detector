@@ -22,7 +22,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 | 类别 | 指标列 | 检测方式 |
 |---|---|---|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_Overlap`（PP 链路 Send/Recv 时间窗重叠） | 按阶段位置聚类（max 方向，重叠长则慢，报 `发送方->接收方`） |
+| `pp_comm` | `PP_WaitGap`（点对点结束→下一次集合通信结束间隔） | 比较域（TP>CP>DP）内逐 rank，(组内最大−本值)/会话 > 10% |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -38,7 +38,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 ### 命令行执行
 
 ```bash
-python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp=v6 no-align clean=ask
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 ```
 
 参数说明：
@@ -56,7 +56,7 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp=v6 no-align cle
 
 ```python
 import main
-result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", pp_strategy="v6", no_align=False)
+result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", no_align=False)
 ```
 
 ## 执行规则（重要）
@@ -129,6 +129,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
 
-**PP 慢通信（`pp_comm`）另一方案**：PP 传输不在带宽白名单内，单独检测。**只在 `parallel_group_info` 明确声明了 `pp` 域时才检测**（否则这些点对点传输可能属于 CP/Ring Attention，读不到 pp 分组就跳过）。解析后回填每卡入边链路的**时间窗重叠时长**（`PP_Overlap`）与**传输字节数**（`PP_Count`）；匹配模式全局一致——出现 `BatchSendRecv` 用 batch（显示 `0<->4`），否则 Send/Recv 单向（显示 `0->4`）。两端配对**不依赖算子名序号**：每个发方算子找时间窗重叠最大的收方算子，无重叠则取 start 最近且 ≤5ms 的；检测时按 PP 组内 **stage 位置**把各 PP 组的相邻两 stage 链路放一组做 kmeans（**max 方向，重叠越长→传输越慢**，同边界直接比、不按 count 分桶）；**同一 stage 位置要求所有链路都匹配上才比较**（任一条匹配不上则放弃该 stage）。阈值用通信类 `comm`（默认 1.3）。
+**PP 慢通信（`pp_comm`）另一方案**：PP 传输（点对点）不在带宽白名单内，单独检测。解析后回填每卡 `PP_WaitGap` = 「点对点传输结束 → 其下一次集合通信结束」的间隔之和（锚点：出现 `BatchSendRecv` 用 BatchSendRecv，否则用 Send/Recv；找其后第一个集合通信、跳过中间点对点；无下一次集合通信则不计）。检测时按**比较域**（命名域优先级 **TP > CP > DP**，都没有时用 **PP stage 转置**）把 rank 分组，域内**逐 rank** 与组内最大值比较：`(组内最大 − 本 rank) / 会话时长 > 10%` 判异常（**偏小异常**），异常项为单个 rank。会话时长取各 rank 合并 profiling 窗口的最大值。
 
 **PP 分组来源**：PP 组直接读 `parallel_group_info` 的 `pp` 项（`group_name=="pp"` 的 `global_ranks`），读不到则不检测。同一 PP 组内 rank 升序视为 stage 顺序；相邻两 stage 组成一条链路，两端点对点算子按传输序号（slot）对齐后取时间窗重叠作为该链路指标。
