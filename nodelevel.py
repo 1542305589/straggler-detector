@@ -552,18 +552,13 @@ def _detect_pp_rank_ratio(
     parallels: Dict[str, List[List[int]]],
     step_data: Dict[str, Dict[int, float]],
     local_result: config.DegradationData,
-    strategy: str,
 ):
     """
-    v6p / v6pp 策略：按比较域（TP > CP > DP，退化用 PP stage）分组，域内**逐 rank** 与组内
+    PP 慢通信检测：按比较域（TP > CP > DP，退化用 PP stage）分组，域内**逐 rank** 与组内
     最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`，`> 10%` 判异常（偏小异常）。
-    异常项 = 单个 rank（add_single）。
-
-    指标列：v6p → PP_WaitNext（锚点后第一个集合通信时长之和）；
-            v6pp → PP_WaitGap（锚点结束→下一次集合通信结束间隔之和）。
+    指标列为 PP_WaitGap（点对点结束→下一次集合通信结束间隔之和），异常项 = 单个 rank（add_single）。
     """
-    column = config.PP_WAIT_NEXT_COLUMN if strategy == "v6p" else config.PP_WAIT_GAP_COLUMN
-    vals = step_data.get(column, {})
+    vals = step_data.get(config.PP_WAIT_GAP_COLUMN, {})
     if not vals:
         return
 
@@ -592,61 +587,10 @@ def detect_pp_slow_domain(
     local_result: config.DegradationData,
 ):
     """
-    PP 流水线慢通信检测（另一方案，对应 PP 域）。
+    PP 流水线慢通信检测（v6pp）。
 
-    数据来源：PP 链路重叠回填写进 CSV 的动态列 "PP_Overlap"（某卡作为收方时，其入边
-    链路 Send/Recv 时间窗重叠时长）。PP 组取自 parallel_group_info 的 pp 项；若无 PP
-    分组（parallels 无 "pp"），则不检测（避免把 CP/Ring Attention 误当 PP）。
-
-    检测：按 PP 组内 stage 位置分组，把各 PP 组相邻两 stage 组成的链路(s->r)的
-    重叠时长放到同一组内做通用检测（max 方向，重叠越长→该链路传输越慢）；异常以
-    组键 [s, r] 写入类别 "pp_comm"（显示箭头随匹配模式：batch → "<->"，send/recv → "->"）。
-    同一 stage 位置要求所有链路都匹配上才比较（任一条匹配不上则放弃该 stage）。
+    数据来源：解析后回填的动态列 "PP_WaitGap"（每卡点对点传输结束 → 下一次集合通信结束 的间隔之和）。
+    比较域按 TP > CP > DP，都没有时用 PP stage 转置；域内逐 rank 与组内最大值比较，
+    (组内最大 − 本 rank) / 会话时长 > 10% 判异常（偏小异常），异常项 = 单个 rank。
     """
-    # v6p / v6pp：走「比较域内逐 rank（max−本值）/会话 > 10%」的另一套口径
-    strategy = config.get_pp_strategy()
-    if strategy in ("v6p", "v6pp"):
-        _detect_pp_rank_ratio(parallels, step_data, local_result, strategy)
-        return
-
-    groups = parallels.get(ppParallelDomainName)
-    if not groups or len(groups) < 2:
-        return
-
-    overlap = step_data.get(config.PP_OVERLAP_COLUMN, {})
-    if not overlap:
-        return
-
-    # 组内升序视为 stage 顺序（rank = pp_stage * tp_size + tp_rank）
-    sorted_groups = [sorted(g) for g in groups]
-    max_len = max(len(g) for g in sorted_groups)
-
-    for t in range(max_len - 1):
-        links = []  # {s, r, value}
-        complete = True
-        for g in sorted_groups:
-            if len(g) <= t + 1:
-                complete = False  # 该组此 stage 无链路，无法完整比较
-                break
-            s, r = g[t], g[t + 1]
-            v = overlap.get(r)
-            if v is None or v == -99999 or v <= 0:
-                complete = False  # 链路匹配失败/无数据
-                break
-            links.append({"s": s, "r": r, "value": v})
-        if not complete:
-            continue  # A2：该 stage 只要有一条匹配不上，放弃整个 stage 的比较
-        if len(links) < 2:
-            continue
-
-        # 同一边界的链路直接一起比重叠时长（不按 count 分桶：同边界本应同大小，差异多为匹配假象）
-        recv_ranks = [x["r"] for x in links]
-        values = [x["value"] for x in links]
-        abnormal_recv, degs = kmeans_detector.general_anomaly_detection(
-            recv_ranks, values, config.get_comm_threshold(), high_is_anomaly=True
-        )
-        for rk, deg in zip(abnormal_recv, degs):
-            for x in links:
-                if x["r"] == rk:
-                    local_result.add_group("pp_comm", [x["s"], x["r"]], deg)
-                    break
+    _detect_pp_rank_ratio(parallels, step_data, local_result)

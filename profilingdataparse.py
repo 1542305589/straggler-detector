@@ -1428,196 +1428,10 @@ def _is_batch_send_recv(name: str) -> bool:
     return "batchsendrecv" in _strip_vendor_prefix(name).lower().replace("_", "")
 
 
-def _is_p2p_op(name: str) -> bool:
-    """判断算子名是否为 PP 点对点传输（Send / Recv / BatchSendRecv）。"""
-    s = _leading_letters(_strip_vendor_prefix(name)).lower()
-    return (s.startswith("send") or s.startswith("recv") or s.startswith("receive")
-            or _is_batch_send_recv(name))
-
-
-def _p2p_dir(name: str) -> str:
-    """点对点算子的方向：send / recv / both（BatchSendRecv 兼顾收发），无法判定返回 ""。"""
-    both = _is_batch_send_recv(name)
-    send = both or _is_pp_send(name)
-    recv = both or _is_pp_recv(name)
-    if send and recv:
-        return "both"
-    if send:
-        return "send"
-    if recv:
-        return "recv"
-    return ""
-
-
-def _overlap_time(a_s: int, a_e: int, b_s: int, b_e: int) -> int:
-    return max(0, min(a_e, b_e) - max(a_s, b_s))
-
-
-def _load_p2p_ops(conn: sqlite3.Connection) -> List[Dict[str, Any]]:
-    """加载某 rank 的全部 PP 点对点算子（Send/Recv/BatchSendRecv），含 count 与方向。"""
-    if not table_exists(conn, "COMMUNICATION_OP"):
-        return []
-    step = _merged_step(conn)
-    cursor = conn.execute(
-        "SELECT opName, startNs, endNs, count FROM COMMUNICATION_OP "
-        "WHERE startNs >= ? AND endNs <= ?",
-        (step.start_ns, step.end_ns),
-    )
-    rows = cursor.fetchall()
-    if not rows:
-        return []
-    ids = {r[0] for r in rows}
-    name_map = _string_map_by_ids(conn, list(ids))
-    out = []
-    for op, s, e, c in rows:
-        name = name_map.get(op, "")
-        if _is_p2p_op(name):
-            try:
-                cnt = int(c) if c is not None else None
-            except (TypeError, ValueError):
-                cnt = None
-            out.append({"name": name, "start": s, "end": e,
-                        "count": cnt, "dir": _p2p_dir(name)})
-    return out
-
-
-def _pair_pp(ops_s: List[Dict], ops_r: List[Dict],
-             send_dirs: tuple, recv_dirs: tuple) -> List[tuple]:
+def _compute_pp_wait_value(ops: List[Dict[str, Any]], batch_mode: bool) -> Optional[int]:
     """
-    PP 链路两端配对：对每个发方算子（`dir ∈ send_dirs`），在收方算子（`dir ∈ recv_dirs`）里找
-    **时间窗重叠最大**的一个配对（一对一，收方不重复用）；若完全没有重叠，退化为取 start 时间
-    最近、且差值 ≤ `PP_PAIR_FALLBACK_NS` 的收方算子。
-
-    完全不依赖算子名里的 slot 序号，也不看 count——不同 rank 的点对点算子数可以不同，按序号
-    对齐会把不同次传输配到一起（重叠算成 0 → 漏检）。
-    """
-    senders = sorted((o for o in ops_s if o["dir"] in send_dirs), key=lambda o: o["start"])
-    recvs = [o for o in ops_r if o["dir"] in recv_dirs]
-    fallback = config.PP_PAIR_FALLBACK_NS
-    pairs = []
-    used = set()
-    for a in senders:
-        best_j = None
-        best_ov = 0
-        for j, b in enumerate(recvs):
-            if j in used:
-                continue
-            ov = _overlap_time(a["start"], a["end"], b["start"], b["end"])
-            if ov > best_ov:
-                best_ov = ov
-                best_j = j
-        if best_j is None:
-            # 无任何时间窗重叠 → 时间近邻兜底
-            best_dt = None
-            for j, b in enumerate(recvs):
-                if j in used:
-                    continue
-                dt = abs(b["start"] - a["start"])
-                if dt <= fallback and (best_dt is None or dt < best_dt):
-                    best_dt = dt
-                    best_j = j
-        if best_j is not None:
-            used.add(best_j)
-            pairs.append((a, recvs[best_j]))
-    return pairs
-
-
-def backfill_pp_overlap(input_path: str, db_files: Optional[List[str]] = None):
-    """
-    回填每卡的 PP 链路重叠时长（PP_Overlap）与传输字节数（PP_Count），供 PP 慢通信检测使用。
-
-    PP 组取自 parallel_group_info 的 pp 项（读不到则整段跳过）。对每个 PP 组相邻两 stage 组成
-    的链路 (s->r)，用两端（发方 s / 收方 r）的点对点算子（Send / Recv / BatchSendRecv）配对
-    后求窗口交集（重叠优先，无重叠则时间近邻兜底），得到该链路实际传输时间；同时累加 count
-    得到传输字节数。结果写入收方 r 的 CSV（每卡一个数值）。
-
-    匹配模式为**全局**：只要 PP 链路上出现 BatchSendRecv，就整次用 batch 匹配（两端
-    BatchSendRecv 配对，显示 "<->"）；否则用 Send/Recv 单向匹配（发方 Send ↔ 收方 Recv，
-    显示 "->"）。配对不依赖算子名序号（slot），也不看 count。
-    """
-    if db_files is None:
-        db_files = discover_db_files(input_path)
-    if not db_files:
-        return
-
-    rank_to_info: Dict[int, Dict[str, Any]] = {}
-    for db_path in db_files:
-        rank_str = extract_global_rank_from_filename(db_path)
-        if rank_str is None:
-            continue
-        try:
-            rank = int(rank_str)
-        except ValueError:
-            continue
-        try:
-            conn = sqlite3.connect(db_path)
-        except Exception:
-            continue
-        try:
-            pgi = get_parallel_group_info(conn, None)
-        except Exception:
-            pgi = {}
-        conn.close()
-        rank_to_info[rank] = {"path": db_path, "pgi": pgi or {}}
-
-    if not rank_to_info:
-        return
-
-    pp_groups = _collect_pp_groups(rank_to_info)
-    if not pp_groups:
-        logger.info("[SLOW-DOMAIN] 无 PP 分组 metadata，跳过 PP 链路回填")
-        return
-
-    write_root = config.get_output_path() or input_path
-    ops_cache: Dict[int, List[Dict[str, Any]]] = {}
-
-    def rank_p2p(rank: int) -> List[Dict[str, Any]]:
-        if rank not in ops_cache:
-            info = rank_to_info.get(rank)
-            if info is None:
-                ops_cache[rank] = []
-            else:
-                try:
-                    conn = sqlite3.connect(info["path"])
-                    ops_cache[rank] = _load_p2p_ops(conn)
-                    conn.close()
-                except Exception:
-                    ops_cache[rank] = []
-        return ops_cache[rank]
-
-    # 全局模式判定：PP 链路上出现 BatchSendRecv 就整次用 batch 匹配，否则 Send/Recv
-    batch_mode = any(o["dir"] == "both"
-                     for g in pp_groups for rank in g for o in rank_p2p(rank))
-    config.set_pp_batch_mode(batch_mode)
-
-    for g in pp_groups:
-        for t in range(len(g) - 1):
-            s, r = g[t], g[t + 1]
-            ops_s = rank_p2p(s)
-            ops_r = rank_p2p(r)
-            if batch_mode:
-                pairs = _pair_pp(ops_s, ops_r, ("both",), ("both",))
-            else:
-                pairs = _pair_pp(ops_s, ops_r, ("send",), ("recv",))
-            if not pairs:
-                continue
-            total_overlap = sum(_overlap_time(a["start"], a["end"], b["start"], b["end"])
-                                for a, b in pairs)
-            total_count = sum((a.get("count") or 0) for a, _ in pairs)
-            path = os.path.join(write_root, "op_metric", f"global_rank_{r}.csv")
-            _backfill_bandwidth_csv(path, {
-                config.PP_OVERLAP_COLUMN: repr(int(total_overlap)),
-                config.PP_COUNT_COLUMN: repr(int(total_count)),
-            })
-
-    logger.info("[SLOW-DOMAIN] PP 链路重叠回填完成")
-
-
-def _compute_pp_wait_value(ops: List[Dict[str, Any]], batch_mode: bool, variant: str) -> Optional[int]:
-    """
-    v6p：锚点（batch 模式下的 BatchSendRecv，或 send/recv 模式下的 Send/Recv）之后
-         **第一个集合通信**的时长（end−start）之和。
-    v6pp：同锚点，但值为「该集合通信 end − 锚点 end」的间隔之和（无下一次集合通信则不计）。
+    每卡「锚点结束 → 下一次集合通信结束」的间隔之和（无下一次集合通信则不计）。
+    锚点：batch 模式（PP 链路上出现 BatchSendRecv）下为 BatchSendRecv；否则为 Send / Recv。
     ops 已按 startNs 升序；无有效值返回 None。
     """
     total = 0
@@ -1635,30 +1449,20 @@ def _compute_pp_wait_value(ops: List[Dict[str, Any]], batch_mode: bool, variant:
                 break
         if nxt is None:
             continue
-        if variant == "v6p":
-            total += nxt["end"] - nxt["start"]
+        gap = nxt["end"] - o["end"]
+        if gap > 0:
+            total += gap
             found = True
-        else:  # v6pp
-            gap = nxt["end"] - o["end"]
-            if gap > 0:
-                total += gap
-                found = True
     return total if found else None
 
 
-def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None,
-                     variant: str = "v6p"):
+def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None):
     """
-    回填 v6p / v6pp 策略所需的每卡 PP 等待列。
-
-    v6p  → PP_WaitNext：每卡「锚点后第一个集合通信时长」之和
-    v6pp → PP_WaitGap ：每卡「锚点结束 → 下一次集合通信结束」间隔之和（无则不计）
+    回填每卡 PP 等待列（PP_WaitGap）：点对点传输结束 → 下一次集合通信结束 的间隔之和。
 
     锚点：batch 模式（PP 链路上出现 BatchSendRecv）下为 BatchSendRecv；否则为 Send / Recv。
     同时按各 rank 合并窗口的最大值填充 config.PP_SESSION_NS（会话时长）。
     """
-    if variant not in ("v6p", "v6pp"):
-        variant = "v6p"
     if db_files is None:
         db_files = discover_db_files(input_path)
     if not db_files:
@@ -1718,17 +1522,16 @@ def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None,
     loaded = {r: rank_ops(r) for r in all_ranks}
     batch_mode = any(_p2p_dir(o["name"]) == "both"
                      for ops in loaded.values() for o in ops)
-    config.set_pp_batch_mode(batch_mode)
     config.set_pp_session_ns(session_ns)
 
-    column = config.PP_WAIT_NEXT_COLUMN if variant == "v6p" else config.PP_WAIT_GAP_COLUMN
+    column = config.PP_WAIT_GAP_COLUMN
     for rank in all_ranks:
-        val = _compute_pp_wait_value(loaded[rank], batch_mode, variant)
+        val = _compute_pp_wait_value(loaded[rank], batch_mode)
         if val is None:
             continue
         path = os.path.join(write_root, "op_metric", f"global_rank_{rank}.csv")
         _backfill_bandwidth_csv(path, {column: repr(float(val))})
 
     logger.info(
-        f"[SLOW-DOMAIN] PP 等待回填完成（{variant}, batch_mode={batch_mode}, session={session_ns}ns）"
+        f"[SLOW-DOMAIN] PP 等待回填完成（batch_mode={batch_mode}, session={session_ns}ns）"
     )

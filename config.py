@@ -43,52 +43,13 @@ def get_comm_no_align() -> bool:
     """慢通信带宽是否关闭跨 rank 对齐。"""
     return COMM_NO_ALIGN
 
-# ---- PP 流水线慢通信检测（另一方案：PP 链路重叠时间）----
-# PP 组从 parallel_group_info 的 pp 项读取（读不到则不检测 PP，避免把 CP/Ring Attention 误当 PP）。
-# 对每个 stage 位置，把各 PP 组相邻两 stage 配成链路(s->r)；链路指标 = 两端点对点算子的
-# 时间窗重叠时长（跨所有 step 求和）。匹配模式全局一致：出现 BatchSendRecv 用 batch（<->），
-# 否则 Send/Recv 单向（->）；同一 stage 要求所有链路都匹配上才比较。跨链路做 kmeans（max 方向，
-# 重叠越长→传输越慢），异常按组键 [s, r] 报告；阈值用 COMM_THRESHOLD。
-PP_OVERLAP_COLUMN = "PP_Overlap"   # 每卡"其入边链路 Send/Recv 重叠时长"的动态列名
-PP_COUNT_COLUMN = "PP_Count"       # 每卡"其入边 PP 链路传输总字节数"的动态列名（仅记录，v6 已不用于分组）
-PP_COUNT_TOLERANCE = 0.05          # （已弃用）PP 链路 count 容差分组；v6 现按重叠优先配对、同边界直接比，不再按 count 分桶
-PP_PAIR_FALLBACK_NS = 5_000_000    # PP 两端配对无重叠时的时间近邻兜底上限（5ms）：取 start 最近且差值 ≤ 此值的算子
-# PP 匹配模式（全局）：只要 PP 链路上出现 BatchSendRecv 算子，就整次用 batch 匹配（箭头 <->）；
-# 否则用 Send/Recv 单向匹配（箭头 ->）。由 profilingdataparse.backfill_pp_overlap 判定并写入。
-PP_BATCH_MODE = False
-
-
-def set_pp_batch_mode(flag: bool):
-    """设置 PP 匹配模式：True=batch_send_recv（<->），False=send/recv（->）。"""
-    global PP_BATCH_MODE
-    PP_BATCH_MODE = bool(flag)
-
-
-def get_pp_batch_mode() -> bool:
-    """是否使用 BatchSendRecv 匹配模式。"""
-    return PP_BATCH_MODE
-
-
-# PP 检测策略（并存可切换）：
-#   v6   —— 链路时间窗重叠 + 按 stage 位置 kmeans（默认）
-#   v6p  —— 记录锚点后第一个集合通信的时长，比较域（TP>CP>DP）内逐 rank，Δ/会话 > 10%
-#   v6pp —— 同 v6p，但值为「点对点结束 → 下一次集合通信结束」的间隔
-PP_STRATEGY = "v6"
-PP_WAIT_RATIO_THRESHOLD = 0.10        # v6p/v6pp：Δ / 会话时长 的比例阈值（10%）
-PP_WAIT_NEXT_COLUMN = "PP_WaitNext"   # v6p：每卡「锚点后第一个集合通信时长」之和
-PP_WAIT_GAP_COLUMN = "PP_WaitGap"     # v6pp：每卡「锚点结束→下一次集合通信结束」间隔之和
+# ---- PP 流水线慢通信检测（v6pp：点对点结束 → 下一次集合通信结束 的间隔）----
+# PP 组从 parallel_group_info 的 pp 项读取；比较域按 TP > CP > DP，都没有时用 PP stage 转置。
+# 记录每卡点对点传输（BatchSendRecv，或 Send/Recv）结束到其下一次集合通信结束的间隔，
+# 比较域内逐 rank 与组内最大值比较，(组内最大 − 本 rank) / 会话时长 > 10% 判异常（偏小异常）。
+PP_WAIT_GAP_COLUMN = "PP_WaitGap"     # 每卡「锚点结束 → 下一次集合通信结束」间隔之和
+PP_WAIT_RATIO_THRESHOLD = 0.10        # Δ / 会话时长 的比例阈值（10%）
 PP_SESSION_NS = 0                     # 会话时长（各 rank 合并窗口 end−start 最大值），解析时填充
-
-
-def set_pp_strategy(strategy: str):
-    """设置 PP 检测策略（v6 / v6p / v6pp；非法值回退 v6）。"""
-    global PP_STRATEGY
-    PP_STRATEGY = strategy if strategy in ("v6", "v6p", "v6pp") else "v6"
-
-
-def get_pp_strategy() -> str:
-    """获取 PP 检测策略。"""
-    return PP_STRATEGY
 
 
 def set_pp_session_ns(ns):
