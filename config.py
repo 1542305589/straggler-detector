@@ -46,9 +46,9 @@ def get_comm_no_align() -> bool:
 # ---- PP 流水线慢通信检测（v6pp：点对点结束 → 下一次集合通信结束 的间隔）----
 # PP 组从 parallel_group_info 的 pp 项读取；比较域按 TP > CP > DP，都没有时用 PP stage 转置。
 # 记录每卡点对点传输（BatchSendRecv，或 Send/Recv）结束到其下一次集合通信结束的间隔，
-# 比较域内逐 rank 与组内最大值比较，(组内最大 − 本 rank) / 会话时长 > 10% 判异常（偏小异常）。
+# 比较域内逐 rank 与组内最大值比较，(组内最大 − 本 rank) / 会话时长 > 5% 判异常（偏小异常）。
 PP_WAIT_GAP_COLUMN = "PP_WaitGap"     # 每卡「锚点结束 → 下一次集合通信结束」间隔之和
-PP_WAIT_RATIO_THRESHOLD = 0.10        # Δ / 会话时长 的比例阈值（10%）
+PP_WAIT_RATIO_THRESHOLD = 0.05        # Δ / 会话时长 的比例阈值（5%）
 PP_SESSION_NS = 0                     # 会话时长（各 rank 合并窗口 end−start 最大值），解析时填充
 
 
