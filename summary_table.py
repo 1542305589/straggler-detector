@@ -136,7 +136,7 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     - 单卡类别: 异常卡="rank 0, 3"；劣化指数="0:1.397，3:1.398"
     - cpu:     异常卡="worker3"（节点显示名 hostName）；劣化指数="worker3:3.719"
     - comm:    异常卡="tp[0, 1]"；劣化指数="tp[0, 1]:2.5"
-    - pp_comm: 异常卡="0->4"；劣化指数="0->4:2.5"
+    - pp_comm: 异常卡="[0, 2, 4, 6]"（整组）；劣化指数="[0, 2, 4, 6]:0.08"
     物理设备列列出涉及卡的 hostName:Device，过长时截断。
     """
     sorted_items = sorted(items.items(), key=lambda x: -x[1])

@@ -13,7 +13,8 @@ ZP_BUBBLE_ABNORMAL_BOUNDARY = 50000  # 50us
 # 异常判据：簇均值 > 基线簇均值 × 阈值。每组共用一个固定倍率阈值：
 #   计算类（KERNEL_AICORE / kernel_aivec） → COMPUTE_THRESHOLD（默认 1.3）
 #   IO/CPU 类（cpu / memcpy_async）        → IO_THRESHOLD（默认 2.5）
-#   通信类（comm / pp_comm）               → COMM_THRESHOLD（默认 1.3）
+#   通信类（comm）                         → COMM_THRESHOLD（默认 1.3）
+#   pp_comm                               → PP_WAIT_RATIO_THRESHOLD（占会话比例，默认 >5%）
 #   npu_bubble                            → 固定硬阈值 BUBBLE_THRESHOLD_NS（< 5000ns，不询问）
 COMPUTE_THRESHOLD = 1.3      # 计算类阈值
 IO_THRESHOLD = 2.5           # IO/CPU 类阈值
@@ -261,7 +262,7 @@ def get_io_threshold() -> float:
 
 
 def get_comm_threshold() -> float:
-    """通信类（comm / pp_comm）阈值"""
+    """通信类（comm）阈值（pp_comm 现用 PP_WAIT_RATIO_THRESHOLD，不走此阈值）"""
     return COMM_THRESHOLD
 
 
