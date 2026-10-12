@@ -556,7 +556,9 @@ def _detect_pp_rank_ratio(
     """
     PP 慢通信检测：按比较域（TP > CP > DP，退化用 PP stage）分组，域内**逐 rank** 与组内
     最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`，`> 10%` 判异常（偏小异常）。
-    指标列为 PP_WaitGap（点对点结束→下一次集合通信结束间隔之和），异常项 = 单个 rank（add_single）。
+
+    上报单位为 **PP 通信组**：把异常 rank 归到其所属 PP 组（`parallels["pp"]`），组内至少一个
+    rank 异常即上报该组，劣化指数取组内异常 rank 的最大 score（不上报具体 rank）。
     """
     vals = step_data.get(config.PP_WAIT_GAP_COLUMN, {})
     if not vals:
@@ -570,6 +572,14 @@ def _detect_pp_rank_ratio(
     if not compare_groups:
         return
 
+    # rank -> 所属 PP 通信组（组键 = 该组 rank 升序列表）
+    rank_to_ppgroup = {}
+    for g in parallels.get(ppParallelDomainName) or []:
+        gg = sorted(g)
+        for r in gg:
+            rank_to_ppgroup[r] = gg
+
+    group_deg = {}  # tuple(pp 组) -> 组内异常 rank 的最大 score
     for g in compare_groups:
         pairs = [(r, vals[r]) for r in g if r in vals and vals[r] != -99999]
         if len(pairs) < 2:
@@ -577,8 +587,17 @@ def _detect_pp_rank_ratio(
         max_t = max(v for _, v in pairs)
         for r, v in pairs:
             score = (max_t - v) / session
-            if score > config.PP_WAIT_RATIO_THRESHOLD:
-                local_result.add_single("pp_comm", r, score)
+            if score <= config.PP_WAIT_RATIO_THRESHOLD:
+                continue
+            ppg = rank_to_ppgroup.get(r)
+            if ppg is None:
+                continue  # 该 rank 不属于任何 PP 组，无法归组，跳过
+            key = tuple(ppg)
+            if score > group_deg.get(key, 0.0):
+                group_deg[key] = score
+
+    for key, deg in group_deg.items():
+        local_result.add_group("pp_comm", list(key), deg)
 
 
 def detect_pp_slow_domain(
@@ -591,6 +610,7 @@ def detect_pp_slow_domain(
 
     数据来源：解析后回填的动态列 "PP_WaitGap"（每卡点对点传输结束 → 下一次集合通信结束 的间隔之和）。
     比较域按 TP > CP > DP，都没有时用 PP stage 转置；域内逐 rank 与组内最大值比较，
-    (组内最大 − 本 rank) / 会话时长 > 10% 判异常（偏小异常），异常项 = 单个 rank。
+    (组内最大 − 本 rank) / 会话时长 > 10% 判异常（偏小异常）；上报单位为 PP 通信组（组内任一
+    rank 异常即上报，取组内最大占比）。
     """
     _detect_pp_rank_ratio(parallels, step_data, local_result)
