@@ -2,7 +2,7 @@
 
 这是一个 **skill**：用于从 Ascend PyTorch Profiler 生成的 `.db` 文件，检测 AI 训练 / 推理集群里的**慢节点（straggler / 亚健康）**，给出「哪张卡 / 哪个通信域 / 哪个 PP 通信组异常、劣化多少」的结论。
 
-skill 自带完整可运行代码包（本目录下的 `*.py` 都是它的实现与辅助脚本），调用方（agent）不需要读这些脚本，只需按下面的方式**调用**并**向用户确认参数**。
+skill 自带完整可运行代码包（本目录下的 `*.py` 都是它的实现与辅助脚本）。**本文档面向使用者**，介绍怎么调用、有哪些参数、输入输出、以及检测原理；面向 agent 的执行流程约束（例如「执行前先向用户确认参数」）见 `SKILL.md`。
 
 ---
 
@@ -32,17 +32,19 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 
 > 所有命令都要在**本 skill 目录内**执行。
 
-### 2. 执行前必须先问用户（skill 强制规则）
+### 2. 参数说明
 
-每次检测前，**依次询问以下三项**，等用户明确答复后再执行，**不得跳过**：
+| 参数 | 说明 | 默认 |
+|------|------|------|
+| `path` | 数据目录（必需） | - |
+| `compute` | 计算类阈值（`KERNEL_AICORE` / `kernel_aivec`） | `1.3` |
+| `io` | IO/CPU 类阈值（`cpu` / `memcpy_async`） | `2.5` |
+| `comm` | 通信类阈值（`comm` / `pp_comm`） | `1.3` |
+| `clean` | `yes` / `no` / `ask`：是否清理中间数据并重新解析 | `ask` |
+| `no_align` | 是否关闭慢通信带宽的跨 rank 对齐（详见原理部分） | `False` |
 
-1. **三组阈值**（回车用默认）：
-   - 计算类 `compute`（`KERNEL_AICORE` / `kernel_aivec`），默认 **1.3**
-   - IO/CPU 类 `io`（`cpu` / `memcpy_async`），默认 **2.5**
-   - 通信类 `comm`（`comm` / `pp_comm`），默认 **1.3**
-   - `npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。
-2. **是否删除已有中间数据**（`op_metric` 等）：删除 → `clean=yes`；保留 → `clean=no`。
-3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`）：默认**否**。开启后用「全体 rank 算子时长的扁平池」算带宽，适用于跨 rank 对齐失败的数据。
+- `npu_bubble` 为固定硬阈值 `< 5000ns`，不作为参数。
+- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（三组阈值 / 是否清理 / 是否 `no-align`）；直接跑命令行时按上表传参即可。
 
 ### 3. 输入数据
 
@@ -138,7 +140,7 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 
 ## 三、辅助脚本（实现说明）
 
-调用方无需关心，列出仅供参考：
+以下仅供了解实现，不影响使用：
 
 ```
 config.py                 # 全局配置、阈值、劣化数据容器、节点/域名标志
