@@ -38,7 +38,8 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 ### 命令行执行
 
 ```bash
-python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
+# 可选：追加 no-align 关闭慢通信带宽的跨 rank 对齐
 ```
 
 参数说明：
@@ -49,6 +50,7 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 | `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
 | `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
 | `clean` | `yes`/`no`/`ask`：是否清理中间数据并重新解析 | `ask` |
+| `no-align` | 关闭慢通信带宽的跨 rank 对齐（裸参，或 `no-align=true`） | 关（跨 rank 对齐） |
 
 （`npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。）
 
@@ -74,6 +76,9 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
+3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）：
+   - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
+   - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
 
 ### 清理范围
 
