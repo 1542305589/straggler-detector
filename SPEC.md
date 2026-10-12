@@ -244,6 +244,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 数据来源：解析后回填（`profilingdataparse.backfill_pp_wait`）写进 CSV 动态列 `PP_WaitGap` = 每卡「点对点传输**结束** → 其**下一次集合通信结束**」的间隔之和（无下一次集合通信则不计）。锚点：batch 模式（PP 链路上出现 `BatchSendRecv`）下为 `BatchSendRecv`；否则为 `Send` / `Recv`（找其后第一个集合通信，跳过中间连续的点对点）。会话时长 `config.PP_SESSION_NS` = 各 rank 合并 profiling 窗口 `end−start` 的最大值（解析时填充）。
 
 检测规则（`detect_pp_slow_domain` → `_detect_pp_rank_ratio`）：
+- **前置跳过**：若本次已检出计算类故障（`KERNEL_AICORE` / `kernel_aivec` 异常），直接跳过 PP 检测——v6pp 统计的「点对点结束 → 下一次集合通信结束」区间内**必含计算算子**，会被计算异常污染。
 - **比较域**（`_pp_compare_groups`）：命名域优先级 **TP > CP > DP**（有 `tp` 用 `tp` 分组，否则 `cp`，否则 `dp`）；都没有时用 **PP stage 转置**（各 PP 组同一 stage 位置的成员归一组）。
 - 域内**逐 rank** 与组内最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`；`> 5%` 判异常（**偏小异常**）。
 - **上报单位为 PP 通信组**：把异常 rank 归到其所属 PP 组（`parallels["pp"]`），组内至少一个 rank 异常即上报该组，劣化指数取组内异常 rank 的最大 score（不上报具体 rank）。
