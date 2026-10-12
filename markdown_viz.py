@@ -122,9 +122,10 @@ def _pp_domain_label(parallels: Dict[str, List[List[int]]]) -> str:
 def _pp_comm_section(parallels: Dict[str, List[List[int]]],
                      step_data: Dict[str, Dict[int, float]]) -> str:
     """
-    pp_comm 占比排序段：柱状图绘制 **Δ占比** =
-    `(比较域内最大 PP_WaitGap − 本卡 PP_WaitGap) / 会话时长`，`> 5%` 标 `***`（偏小异常）。
-    按比较域分段，逐 rank 列出（PP等待 / 占比 作背景信息）。
+    pp_comm 占比排序段：按比较域分段、逐 rank 列出 `PP等待 / ΔPP等待 / Δ占比`，柱状图绘制 **Δ占比**。
+
+    - `ΔPP等待 = 比较域内最大 PP_WaitGap − 本卡 PP_WaitGap`（绝对时长差）；
+    - `Δ占比  = ΔPP等待 / 会话时长`，`> 5%` 标 `***`（Δ占比越大越异常）。
     """
     vals = step_data.get(config.PP_WAIT_GAP_COLUMN, {}) if step_data else {}
     if not vals:
@@ -159,7 +160,7 @@ def _pp_comm_section(parallels: Dict[str, List[List[int]]],
 
         lines.append(f"  [比较域 {domain_label} #{gi + 1}]  组内 {len(rows)} 卡")
         lines.append("  " + f"{'#':>3}" + "  " + _disp_rjust("Rank", 6)
-                     + "  " + _disp_rjust("PP等待", 10) + "  " + _disp_rjust("占比", 10)
+                     + "  " + _disp_rjust("PP等待", 10) + "  " + _disp_rjust("ΔPP等待", 10)
                      + "  " + _disp_rjust("Δ占比", 10) + "  柱状图")
         lines.append("  " + f"{'---':>3}" + "  " + "-" * 6
                      + "  " + "-" * 10 + "  " + "-" * 10 + "  " + "-" * 10 + "  -------")
@@ -168,14 +169,18 @@ def _pp_comm_section(parallels: Dict[str, List[List[int]]],
             marker = " ***" if delta > thresh else ""
             lines.append("  " + f"{i:>3}" + "  " + f"{r:>6}"
                          + "  " + f"{_fmt_ns(v):>10}"
-                         + "  " + f"{v / session * 100:>9.4g}%"
+                         + "  " + f"{_fmt_ns(max_t - v):>10}"
                          + "  " + f"{delta * 100:>9.4g}%"
                          + "  " + bar + marker)
         lines.append("")
 
     if not shown:
         return ""
-    lines.append("  *** = 异常（该卡 Δ占比 > 阈值，即该卡 PP 等待明显短于组内最大值）")
+    lines.append("  口径说明:")
+    lines.append("    · PP等待 = 本卡「点对点传输结束 → 下一次集合通信结束」的间隔之和")
+    lines.append("    · ΔPP等待 = 比较域内最大 PP等待 − 本卡 PP等待（绝对时长差）")
+    lines.append(f"    · Δ占比   = ΔPP等待 / 会话时长（占比），> {thresh_pct:g}% 判异常（Δ占比越大越异常）")
+    lines.append("  *** = 异常卡")
     lines.append("")
     return "\n".join(lines)
 
