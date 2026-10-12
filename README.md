@@ -1,57 +1,52 @@
-# Slow Node Detection - Python 版本
+# straggler-detector（慢节点检测 skill）
 
-检测 AI 训练/推理集群中的慢节点（straggler / 亚健康检测）。解析 Ascend PyTorch Profiler 生成的 `.db` 文件，识别慢计算卡、慢通信域、慢 CPU 卡、NPU 空泡，并生成文本检测报告。
+这是一个 **skill**：用于从 Ascend PyTorch Profiler 生成的 `.db` 文件，检测 AI 训练 / 推理集群里的**慢节点（straggler / 亚健康）**，给出「哪张卡 / 哪个通信域 / 哪个 PP 通信组异常、劣化多少」的结论。
 
-## 目录结构
+skill 自带完整可运行代码包（本目录下的 `*.py` 都是它的实现与辅助脚本），调用方（agent）不需要读这些脚本，只需按下面的方式**调用**并**向用户确认参数**。
 
-```
-straggler-detector/
-├── __init__.py                 # 包初始化
-├── config.py                   # 配置、阈值、劣化数据容器、节点/域名标志
-├── utils.py                    # 结果写入、清理、通用工具
-├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
-├── profilingdataparse.py       # Profiling 数据解析（SQLite → CSV/JSON）
-├── nodelevel.py                # 慢节点检测核心逻辑
-├── nodelevel_data_handler.py   # 数据读取、检测组选择、节点分组
-├── summary_table.py            # 检测结果汇总表工具（ASCII 表格渲染 + 单元格格式化）
-├── markdown_viz.py / visualizer.py  # 可视化报告
-├── main.py                     # 主入口
-├── skill.md                    # skill 说明（与 SKILL.md 同步）
-└── README.md / SPEC.md         # 本文档 / 方案设计
-```
+---
 
-## 使用方法
+## 一、如何使用
 
-### 作为 skill 被 Claude Code 调用
+### 1. 调用方式
+
+**作为 skill 调用（推荐）**：agent 直接调用入口函数，拿到结构化结果。
 
 ```python
 import main
-result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clean="ask", no_align=False)
+result = main.run_detection(
+    "/path/to/data",
+    compute=1.3, io=2.5, comm=1.3,   # 三组阈值
+    clean="ask",                     # 是否清理中间数据并重新解析
+    no_align=False,                  # 是否关闭慢通信带宽的跨 rank 对齐
+)
+# result = {"KERNEL_AICORE": {"3": 287.59}, "comm": {"0,1": 1.8}, "cpu": {"worker3": 3.7}, ...}
 ```
 
-### 命令行执行
+**命令行**（手动排查时）：
 
 ```bash
-cd "C:\Users\n30082019\.claude\skills\straggler-detector"
-python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 no-align clean=ask
+cd <本 skill 目录>     # 含 main.py 的目录
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 ```
 
-## 参数说明
+> 所有命令都要在**本 skill 目录内**执行。
 
-| 参数 | 说明 | 默认值 |
-|------|------|--------|
-| `path` | 数据目录路径（必需） | - |
-| `compute` | 计算类阈值（KERNEL_AICORE / kernel_aivec） | 1.3 |
-| `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
-| `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
-| `clean` | `yes`/`no`/`ask`：是否清理中间数据并重新解析 | `ask` |
+### 2. 执行前必须先问用户（skill 强制规则）
 
-> `npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。
-> **执行前必须询问用户**三组阈值（计算/IO/通信）与是否删除已有中间数据（`op_metric` 等），得到明确答复后再执行：删除 → `clean=yes`，保留 → `clean=no`。
+每次检测前，**依次询问以下三项**，等用户明确答复后再执行，**不得跳过**：
 
-## 输入数据格式
+1. **三组阈值**（回车用默认）：
+   - 计算类 `compute`（`KERNEL_AICORE` / `kernel_aivec`），默认 **1.3**
+   - IO/CPU 类 `io`（`cpu` / `memcpy_async`），默认 **2.5**
+   - 通信类 `comm`（`comm` / `pp_comm`），默认 **1.3**
+   - `npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。
+2. **是否删除已有中间数据**（`op_metric` 等）：删除 → `clean=yes`；保留 → `clean=no`。
+3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`）：默认**否**。开启后用「全体 rank 算子时长的扁平池」算带宽，适用于跨 rank 对齐失败的数据。
 
-`path` 可为一个含多层子目录的父目录（`os.walk` 递归查找 `ascend_pytorch_profiler_*.db`）：
+### 3. 输入数据
+
+`path` 可以是任意层级的父目录，脚本会递归查找 `ascend_pytorch_profiler_*.db`：
 
 ```
 <path>/
@@ -60,104 +55,103 @@ python main.py path=/your/data/path compute=1.3 io=2.5 comm=1.3 no-align clean=a
 └── ...
 ```
 
-或常见 dump 结构：`master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空 master db 会被跳过，仅用含核心表的 rank db）。
+也支持常见 dump 结构 `master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空的 master db 会被跳过）。每张卡一个 db。
 
-## 输出格式
+### 4. 输出
 
-### 1. CSV 文件（op_metric/）
+**① stdout 逐类别汇总表（给 agent 的最终结论）**
 
-每张卡一条聚合数据行，列：`StepIndex, StepDuration, ZP_Device, ZP_Duration, ZP_Host, ZP_Bubble, ZP_Count, KERNEL_AICORE, MEMCPY_ASYNC, KERNEL_AIVEC, HostDuration, DataLoader` + 各并行域 `{xp}_Duration, {xp}_Count`。
-
-### 2. 检测结果（straggler_detection_result.json）
-
-```json
-{
-  "KERNEL_AICORE": [{"display_key": "0", "metric_value": 1.5, "is_abnormal": true}],
-  "comm": [{"display_key": "tp[0, 1]", "metric_value": 1.8, "is_abnormal": true}],
-  "cpu": [...],
-  "npu_bubble": [...],
-  "kernel_aivec": [...],
-  "memcpy_async": [...]
-}
-```
-
-### 3. 报告文件
-
-- `analysis_result/detection_report.log` — 可视化详情报告
-
-### 4. 最终输出逐类别汇总表（stdout）
-
-检测结束时在 stdout 打印一张 **ASCII 框线表格**，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。它渲染到**调用方 agent 的最终输出**，不进任何 log 文件；无异常时打印含"无异常"提示的单行表：
+检测结束时在 stdout 打印一张 ASCII 表，一行一个「有异常的类别」，列 `类别 | 异常卡 | 劣化指数 | 劣化阈值`。它渲染到**调用方 agent 的最终输出**，不写进任何 log 文件；无异常时打印含「无异常」的单行表。
 
 ```
-+---------------+-----------+------------------+----------+
-| 类别          | 异常卡    | 劣化指数         | 劣化阈值 |
-+---------------+-----------+------------------+----------+
-| KERNEL_AICORE | rank 0, 3 | 0:1.397，3:1.398 | 1.3x     |
-+---------------+-----------+------------------+----------+
-| comm          | tp[0, 1]  | tp[0, 1]:2.5     | 1.3x     |
-+---------------+-----------+------------------+----------+
-| pp_comm       | 0->4      | 0->4:2.5         | 1.3x     |
-+---------------+-----------+------------------+----------+
++---------------+--------------+-------------------+----------+
+| 类别          | 异常卡       | 劣化指数          | 劣化阈值 |
++---------------+--------------+-------------------+----------+
+| KERNEL_AICORE | rank 0, 3    | 0:1.397，3:1.398  | 1.3x     |
++---------------+--------------+-------------------+----------+
+| comm          | tp[0, 1]     | tp[0, 1]:2.5      | 1.3x     |
++---------------+--------------+-------------------+----------+
+| pp_comm       | [0, 2, 4, 6] | [0, 2, 4, 6]:0.08 | >5%      |
++---------------+--------------+-------------------+----------+
+| cpu           | worker3      | worker3:3.719     | 2.5x     |
++---------------+--------------+-------------------+----------+
 ```
 
-> 类别列用 op_metric 指标列名（如 `KERNEL_AIVEC`、`MEMCPY_ASYNC` 大写）；劣化指数列为 `项:值`（单卡 `rank:值`、通信组 `tp[0,1]:值`、PP 链路 `0->4:值`）。
+- 「异常卡」列：单卡类 `rank 0, 3`、通信域 `tp[0, 1]`、PP 通信组 `[0, 2, 4, 6]`、CPU 节点 `worker3`。
+- 「劣化指数」列：逐项 `项:值`。
+- 「劣化阈值」列：计算/IO/通信类显示 `1.3x` / `2.5x`，`npu_bubble` 显示 `<5000ns`，`pp_comm` 显示 `>5%`。
 
-## 检测的 7 类指标
+**② 结果文件**
 
-| 类别 | 指标列 | 检测方式 |
-|------|--------|----------|
-| `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_WaitGap`（点对点结束→下一次集合通信结束间隔） | 比较域（TP>CP>DP）内逐 rank，(组内最大−本值)/会话 > 5%；按 PP 通信组上报（取组内最大） |
-| `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
-| `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
-| `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
-| `npu_bubble` | `ZP_Bubble` | 单阈值 < 5000ns |
-| `cpu` | `ZP_Host` | 按物理节点拉齐 + 通用算法（异常项 key=hostName） |
+- `straggler_detection_result.json` — 结构化检测结果（按类别列出异常项与劣化指数）。
+- `analysis_result/detection_report.log` — 各指标排序 / 通信带宽 / 统计信息的文本详情报告。
 
-## 算法流程
+**③ 中间产物**：`op_metric/global_rank_N.csv` + `group_info_N.json`（解析产物；`clean=no` 可直接复用）。
+
+---
+
+## 二、检测原理
+
+### 1. 总览
+
+从每个 rank 的 `.db` 解析出单快照指标，对 **7 类指标**分别做异常检测，最终汇总成上面的那张表。
+
+| 类别 | 指标 | 检测方式 |
+|------|------|----------|
+| `KERNEL_AICORE` | KERNEL_AICORE 算子平均时间 | 单卡，检测组内通用算法（偏大异常） |
+| `kernel_aivec` | KERNEL_AIVEC 算子平均时间 | 单卡，检测组内通用算法（偏大异常） |
+| `memcpy_async` | MEMCPY_ASYNC 算子平均时间 | 单卡，检测组内通用算法（偏大异常） |
+| `cpu` | ZP_Host（通信 + Kernel 的 Host 耗时均值） | 按物理节点拉齐后通用算法（异常项 = 节点 hostName） |
+| `npu_bubble` | ZP_Bubble（通信算子启动间隔） | 固定硬阈值 `< 5000ns` |
+| `comm` | `{domain}_{opType}_{count}` 算子带宽 | 带宽聚类（min 方向，多 opType 交叉验证） |
+| `pp_comm` | `PP_WaitGap`（点对点结束→下一次集合通信结束间隔） | 比较域（TP>CP>DP）内逐 rank 比较，按 PP 通信组上报 |
+
+### 2. 通用异常算法（`kmeans_detector.general_anomaly_detection`）
+
+所有「检测组内」的指标共用一套算法：过滤 `≤0 / -99999` → Z-score → 肘部法选 K → KMeans++ → 取偏大（或偏小）方向的异常簇（簇均值超过 / 低于基线×阈值）→ **异常簇递归细分**（对异常簇再次聚类，更深层异常替换父层、无异常保持父层，减少误检）。
+
+**劣化指数**统一以**第一次 KMeans（全数据）的基线簇均值为分母**，同一刻度可比：偏大异常 `degradation = 值/基线`，偏小异常 `degradation = 基线/值`（均 > 1，越大越异常）。
+
+阈值按类别组取：计算类 `compute`、IO/CPU 类 `io`、通信类 `comm`（默认 1.3 / 2.5 / 1.3），`npu_bubble` 固定 `< 5000ns`。
+
+### 3. 检测组的选择
+
+先按优先级（`tp → exp → ep → … → dp`）选一个命名通信域作为**检测组**。集群数据用完整分组、非集群按节点过滤；若没有任何命名通信域，则退化为按 `HOST_INFO.hostUid` 的**物理节点分组**（此时通信域组间指标 `comm` 直接跳过）。
+
+### 4. 各类指标细节
+
+**单卡类（KERNEL_AICORE / kernel_aivec / memcpy_async）**：在检测组内对每张卡的值做通用算法，偏大异常。
+
+**cpu（ZP_Host）**：先按物理节点（`hostUid`）分组、组内去首尾求均值**拉齐**，再对整组做通用算法。因为同节点卡值被拉平，异常落在**整个节点**上，异常项用节点显示名（`hostName`）而非 rank。
+
+**npu_bubble（ZP_Bubble）**：通信算子启动间隔小于 `5000ns` 记为异常（小值异常）。
+
+**comm（慢通信域）**：先把每次集合通信的**带宽**回填进 CSV —— 默认按 wall-clock 时间窗把每次 occurrence 跨 rank 对齐、取组内最短时长，再对全部 occurrence 的最短时长取**前 10% 均值**作分母，`带宽 = count / 该均值`；开启 `no-align` 则不做对齐、改用**全体 rank 算子时长的扁平池**取前 10% 均值。检测时每域每个 opType 每组建模：每组取 **count 最大**的条目作代表，保留 `count ≥ 最大×0.5 且 > 10240` 的组，用通用算法（**min 方向**，带宽越小越慢）聚类，**只有在该域所有 opType 上都异常的组**才上报，劣化指数取各 opType 最大值。
+
+**pp_comm（PP 慢通信）**：PP 传输（点对点）单独检测。
+- **前置跳过**：若本次已检出**计算类故障（`KERNEL_AICORE` / `kernel_aivec`）**，直接跳过 PP 检测 —— 因为 PP 统计的那段时间里必然包含计算算子，会被计算异常污染。
+- 回填 `PP_WaitGap` = 每卡「点对点传输**结束** → 其**下一次集合通信结束**」的间隔之和（锚点：出现 `BatchSendRecv` 用 BatchSendRecv，否则用 `Send`/`Recv`；取其后第一个集合通信、跳过中间点对点；无下一次集合通信则不计）。会话时长取各 rank 合并 profiling 窗口的最大值。
+- 检测时按**比较域**（命名域优先级 **TP > CP > DP**，都没有时用 **PP stage 转置**）把 rank 分组，域内**逐 rank** 与组内最大值比较：`(组内最大 − 本值) / 会话时长 > 5%` 判异常（**偏小异常**）。
+- **上报单位为 PP 通信组**：组内至少一个 rank 异常即上报该组，劣化指数取组内异常 rank 的最大占比（不上报具体 rank）。
+
+---
+
+## 三、辅助脚本（实现说明）
+
+调用方无需关心，列出仅供参考：
 
 ```
-输入：SQLite profiling 数据库
-        │
-        ▼
-[profilingdataparse.data_parsing]
-  递归查找 *.db → 解析各表 → op_metric/global_rank_N.csv + group_info_N.json
-  读取 HOST_INFO.hostUid → config.HostRankMap（内存）
-        │
-        ▼
-[nodelevel_data_handler.get_cur_detection_info]
-  聚合 group_info → parallels {域名: [[rank组]...]}
-  设置 HasNamedDomain / IsClusterData 标志
-        │
-        ▼
-[nodelevel_data_handler.get_cur_job_last_step_data]
-  读 CSV → 单快照 {metric: {rank: value}}（多行取倒数第二行）
-        │
-        ▼
-[nodelevel.delimit_detection]
-  ├── detection_zp_bubble_data()           → npu_bubble
-  ├── get_slow_calculate_ranks()           → KERNEL_AICORE
-  ├── get_slow_metric_ranks() ×2           → kernel_aivec / memcpy_async
-  ├── detect_slow_domain_by_bandwidth()    → comm（带宽聚类，有命名域时）
-  ├── detect_pp_slow_domain()              → pp_comm（PP 等待占比）
-  ├── get_slow_host_ranks_by_homogenize()  → cpu
-        │
-        ▼
-输出：straggler_detection_result.json / analysis_result/detection_report.log
+config.py                 # 全局配置、阈值、劣化数据容器、节点/域名标志
+main.py                   # 入口（skill 调用 run_detection / CLI）
+profilingdataparse.py     # .db(SQLite) → op_metric CSV/JSON；带宽 / PP 等待回填
+nodelevel.py              # 各维度慢节点检测核心逻辑
+nodelevel_data_handler.py # 读 CSV/拓扑，构建快照与检测组
+kmeans_detector.py        # 通用异常算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
+summary_table.py          # 汇总表渲染（ASCII，供 stdout 输出）
+markdown_viz.py / visualizer.py  # 文本详情报告（analysis_result/detection_report.log）
+utils.py                  # 结果写入、清理、交互询问
 ```
 
-## 核心算法（kmeans_detector.py）
+## 四、依赖
 
-`general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，向外排除边缘成员减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组（skill 调用时询问用户）：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。
-
-检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤；无命名通信域时退化按 hostUid 物理节点分组（通信域组间指标直接跳过）。
-
-## 依赖
-
-- Python 3.8+
-- 标准库：`sqlite3`, `csv`, `json`, `os`, `logging`, `math`, `random`
-
-## 版本
-
-2.2.0 - 移除 host_duration 指标（6 类），Host 侧仅保留 cpu
+Python 3.8+，仅标准库（`sqlite3`、`csv`、`json`、`os`、`logging`、`math`、`random`）。
