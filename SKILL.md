@@ -22,7 +22,7 @@ Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集�
 | 类别 | 指标列 | 检测方式 |
 |---|---|---|
 | `comm` | `{domain}_{opType}_{count}`（带宽） | 带宽聚类（min 方向，多 opType 交叉验证） |
-| `pp_comm` | `PP_WaitGap`（点对点结束→下一次集合通信结束间隔） | 比较域（TP>CP>DP）内逐 rank，(组内最大−本值)/会话 > 10% |
+| `pp_comm` | `PP_WaitGap`（点对点结束→下一次集合通信结束间隔） | 比较域（TP>CP>DP）内逐 rank，(组内最大−本值)/会话 > 10%；按 PP 通信组上报（取组内最大） |
 | `KERNEL_AICORE` | `KERNEL_AICORE` | 检测组内 + 通用算法 |
 | `kernel_aivec` | `KERNEL_AIVEC` | 检测组内 + 通用算法 |
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
@@ -129,6 +129,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
 
-**PP 慢通信（`pp_comm`）另一方案**：PP 传输（点对点）不在带宽白名单内，单独检测。解析后回填每卡 `PP_WaitGap` = 「点对点传输结束 → 其下一次集合通信结束」的间隔之和（锚点：出现 `BatchSendRecv` 用 BatchSendRecv，否则用 Send/Recv；找其后第一个集合通信、跳过中间点对点；无下一次集合通信则不计）。检测时按**比较域**（命名域优先级 **TP > CP > DP**，都没有时用 **PP stage 转置**）把 rank 分组，域内**逐 rank** 与组内最大值比较：`(组内最大 − 本 rank) / 会话时长 > 10%` 判异常（**偏小异常**），异常项为单个 rank。会话时长取各 rank 合并 profiling 窗口的最大值。
+**PP 慢通信（`pp_comm`）另一方案**：PP 传输（点对点）不在带宽白名单内，单独检测。解析后回填每卡 `PP_WaitGap` = 「点对点传输结束 → 其下一次集合通信结束」的间隔之和（锚点：出现 `BatchSendRecv` 用 BatchSendRecv，否则用 Send/Recv；找其后第一个集合通信、跳过中间点对点；无下一次集合通信则不计）。检测时按**比较域**（命名域优先级 **TP > CP > DP**，都没有时用 **PP stage 转置**）把 rank 分组，域内**逐 rank** 与组内最大值比较：`(组内最大 − 本 rank) / 会话时长 > 10%` 判异常（**偏小异常**）。**上报单位为 PP 通信组**：组内至少一个 rank 异常即上报该组，取组内异常 rank 的最大占比（不上报具体 rank）。会话时长取各 rank 合并 profiling 窗口的最大值。
 
 **PP 分组来源**：PP 组直接读 `parallel_group_info` 的 `pp` 项（`group_name=="pp"` 的 `global_ranks`），读不到则不检测。同一 PP 组内 rank 升序视为 stage 顺序；相邻两 stage 组成一条链路，两端点对点算子按传输序号（slot）对齐后取时间窗重叠作为该链路指标。

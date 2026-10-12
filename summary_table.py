@@ -142,18 +142,17 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     sorted_items = sorted(items.items(), key=lambda x: -x[1])
 
     if category == "pp_comm":
-        # PP 慢通信：比较域内逐 rank，key 是单个 rank，按单卡类别展示
-        abnormal_ranks = []
-        for key in items:
-            abnormal_ranks.extend(_parse_ranks_from_key(key))
-        abnormal_ranks = sorted(set(abnormal_ranks))
+        # PP 通信组：key 是组内 rank 列表，按组展示
+        cards_parts = []
         deg_parts = []
         dev_parts = []
-        for r in abnormal_ranks:
-            v = items.get(str(r))
-            deg_parts.append(f"{r}:{v:g}" if v is not None else f"{r}:?")
-            dev_parts.append(_rank_to_device(r))
-        cards_str = "rank " + ", ".join(str(r) for r in abnormal_ranks)
+        for key, val in sorted_items:
+            ranks = _parse_ranks_from_key(key)
+            label = "[" + ", ".join(str(r) for r in ranks) + "]"
+            cards_parts.append(label)
+            deg_parts.append(f"{label}:{val:g}")
+            dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))
+        cards_str = "，".join(cards_parts)
         deg_str = "，".join(deg_parts)
     elif category == "comm":
         cards_parts = []

@@ -246,7 +246,8 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 检测规则（`detect_pp_slow_domain` → `_detect_pp_rank_ratio`）：
 - **比较域**（`_pp_compare_groups`）：命名域优先级 **TP > CP > DP**（有 `tp` 用 `tp` 分组，否则 `cp`，否则 `dp`）；都没有时用 **PP stage 转置**（各 PP 组同一 stage 位置的成员归一组）。
 - 域内**逐 rank** 与组内最大值比较：`score = (组内最大时间 − 本 rank 时间) / 会话时长`；`> 10%` 判异常（**偏小异常**）。
-- 异常项是**单个 rank**（`add_single`），汇总表「异常卡」列显示 `rank 0, 3`，劣化阈值显示 `>10%`。
+- **上报单位为 PP 通信组**：把异常 rank 归到其所属 PP 组（`parallels["pp"]`），组内至少一个 rank 异常即上报该组，劣化指数取组内异常 rank 的最大 score（不上报具体 rank）。
+- 异常项是 PP 组（`add_group`），汇总表「异常卡」列显示 `[0, 2, 4, 6]`，劣化阈值显示 `>10%`。
 
 ---
 
