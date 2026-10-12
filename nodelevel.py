@@ -94,8 +94,15 @@ def delimit_detection(
     if config.get_has_named_domain():
         logger.info("\n慢通信域检测（带宽聚类）:")
         detect_slow_domain_by_bandwidth(parallels, step_data, local_result)
-        logger.info("\nPP 流水线慢通信检测:")
-        detect_pp_slow_domain(parallels, step_data, local_result)
+
+        # 计算类故障（KERNEL_AICORE / KERNEL_AIVEC）会污染 PP 等待区间
+        # （v6pp 统计的「点对点结束 → 下一次集合通信结束」区间内必含计算算子），
+        # 故一旦出现计算类异常，直接跳过 PP 慢通信检测。
+        if local_result.get("KERNEL_AICORE") or local_result.get("kernel_aivec"):
+            logger.info("[SKIP] 存在计算类故障（KERNEL_AICORE / kernel_aivec），跳过 PP 慢通信检测")
+        else:
+            logger.info("\nPP 流水线慢通信检测:")
+            detect_pp_slow_domain(parallels, step_data, local_result)
     else:
         logger.info("[SKIP] 无通信域名，跳过慢通信域检测（comm）")
 
