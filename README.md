@@ -8,9 +8,20 @@ skill 自带完整可运行代码包（本目录下的 `*.py` 都是它的实现
 
 ## 一、如何使用
 
-### 1. 调用方式
+### 1. 怎么触发
 
-**作为 skill 调用（推荐）**：agent 直接调用入口函数，拿到结构化结果。
+**通过 agent（skill，推荐）——用自然语言说一句就行，例如：**
+
+> 用 straggler-detector 分析一下 `/path/to/data` 这批 profiling 数据，我们训练性能出现了问题，表现为部分卡明显偏慢、step 耗时变高，看看是哪里拖慢了性能、是哪些卡 / 通信域的问题。
+
+agent 会识别到本 skill 并执行：先按 `SKILL.md` 的流程**向你确认参数**（三组阈值 / 是否清理中间数据 / 是否 `no-align`），再跑检测，最后给出结论（那张汇总表，指出哪个 rank / 通信域 / PP 组异常、劣化多少）。**你不需要自己写代码或敲命令。**
+
+**直接跑代码（手动排查 / 开发调试）：** agent 底层也是调这个入口。
+
+```bash
+cd <本 skill 目录>     # 含 main.py 的目录
+python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
+```
 
 ```python
 import main
@@ -21,13 +32,6 @@ result = main.run_detection(
     no_align=False,                  # 是否关闭慢通信带宽的跨 rank 对齐
 )
 # result = {"KERNEL_AICORE": {"3": 287.59}, "comm": {"0,1": 1.8}, "cpu": {"worker3": 3.7}, ...}
-```
-
-**命令行**（手动排查时）：
-
-```bash
-cd <本 skill 目录>     # 含 main.py 的目录
-python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 no-align clean=ask
 ```
 
 > 所有命令都要在**本 skill 目录内**执行。
