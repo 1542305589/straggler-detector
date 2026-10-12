@@ -20,6 +20,7 @@ sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
 import utils
 import summary_table
+import nodelevel
 
 logger = logging.getLogger("[REPORT]")
 
@@ -108,6 +109,75 @@ def _zp_host_by_node(zp_host: Dict[int, float], cpu_result: Optional[Dict[str, f
 
     abnormal = {k: v for k, v in (cpu_result or {}).items() if k in node_data}
     return node_data, abnormal
+
+
+def _pp_domain_label(parallels: Dict[str, List[List[int]]]) -> str:
+    """pp_comm 比较域显示名：优先 tp/cp/dp，否则 PP stage。"""
+    for domain in ("tp", "cp", "dp"):
+        if parallels.get(domain):
+            return domain
+    return "pp-stage"
+
+
+def _pp_comm_section(parallels: Dict[str, List[List[int]]],
+                     step_data: Dict[str, Dict[int, float]]) -> str:
+    """
+    pp_comm 占比排序段：柱状图绘制 **Δ占比** =
+    `(比较域内最大 PP_WaitGap − 本卡 PP_WaitGap) / 会话时长`，`> 5%` 标 `***`（偏小异常）。
+    按比较域分段，逐 rank 列出（PP等待 / 占比 作背景信息）。
+    """
+    vals = step_data.get(config.PP_WAIT_GAP_COLUMN, {}) if step_data else {}
+    if not vals:
+        return ""
+    session = config.get_pp_session_ns()
+    if session <= 0:
+        return ""
+    compare_groups = nodelevel._pp_compare_groups(parallels)
+    if not compare_groups:
+        return ""
+
+    thresh = config.PP_WAIT_RATIO_THRESHOLD
+    thresh_pct = thresh * 100
+    domain_label = _pp_domain_label(parallels)
+
+    lines = []
+    lines.append("")
+    lines.append(_sep_line("pp_comm 占比排序（Δ占比 = (域内最大 − 本卡) / 会话）", 70))
+    lines.append(f"  会话时长: {_fmt_ns(session)}   比较域: {domain_label}   阈值: Δ占比 > {thresh_pct:g}%")
+    lines.append("")
+
+    shown = False
+    for gi, g in enumerate(compare_groups):
+        pairs = [(r, vals[r]) for r in g if r in vals and vals[r] != -99999]
+        if len(pairs) < 2:
+            continue
+        shown = True
+        max_t = max(v for _, v in pairs)
+        rows = sorted(((r, v, (max_t - v) / session) for r, v in pairs),
+                      key=lambda x: -x[2])
+        max_delta = rows[0][2] if rows else 0
+
+        lines.append(f"  [比较域 {domain_label} #{gi + 1}]  组内 {len(rows)} 卡")
+        lines.append("  " + f"{'#':>3}" + "  " + _disp_rjust("Rank", 6)
+                     + "  " + _disp_rjust("PP等待", 10) + "  " + _disp_rjust("占比", 10)
+                     + "  " + _disp_rjust("Δ占比", 10) + "  柱状图")
+        lines.append("  " + f"{'---':>3}" + "  " + "-" * 6
+                     + "  " + "-" * 10 + "  " + "-" * 10 + "  " + "-" * 10 + "  -------")
+        for i, (r, v, delta) in enumerate(rows, 1):
+            bar = _bar(delta, max_delta) if max_delta > 0 else ""
+            marker = " ***" if delta > thresh else ""
+            lines.append("  " + f"{i:>3}" + "  " + f"{r:>6}"
+                         + "  " + f"{_fmt_ns(v):>10}"
+                         + "  " + f"{v / session * 100:>9.4g}%"
+                         + "  " + f"{delta * 100:>9.4g}%"
+                         + "  " + bar + marker)
+        lines.append("")
+
+    if not shown:
+        return ""
+    lines.append("  *** = 异常（该卡 Δ占比 > 阈值，即该卡 PP 等待明显短于组内最大值）")
+    lines.append("")
+    return "\n".join(lines)
 
 
 def _metric_section(
@@ -460,6 +530,11 @@ def generate_report(
                 }
 
         sections.append(_metric_section(metric_name, step_data[metric_name], abnormal_map))
+
+    # Part 1.5: pp_comm 占比排序（Δ占比 = (域内最大 PP等待 − 本卡)/会话）
+    pp_section = _pp_comm_section(parallels or {}, step_data)
+    if pp_section:
+        sections.append(pp_section)
 
     # Part 2: 每个并行域的集合通信带宽（跳过 pp / embd：不在带宽白名单）
     if parallels:
