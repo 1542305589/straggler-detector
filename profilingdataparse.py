@@ -1348,11 +1348,11 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
 
 
 # ======================================================================
-# PP 链路重叠回填（PP 慢通信检测的辅助数据）
+# PP 等待回填（PP 慢通信检测的辅助数据）
 #
-# PP 组从 parallel_group_info 的 pp 项读取（读不到就整段跳过）；对每个 PP 组相邻两
-# stage 组成的链路(s->r)，用发方 Send 与收方 Recv 算子的时间窗重叠时长作为链路指标，
-# 写回收方 r 的 CSV 动态列 "PP_Overlap"。检测端按 "发送方->接收方" 报告。
+# PP 组从 parallel_group_info 的 pp 项读取（读不到就整段跳过）；对每张卡统计「点对点传输
+# 结束 → 其下一次集合通信结束」的间隔之和，写回该卡 CSV 动态列 "PP_WaitGap"（锚点：出现
+# BatchSendRecv 用 BatchSendRecv，否则用 Send/Recv）。检测端按比较域逐 rank、按 PP 组上报。
 # ======================================================================
 
 def _is_pp_recv(name: str) -> bool:

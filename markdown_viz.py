@@ -315,7 +315,8 @@ def _category_threshold(category: str) -> str:
 
     - 计算类（KERNEL_AICORE / kernel_aivec）→ COMPUTE_THRESHOLD（默认 1.3）
     - IO/CPU 类（cpu / memcpy_async）→ IO_THRESHOLD（默认 2.5）
-    - 通信类（comm / pp_comm）→ COMM_THRESHOLD（默认 1.3）
+    - 通信类（comm）→ COMM_THRESHOLD（默认 1.3）
+    - pp_comm → 占会话比例阈值（默认 >5%）
     - npu_bubble → 固定硬阈值 < BUBBLE_THRESHOLD_NS
     """
     if category == "npu_bubble":
@@ -331,7 +332,7 @@ CATEGORY_DESC = {
     "kernel_aivec": "所有 KERNEL_AIVEC 算子的平均时间",
     "memcpy_async": "所有 MEMCPY_ASYNC 算子的平均时间",
     "comm": "各通信域 {domain}_{opType}_{count} 带宽聚类",
-    "pp_comm": "PP 链路 Send/Recv 时间窗重叠（长则慢），按阶段位置聚类",
+    "pp_comm": "PP 点对点结束→下一次集合通信结束的间隔，按比较域逐 rank 比较（占会话比例），按 PP 通信组上报",
     "cpu": "ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值",
     "npu_bubble": "ZP_Bubble：通信算子启动间隔，小于 5000ns 记异常",
 }
