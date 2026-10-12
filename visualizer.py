@@ -129,6 +129,11 @@ def run_visualization(
                 continue
             plot_comm_bandwidth(domain_name, domain_groups, step_data, abnormal_groups)
 
+    # 控制台：pp_comm 占比排序（Δ占比 = (域内最大 PP等待 − 本卡)/会话）
+    pp_section = markdown_viz._pp_comm_section(parallels or {}, step_data)
+    if pp_section:
+        print(pp_section)
+
     # 生成完整 Markdown 报告
     report_path = markdown_viz.write_report(
         step_data, parallels, valid_ranks, result_dir,
