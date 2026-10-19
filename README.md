@@ -40,7 +40,7 @@ result = main.run_detection(
 
 | 参数 | 说明 | 默认 |
 |------|------|------|
-| `path` | 数据目录（必需） | - |
+| `path` | 数据目录，或 `cluster_analysis.db` 单文件（必需） | - |
 | `compute` | 计算类阈值（`KERNEL_AICORE` / `kernel_aivec`） | `1.3` |
 | `io` | IO/CPU 类阈值（`cpu` / `memcpy_async`） | `2.5` |
 | `comm` | 通信类阈值（`comm` / `pp_comm`） | `1.3` |
@@ -48,6 +48,7 @@ result = main.run_detection(
 | `no_align` | 是否关闭慢通信带宽的跨 rank 对齐（详见原理部分） | `False` |
 
 - `npu_bubble` 为固定硬阈值 `< 5000ns`，不作为参数。
+- `no_align` 仅对 `levelnone` 的旧带宽口径有效；`level1` / `cluster` 用新口径，不受影响（见「检测原理 → comm」）。
 - 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（三组阈值 / 是否清理 / 是否 `no-align`）；直接跑命令行时按上表传参即可。
 
 ### 3. 输入数据
@@ -58,10 +59,19 @@ result = main.run_detection(
 <path>/
 ├── ascend_pytorch_profiler_0.db
 ├── ascend_pytorch_profiler_1.db
+├── analysis.db            # 可选：含 CommAnalyzerBandwidth 带宽 → level1
 └── ...
 ```
 
-也支持常见 dump 结构 `master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空的 master db 会被跳过）。每张卡一个 db。
+也支持常见 dump 结构 `master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空的 master db 会被跳过）；或直接传入单文件 `cluster_analysis.db`。每张卡一个 profiler db。
+
+**数据级别**（自动识别，决定 `comm` 的口径与检测范围）：
+
+| 级别 | 触发条件 | 检测范围 |
+|------|----------|----------|
+| `levelnone` | 只有 `ascend_pytorch_profiler_*.db` | 全部 7 类 |
+| `level1` | profiler db 同目录有 `analysis.db` 且含 `CommAnalyzerBandwidth` 带宽 | 7 类，但 `comm` 用**新两级带宽口径**，且跳过 `pp_comm` |
+| `cluster` | `path` 直接是 `cluster_analysis.db` 单文件 | 仅 `comm`（新两级带宽口径） |
 
 ### 4. 输出
 
@@ -100,7 +110,7 @@ result = main.run_detection(
 
 ### 1. 总览
 
-从每个 rank 的 `.db` 解析出单快照指标，对 **7 类指标**分别做异常检测，最终汇总成上面的那张表。
+从每个 rank 的 `.db` 解析出单快照指标，对 **7 类指标**分别做异常检测，最终汇总成上面的那张表。（`levelnone` / `level1` 做完整 7 类；`cluster` 级别只有 `comm`。）
 
 | 类别 | 指标 | 检测方式 |
 |------|------|----------|
@@ -132,7 +142,10 @@ result = main.run_detection(
 
 **npu_bubble（ZP_Bubble）**：通信算子启动间隔小于 `5000ns` 记为异常（小值异常）。
 
-**comm（慢通信域）**：先把每次集合通信的**带宽**回填进 CSV —— 默认按 wall-clock 时间窗把每次 occurrence 跨 rank 对齐、取组内最短时长，再对全部 occurrence 的最短时长取**前 10% 均值**作分母，`带宽 = count / 该均值`；开启 `no-align` 则不做对齐、改用**全体 rank 算子时长的扁平池**取前 10% 均值。检测时每域每个 opType 每组建模：每组取 **count 最大**的条目作代表，保留 `count ≥ 最大×0.5 且 > 10240` 的组，用通用算法（**min 方向**，带宽越小越慢）聚类，**只有在该域所有 opType 上都异常的组**才上报，劣化指数取各 opType 最大值。
+**comm（慢通信域）**：分两套口径。
+
+- **旧口径（`levelnone`）**：先把每次集合通信的**带宽**回填进 CSV —— 默认按 wall-clock 时间窗把每次 occurrence 跨 rank 对齐、取组内最短时长，再对全部 occurrence 的最短时长取**前 10% 均值**作分母，`带宽 = count / 该均值`；开启 `no-align` 则不做对齐、改用**全体 rank 算子时长的扁平池**取前 10% 均值。检测时每域每个 opType 每组建模：每组取 **count 最大**的条目作代表，保留 `count ≥ 最大×0.5 且 > 10240` 的组，用通用算法（**min 方向**，带宽越小越慢）聚类，**只有在该域所有 opType 上都异常的组**才上报，劣化指数取各 opType 最大值。
+- **新两级口径（`level1` / `cluster`）**：数据来自 `analysis.db` 的 `CommAnalyzerBandwidth`（或 `cluster_analysis.db` 的 `ClusterCommunicationBandwidth`）。每 `(域, 算子类型, count)` 取**全体 rank 带宽的中位数**作基准；每 rank 指标 = 各 `(算子类型, count)` 上 `带宽 / 中位数` 的均值（≈1 正常、越小越慢）。分两级检测：**Level-1** 组内 kmeans（min 方向）→ 慢 rank（单卡键）；**Level-2** 各组指标均值 → 域内组间 kmeans → 慢组（组键）。两级结果都写进 `comm`。此口径不使用 `no-align`。
 
 **pp_comm（PP 慢通信）**：PP 传输（点对点）单独检测。
 - **前置跳过**：若本次已检出**计算类故障（`KERNEL_AICORE` / `kernel_aivec`）**，直接跳过 PP 检测 —— 因为 PP 统计的那段时间里必然包含计算算子，会被计算异常污染。
