@@ -394,6 +394,11 @@ def main():
         if v <= 0:
             logger.warning(f"[WARN] {name} threshold must be > 0. Please verify.")
 
+    # === 单文件 cluster db：跳过 colocate / 子 job 扫描，直接处理 ===
+    if os.path.isfile(input_path):
+        config.set_output_path("")
+        return _process_single_job(input_path, thresholds, clean_mode)
+
     # === verl colocate：同层多 worker*_ascend_pt 且含训练+rollout，先分组再分开检测 ===
     colocate_worlds = _find_colocate_worlds(input_path)
     if colocate_worlds:

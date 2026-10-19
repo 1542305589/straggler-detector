@@ -158,6 +158,14 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
         print(f"[ERROR] 无法创建结果文件 {output_path}: {e}")
 
 
+def _is_interactive() -> bool:
+    """当前是否为可交互终端（非 TTY 时各询问函数自动用默认值，避免 input() 抛 EOFError）。"""
+    try:
+        return sys.stdin is not None and sys.stdin.isatty()
+    except Exception:
+        return False
+
+
 def confirm_clean(input_path: str) -> bool:
     """
     检查是否存在已有数据，并询问用户是否删除清理。
@@ -189,6 +197,10 @@ def confirm_clean(input_path: str) -> bool:
 
     if not existing:
         return True  # 无需清理，继续执行
+
+    if not _is_interactive():
+        print(f"\n[非交互] 发现已有数据（{', '.join(existing)}），默认保留、不删除")
+        return False
 
     print(f"\n发现以下已有数据：{', '.join(existing)}")
     while True:
@@ -228,6 +240,9 @@ def confirm_thresholds(thresholds: tuple, keys: tuple = ("compute", "io", "comm"
         (计算类, IO/CPU 类, 通信类) 用户确认后的阈值元组（未提问的用传入默认值）
     """
     compute, io, comm = thresholds
+    if not _is_interactive():
+        # 非交互（无 TTY）：不询问，直接用传入值
+        return (compute, io, comm)
     print("检测阈值设置（回车使用默认值）：")
     if "compute" in keys:
         compute = _ask_threshold("计算类阈值（KERNEL_AICORE / kernel_aivec）", compute)
@@ -244,6 +259,8 @@ def confirm_no_align(default: bool = False) -> bool:
     关闭（yes）→ 用全体 rank 的算子时长扁平池取前 10% 均值作带宽分母；
     不关闭（no，默认）→ 跨 rank 时间窗对齐后取组内最短时长。
     """
+    if not _is_interactive():
+        return default
     hint = "Y/n" if default else "y/N"
     while True:
         ans = input(
