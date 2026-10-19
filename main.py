@@ -259,6 +259,31 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     # 检测结果清理与输出目录（output_path），而非原始数据目录
     out_path = config.get_output_path()
 
+    # === 数据级别识别（levelnone / level1 / cluster） ===
+    level = nodelevel_data_handler.detect_profiling_level(job_path)
+    config.set_profiling_level(level)
+    logger.info(f"数据级别：{level}")
+
+    # === cluster_analysis.db 单文件：跳过解析，直接走新两级带宽口径 ===
+    if level == "cluster":
+        # 输入是文件，结果输出到其所在目录下的 detection_output（避免写到文件本身）
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(job_path)), "detection_output")
+        os.makedirs(out_dir, exist_ok=True)
+        config.set_output_path(out_dir)
+        parallels, comm = nodelevel_data_handler.load_cluster_comm(job_path)
+        if not parallels or not comm:
+            logger.error("cluster 数据为空，无法检测")
+            return {}
+        valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
+        result = nodelevel.delimit_detection({}, parallels, valid_ranks, comm=comm)
+        utils.write_result(result, parallels)
+        try:
+            summary = summary_table.build_summary_table(result, parallels, {})
+            _safe_print(summary)
+        except Exception as e:
+            logger.warning(f"生成汇总表失败：{e}")
+        return result
+
     # === 步骤 1: 清理/解析（清理决策优先取调用方已确认值） ===
     if clean_decision is None:
         if clean_mode == 'yes':
@@ -295,8 +320,14 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     # === 步骤 3: 获取最新 step 数据 ===
     last_step_data = nodelevel_data_handler.get_cur_job_last_step_data(valid_ranks)
 
+    # level1：装载新两级带宽口径数据（analysis.db 的 CommAnalyzerBandwidth），
+    # 传给定界检测替换原 comm 检测。
+    comm = None
+    if level == "level1":
+        comm = nodelevel_data_handler.load_level1_comm(job_path, parallels)
+
     # === 步骤 4: 执行定界检测 ===
-    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks)
+    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
 
     # === 步骤 5: 输出结果 ===
     # 始终输出 JSON 结果文件（即使没有异常）
@@ -426,6 +457,31 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     thresholds = utils.confirm_thresholds(thresholds)
     config.set_thresholds(*thresholds)
 
+    # === 数据级别识别（levelnone / level1 / cluster） ===
+    level = nodelevel_data_handler.detect_profiling_level(input_path)
+    config.set_profiling_level(level)
+    logger.info(f"数据级别：{level}")
+
+    # === cluster_analysis.db 单文件：跳过解析，直接走新两级带宽口径 ===
+    if level == "cluster":
+        # 输入是文件，结果输出到其所在目录下的 detection_output（避免写到文件本身）
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(input_path)), "detection_output")
+        os.makedirs(out_dir, exist_ok=True)
+        config.set_output_path(out_dir)
+        parallels, comm = nodelevel_data_handler.load_cluster_comm(input_path)
+        if not parallels or not comm:
+            logger.error("cluster 数据为空，无法检测")
+            return {}
+        valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
+        result = nodelevel.delimit_detection({}, parallels, valid_ranks, comm=comm)
+        utils.write_result(result, parallels)
+        try:
+            summary = summary_table.build_summary_table(result, parallels, {})
+            _safe_print(summary)
+        except Exception as e:
+            logger.warning(f"生成汇总表失败：{e}")
+        return result
+
     if skip_parsing:
         logger.info("跳过数据解析，直接使用已有的 op_metric 数据")
     else:
@@ -458,8 +514,14 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     # 步骤 3: 获取最新 step 数据
     last_step_data = nodelevel_data_handler.get_cur_job_last_step_data(valid_ranks)
 
+    # level1：装载新两级带宽口径数据（analysis.db 的 CommAnalyzerBandwidth），
+    # 传给定界检测替换原 comm 检测。
+    comm = None
+    if level == "level1":
+        comm = nodelevel_data_handler.load_level1_comm(input_path, parallels)
+
     # 步骤 4: 执行定界检测
-    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks)
+    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
 
     # 步骤 5: 输出结果
     # 始终输出 JSON 结果文件（即使没有异常）

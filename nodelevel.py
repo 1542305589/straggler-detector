@@ -6,6 +6,7 @@ Node Level 检测模块 - 对应 Go 代码中的 nodelevel/
 import json
 import os
 import logging
+import statistics
 from typing import Dict, List, Tuple, Optional, Any
 from collections import defaultdict
 
@@ -44,7 +45,9 @@ GENERAL_METRIC_CATEGORIES = [
 def delimit_detection(
     step_data: Dict[str, Dict[int, float]],
     parallels: Dict[str, List[List[int]]],
-    valid_ranks: List[int]
+    valid_ranks: List[int],
+    comm: Optional[Dict[Any, Dict[int, float]]] = None,
+    comm_threshold: Optional[float] = None,
 ) -> Dict[str, Dict[str, float]]:
     """
     单次定界检测（最新检测方式）
@@ -54,6 +57,9 @@ def delimit_detection(
         step_data: 单个 step 的快照数据，如 {"ZP_Device": {0: 1.66e9, 1: 1.67e9, ...}, ...}
         parallels: 并行域信息，如 {"tp": [[0,1], [2,3], ...], "pp": [[0,8], ...]}
         valid_ranks: 有效 rank 列表
+        comm: level1/cluster 带宽数据 {(域,算子类型,count): {rank: bw}}；
+              非空时用新两级带宽口径**替换**原 comm 检测（含跳过 PP 慢通信）
+        comm_threshold: 新两级口径的 kmeans 阈值；None 时用 config.get_comm_threshold()
 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
@@ -89,9 +95,14 @@ def delimit_detection(
         logger.info(f"  - {column} -> {category}")
 
     # ===== 慢通信域检测（带宽聚类，comm） =====
-    # 无命名通信域（情况 A）时，无带宽列可检测，直接跳过；
+    # level1 / cluster：有 analysis.db 的带宽数据 → 用新两级带宽口径（域内 (算子类型,count)
+    # 中位带宽归一，min 方向），两级结果都写进 comm，并跳过 PP 慢通信检测。
+    # levelnone / level0：无命名通信域（情况 A）时无带宽列可检测，直接跳过；
     # 否则按域组带宽做 min 方向聚类（情况 B / 正常数据）。
-    if config.get_has_named_domain():
+    if comm:
+        logger.info("\n慢通信域检测（新两级带宽口径，level1/cluster）:")
+        detect_slow_comm_two_level(parallels, comm, local_result, comm_threshold)
+    elif config.get_has_named_domain():
         logger.info("\n慢通信域检测（带宽聚类）:")
         detect_slow_domain_by_bandwidth(parallels, step_data, local_result)
 
@@ -386,10 +397,13 @@ def get_cal_detection_group(
 
     is_cluster = config.get_is_cluster_data()
 
-    # 并行域检测优先级（按优先级从高到低）
+    # 并行域检测优先级（按优先级从高到低）。
+    # 末尾的 default_group 是兜底：level1 数据只有 default_group（整组），
+    # 不在前面的命名域优先级里，补上后可直接当整组检测，无需退到按 hostUid 的
+    # 节点回退（节点回退依赖解析阶段填充的 host_rank_map，clean=no 时为空）。
     detection_priority = [
         "tp", "exp", "ep", "tp_exp", "cp", "cp2", "cp_ulysses", "cp_ring",
-        "dp", "dp_cp", "dp_modulo_exp_cp"
+        "dp", "dp_cp", "dp_modulo_exp_cp", "default_group"
     ]
 
     for domain in detection_priority:
@@ -498,6 +512,85 @@ def detect_slow_domain_by_bandwidth(
                 continue
             max_deg = max(op_degs.values())
             local_result.add_group("comm", groups[gi], max_deg)
+
+
+def detect_slow_comm_two_level(
+    parallels: Dict[str, List[List[int]]],
+    comm: Dict[Any, Dict[int, float]],
+    local_result: config.DegradationData,
+    threshold: Optional[float] = None,
+):
+    """新两级带宽口径（level1 / cluster）。
+
+    comm: {(域, 算子类型, count): {rank: bw}}（bw = 该 rank 在该 (域,算子类型,count) 的聚合带宽）。
+
+    指标：每 rank = mean over (算子类型, count) of ( bw / median_bw(域,算子类型,count) )，
+        ≈1 正常、越小越慢（min 方向）。
+    Level-1（组内）：每组内对组内 rank 指标做 kmeans（min 方向）→ 慢 rank（单卡键）。
+    Level-2（组间）：每组取组内指标均值 → 域内所有组做 kmeans（min 方向）→ 慢组（组键）。
+    两级结果都写进 comm 类别。
+    """
+    if threshold is None:
+        threshold = config.get_comm_threshold()
+    if threshold <= 0:
+        threshold = 1.3
+    if not comm:
+        return
+
+    # 基准：每 (域,算子类型,count) 全体 rank 的 bw 中位数
+    base: Dict[Any, float] = {}
+    for key, by_rank in comm.items():
+        vals = [v for v in by_rank.values() if v > 0]
+        if vals:
+            base[key] = statistics.median(vals)
+
+    # 每 (域, rank)：mean over (算子类型,count) of (bw / 基准)
+    acc: Dict[Any, List[float]] = {}
+    for key, by_rank in comm.items():
+        b = base.get(key)
+        if not b or b <= 0:
+            continue
+        domain = key[0]
+        for rank, bw in by_rank.items():
+            s, n = acc.get((domain, rank), [0.0, 0])
+            acc[(domain, rank)] = [s + bw / b, n + 1]
+    metric = {k: s / n for k, (s, n) in acc.items() if n > 0}
+    if not metric:
+        return
+
+    for domain, groups in parallels.items():
+        if domain == ppParallelDomainName or domain == "embd":
+            continue
+        if len(groups) < 2:
+            continue
+
+        # ---- Level-1：组内慢 rank ----
+        for group in groups:
+            ranks = [int(r) for r in group if (domain, int(r)) in metric]
+            if len(ranks) < minRanksInGroup:
+                continue
+            vals = [metric[(domain, r)] for r in ranks]
+            abnormal, degs = kmeans_detector.general_anomaly_detection(
+                ranks, vals, threshold, high_is_anomaly=False
+            )
+            for r, d in zip(abnormal, degs):
+                local_result.add_single("comm", r, d)
+
+        # ---- Level-2：组间慢组 ----
+        group_means = []
+        for group in groups:
+            vals = [metric[(domain, int(r))] for r in group if (domain, int(r)) in metric]
+            if vals:
+                group_means.append((group, sum(vals) / len(vals)))
+        if len(group_means) < 2:
+            continue
+        ids = list(range(len(group_means)))
+        means = [m for _, m in group_means]
+        abnormal, degs = kmeans_detector.general_anomaly_detection(
+            ids, means, threshold, high_is_anomaly=False
+        )
+        for gi, d in zip(abnormal, degs):
+            local_result.add_group("comm", group_means[gi][0], d)
 
 
 def _bw_set_for_group(

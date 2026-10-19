@@ -1396,6 +1396,18 @@ def _is_pp_send(name: str) -> bool:
     return s.startswith("send")
 
 
+def _p2p_dir(name: str) -> str:
+    """把算子名归一化为点对点方向：BatchSendRecv->'both'，Send->'send'，
+    Recv/Receive->'recv'，非点对点（集合通信等）返回空串 ''。"""
+    if _is_batch_send_recv(name):
+        return "both"
+    if _is_pp_send(name):
+        return "send"
+    if _is_pp_recv(name):
+        return "recv"
+    return ""
+
+
 def _collect_pp_groups(rank_to_info: Dict[int, Dict[str, Any]]) -> List[List[int]]:
     """
     从各 rank 的 parallel_group_info 里收集 group_name == "pp" 的分组。

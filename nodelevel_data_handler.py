@@ -12,6 +12,8 @@ import csv
 import json
 import os
 import logging
+import re
+import sqlite3
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
 
@@ -514,3 +516,182 @@ def get_detection_job_parallel_info(
 
     logger.info(f"[SLOWNODE ALGO] {target} parallel info: {groups}")
     return groups
+
+
+# ---------------------------------------------------------------------------
+# 数据级别识别（levelnone / level1 / cluster）
+# ---------------------------------------------------------------------------
+# 只取真实数据行：HCCS 有真实 transit_size/time。
+_BAND_TYPE = "HCCS"
+_AGG_OP_NAME = "Total Op Info"
+
+
+def detect_profiling_level(input_path: str) -> str:
+    """识别输入数据级别：levelnone / level1 / cluster。
+
+    - 输入本身是 `cluster_analysis.db` 单文件 → cluster（走新两级带宽口径）。
+    - 目录：找 `ascend_pytorch_profiler_*.db`，看其同目录 `analysis.db` 的
+      `CommAnalyzerBandwidth` 是否有数据；任一有 → level1，否则 → levelnone。
+    """
+    if os.path.isfile(input_path):
+        return "cluster" if os.path.basename(input_path) == "cluster_analysis.db" else "levelnone"
+
+    for root, _dirs, files in os.walk(input_path):
+        for fn in files:
+            if fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db"):
+                if _analysis_db_has_bandwidth(os.path.join(root, "analysis.db")):
+                    logger.info(f"[SLOWNODE ALGO] 检测到 level1 数据（{os.path.join(root, 'analysis.db')} 有带宽数据）")
+                    return "level1"
+    return "levelnone"
+
+
+def _analysis_db_has_bandwidth(analysis_db: str) -> bool:
+    """analysis.db 是否存在 CommAnalyzerBandwidth 表且有数据。"""
+    if not os.path.exists(analysis_db):
+        return False
+    try:
+        con = sqlite3.connect(analysis_db)
+        cur = con.cursor()
+        row = cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name='CommAnalyzerBandwidth'"
+        ).fetchone()
+        if not row:
+            con.close()
+            return False
+        n = cur.execute("SELECT COUNT(*) FROM CommAnalyzerBandwidth").fetchone()[0]
+        con.close()
+        return n and n > 0
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 读取 {analysis_db} 失败：{e}")
+        return False
+
+
+def _op_type(hccl_op_name: str) -> str:
+    """提取算子类型：hcom_allReduce__612_0_1 → 'allreduce'（非 hccl 记录返回空串）。"""
+    s = (hccl_op_name or "").strip()
+    if "_" in s:
+        return s.split("_")[1].lower()
+    return ""
+
+
+def _rank_from_profiler_filename(db_file: str) -> Optional[int]:
+    """从 ascend_pytorch_profiler_<rank>.db 文件名提取 global rank。"""
+    base = os.path.basename(db_file)
+    prefix = "ascend_pytorch_profiler_"
+    if not (base.startswith(prefix) and base.endswith(".db")):
+        return None
+    try:
+        return int(base[len(prefix):-len(".db")])
+    except ValueError:
+        return None
+
+
+def _read_bandwidth_rows(analysis_db: str):
+    """读 analysis.db 的 CommAnalyzerBandwidth（HCCS、最后一个 step）→
+       [(op_type, count, size, time), ...]（每算子每 transport_type 一行）。"""
+    out = []
+    con = sqlite3.connect(analysis_db)
+    cur = con.cursor()
+    row = cur.execute("SELECT MAX(step) FROM CommAnalyzerBandwidth").fetchone()
+    step = row[0] if row else None
+    q = (
+        "SELECT hccl_op_name, count, transit_size, transit_time "
+        "FROM CommAnalyzerBandwidth WHERE transport_type=? AND hccl_op_name<>? "
+        "AND step=?"
+    )
+    for op, cnt, size, time in cur.execute(q, (_BAND_TYPE, _AGG_OP_NAME, step)):
+        s = float(size or 0.0)
+        t = float(time or 0.0)
+        if s > 0 and t > 0:
+            out.append((_op_type(op), int(cnt or 0), s, t))
+    con.close()
+    return out
+
+
+def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> Dict[Any, Dict[int, float]]:
+    """level1：遍历各 rank 的 analysis.db，读 CommAnalyzerBandwidth（HCCS），
+       按 (域, 算子类型, count) 聚合每 rank 的 Σsize/Σtime → {(域,算子类型,count): {rank: bw}}。
+
+    域来自该 rank 所属的命名并行域（parallels）；无命名域时用 "default_group"。
+    """
+    # rank -> 所属域集合
+    rank_domains: Dict[int, set] = {}
+    for domain, groups in (parallels or {}).items():
+        for g in groups:
+            for r in g:
+                rank_domains.setdefault(int(r), set()).add(domain)
+
+    acc: Dict[Any, Dict[int, List[float]]] = {}  # (域,算子类型,count) -> {rank: [Σsize,Σtime]}
+    for root, _dirs, files in os.walk(input_path):
+        for fn in files:
+            if not (fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db")):
+                continue
+            rank = _rank_from_profiler_filename(os.path.join(root, fn))
+            if rank is None:
+                continue
+            analysis_db = os.path.join(root, "analysis.db")
+            if not os.path.exists(analysis_db):
+                continue
+            domains = rank_domains.get(rank) or {"default_group"}
+            for op_type, count, size, time in _read_bandwidth_rows(analysis_db):
+                for domain in domains:
+                    key = (domain, op_type, count)
+                    by_rank = acc.setdefault(key, {})
+                    s, t = by_rank.get(rank, [0.0, 0.0])
+                    by_rank[rank] = [s + size, t + time]
+
+    comm: Dict[Any, Dict[int, float]] = {}
+    for key, by_rank in acc.items():
+        m = {r: s / t for r, (s, t) in by_rank.items() if t > 0}
+        if m:
+            comm[key] = m
+    logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 个 (域,算子类型,count) 键")
+    return comm
+
+
+def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], Dict[Any, Dict[int, float]]]:
+    """cluster_analysis.db：读 CommunicationGroupMapping → parallels={域:[[ranks]]}；
+       读 ClusterCommunicationBandwidth（HCCS、排除聚合行）→ {(域,算子类型,count): {rank: bw}}。"""
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+
+    g2pg: Dict[str, str] = {}
+    parallels: Dict[str, List[List[int]]] = {}
+    cur.execute(
+        "SELECT group_name, pg_name, rank_set FROM CommunicationGroupMapping "
+        "WHERE type='collective' AND pg_name IS NOT NULL AND pg_name != ''"
+    )
+    for gname, pg, rank_set in cur.fetchall():
+        if pg in ("pp", "embd", "intra_dist_opt_instance", "default_group"):
+            continue
+        g2pg[gname] = pg
+        ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
+        if len(ranks) >= 2:
+            parallels.setdefault(pg, []).append(ranks)
+
+    acc: Dict[Any, Dict[int, List[float]]] = {}
+    q = (
+        "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
+        "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
+    )
+    for gname, rank, op, cnt, size, time in cur.execute(q, (_BAND_TYPE, _AGG_OP_NAME)):
+        pg = g2pg.get(gname)
+        if not pg:
+            continue
+        s = float(size or 0.0)
+        t = float(time or 0.0)
+        if s <= 0 or t <= 0:
+            continue
+        key = (pg, _op_type(op), int(cnt or 0))
+        by_rank = acc.setdefault(key, {})
+        a, b = by_rank.get(int(rank), [0.0, 0.0])
+        by_rank[int(rank)] = [a + s, b + t]
+    con.close()
+
+    comm: Dict[Any, Dict[int, float]] = {}
+    for key, by_rank in acc.items():
+        m = {r: s / t for r, (s, t) in by_rank.items() if t > 0}
+        if m:
+            comm[key] = m
+    logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 个 (域,算子类型,count) 键")
+    return parallels, comm

@@ -88,6 +88,13 @@ RankDeviceMap = {}
 JobType = "unknown"
 
 
+# 数据级别：由 nodelevel_data_handler.detect_profiling_level 在检测时判定。
+#   "levelnone" → 无 analysis.db 带宽数据（原全量 profiling 流程）
+#   "level1"    → 有 analysis.db 的 CommAnalyzerBandwidth 数据，走新两级带宽口径
+#   "cluster"   → 输入直接是 cluster_analysis.db 单文件，走新两级带宽口径
+ProfilingLevel = "levelnone"
+
+
 def set_host_rank_map(rank: int, host_name):
     """记录某张卡的节点 hostName"""
     HostRankMap[str(rank)] = host_name
@@ -150,6 +157,17 @@ def set_job_type(job_type: str):
 def get_job_type() -> str:
     """获取 Job 类型"""
     return JobType
+
+
+def set_profiling_level(level: str):
+    """设置数据级别（levelnone / level1 / cluster）"""
+    global ProfilingLevel
+    ProfilingLevel = level
+
+
+def get_profiling_level() -> str:
+    """获取数据级别（levelnone / level1 / cluster）"""
+    return ProfilingLevel
 
 
 def set_is_cluster_data(is_cluster: bool):
