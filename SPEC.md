@@ -76,9 +76,11 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
   ├── detection_zp_bubble_data()             → npu_bubble
   ├── get_slow_calculate_ranks()             → KERNEL_AICORE
   ├── get_slow_metric_ranks() ×2             → kernel_aivec / memcpy_async
-  ├── detect_slow_domain_by_bandwidth() → comm（HasNamedDomain 时）
+  ├── detect_slow_domain_by_bandwidth()      → comm（levelnone，HasNamedDomain 时，旧口径）
+  ├── detect_slow_comm_two_level()           → comm（level1/cluster，新两级带宽口径；跳过 PP）
   ├── detect_pp_slow_domain()                → pp_comm（点对点→集合通信间隔，逐 rank 比较）
   ├── get_slow_host_ranks_by_homogenize()    → cpu
+  └── （step_data 为空，即 cluster 单文件时：只跑 detect_slow_comm_two_level，其余指标不检测）
         │
         ▼
 [utils.write_result]                        → straggler_detection_result.json

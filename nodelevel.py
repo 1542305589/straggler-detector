@@ -61,21 +61,29 @@ def delimit_detection(
               非空时用新两级带宽口径**替换**原 comm 检测（含跳过 PP 慢通信）
         comm_threshold: 新两级口径的 kmeans 阈值；None 时用 config.get_comm_threshold()
 
+    step_data 为空（cluster 单文件 cluster_analysis.db）时，只做 comm（新两级口径），
+    不做通信以外的任何指标检测。
+
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
     local_result = config.DegradationData()
 
-    # 按照优先级获取检测组和对应的并行域名
+    # cluster（输入是单文件 cluster_analysis.db）：没有单卡快照，只有通信带宽数据，
+    # 不做通信以外的任何指标检测，直接用新两级带宽口径检测 comm。
+    if not step_data:
+        logger.info("[INFO] 无单卡快照数据（cluster 单文件）：仅检测通信域")
+        if comm:
+            logger.info("\n慢通信域检测（新两级带宽口径，cluster）:")
+            detect_slow_comm_two_level(parallels, comm, local_result, comm_threshold)
+        return dict(local_result)
+
+    # 以下检测需要单卡快照：先按优先级获取检测组和对应的并行域名
     cal_detection_group_name, cal_detection_group = get_cal_detection_group(parallels, valid_ranks)
 
     # 检查检测组是否有效（注意：并行域名称可能为空字符串 ""）
     if not cal_detection_group or (cal_detection_group_name is None and cal_detection_group != []):
         logger.warning("获取检测组失败")
-        return {}
-
-    if not step_data:
-        logger.warning("step 数据为空")
         return {}
 
     # ===== 指标 11：BubbleTime，单阈值检测（<5000ns，沿用） =====
