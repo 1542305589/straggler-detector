@@ -277,6 +277,13 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
         result = nodelevel.delimit_detection({}, parallels, valid_ranks, comm=comm)
         utils.write_result(result, parallels)
+        # 生成文本报告（仅含 comm 两级口径段）
+        try:
+            visualizer.run_visualization(
+                {}, parallels, valid_ranks, out_dir,
+                detection_result=result, data_path=job_path)
+        except Exception as e:
+            logger.warning(f"生成报告失败：{e}")
         try:
             summary = summary_table.build_summary_table(result, parallels, {})
             _safe_print(summary)
@@ -475,6 +482,13 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
         valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
         result = nodelevel.delimit_detection({}, parallels, valid_ranks, comm=comm)
         utils.write_result(result, parallels)
+        # 生成文本报告（仅含 comm 两级口径段）
+        try:
+            visualizer.run_visualization(
+                {}, parallels, valid_ranks, out_dir,
+                detection_result=result, data_path=input_path)
+        except Exception as e:
+            logger.warning(f"生成报告失败：{e}")
         try:
             summary = summary_table.build_summary_table(result, parallels, {})
             _safe_print(summary)

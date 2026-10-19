@@ -185,6 +185,59 @@ def _pp_comm_section(parallels: Dict[str, List[List[int]]],
     return "\n".join(lines)
 
 
+def _comm_two_level_section(detection_result: Optional[Dict[str, Dict[str, float]]],
+                            parallels: Dict[str, List[List[int]]]) -> str:
+    """
+    level1 / cluster 的慢通信域展示（新两级带宽口径）：直接从 `detection_result["comm"]` 取。
+
+    - 单 rank 键 → **Level-1**（组内慢 rank）
+    - 多 rank 键 → **Level-2**（组间慢组）
+
+    劣化指数 = 基线带宽 / 该 rank（或组）指标（min 方向，越大越慢）。
+    """
+    comm = (detection_result or {}).get("comm") or {}
+    if not comm:
+        return ""
+
+    singles = []
+    groups = []
+    for key, deg in comm.items():
+        try:
+            ranks = sorted(int(r) for r in key.split(","))
+        except (TypeError, ValueError):
+            continue
+        if not ranks:
+            continue
+        if len(ranks) == 1:
+            singles.append((ranks[0], deg))
+        else:
+            groups.append((ranks, deg, summary_table._domain_of_group(parallels, key)))
+    if not singles and not groups:
+        return ""
+
+    lines = []
+    lines.append("")
+    lines.append(_sep_line("慢通信域（两级带宽口径）", 70))
+    lines.append("")
+    lines.append("  劣化指数 = 基线带宽 / 该 rank（或组）指标，越大越慢")
+    lines.append("")
+    if singles:
+        singles.sort(key=lambda x: -x[1])
+        lines.append("  Level-1 组内慢 rank:")
+        for r, d in singles:
+            lines.append("    " + f"rank {r}".ljust(16) + f"{d:.3g}x")
+        lines.append("")
+    if groups:
+        groups.sort(key=lambda x: -x[1])
+        lines.append("  Level-2 组间慢组:")
+        for ranks, d, dom in groups:
+            inner = ", ".join(str(x) for x in ranks)
+            label = f"{dom}[{inner}]" if dom else f"[{inner}]"
+            lines.append("    " + label.ljust(24) + f"{d:.3g}x")
+        lines.append("")
+    return "\n".join(lines)
+
+
 def _metric_section(
     metric_name: str,
     data: Dict,
@@ -541,8 +594,14 @@ def generate_report(
     if pp_section:
         sections.append(pp_section)
 
-    # Part 2: 每个并行域的集合通信带宽（跳过 pp / embd：不在带宽白名单）
-    if parallels:
+    # Part 2: 慢通信域
+    # level1 / cluster：新两级带宽口径，结果取自 detection_result["comm"]（不依赖 step_data 带宽列）
+    # levelnone：按各域带宽列（旧口径）排序 + 概览
+    if config.get_profiling_level() in ("level1", "cluster"):
+        two_level = _comm_two_level_section(detection_result, parallels)
+        if two_level:
+            sections.append(two_level)
+    elif parallels:
         comm_abnormal = detection_result.get("comm", {}) if detection_result else {}
 
         abnormal_groups = []
@@ -559,8 +618,7 @@ def generate_report(
             sections.append(_comm_bandwidth_section(
                 domain_name, domain_groups, step_data, abnormal_groups))
 
-    # 各域集合通信带宽概览（置于最后）
-    if parallels:
+        # 各域集合通信带宽概览（置于最后）
         sections.append(_comm_bandwidth_overview(step_data, parallels))
 
     sections.append(_sep_line("", 70))
