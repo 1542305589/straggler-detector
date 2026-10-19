@@ -49,7 +49,7 @@ result = main.run_detection(
 
 - `npu_bubble` 为固定硬阈值 `< 5000ns`，不作为参数。
 - `no_align` 仅对 `levelnone` 的旧带宽口径有效；`level1` / `cluster` 用新口径，不受影响（见「检测原理 → comm」）。因此通过 agent 触发时，**只有 `levelnone` 会问 `no-align`**，`level1` / `cluster` 不问。
-- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（阈值 / 是否清理 / 是否 `no-align`）。其中 cluster 单文件只检测 `comm`，**只问通信类阈值**，`no-align`、`clean` 都不问（无解析步骤、输出直接覆盖写）；`levelnone` 才问三组阈值与 `no-align`。直接跑命令行时按上表传参即可。
+- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（阈值 / 是否清理 / 是否 `no-align`）。按级别决定问哪些阈值：`cluster` 单文件**只问 `comm`**（且不问 `no-align`/`clean`）；`levelnone` **只问 `io` + `comm`**（`cpu` 用 io、`comm`/`pp_comm` 用 comm；`compute` 已跳过）；`level0`/`level1` 问 `compute`+`io`+`comm`。直接跑命令行时按上表传参即可。
 
 ### 3. 输入数据
 
@@ -69,7 +69,8 @@ result = main.run_detection(
 
 | 级别 | 触发条件 | 检测范围 |
 |------|----------|----------|
-| `levelnone` | 只有 `ascend_pytorch_profiler_*.db` | 全部 7 类 |
+| `level0` | 目录、`ascend_pytorch_profiler_*.db` 的 `TASK.taskType` 含 `KERNEL_AICORE`/`KERNEL_AIVEC`/`MEMCPY_ASYNC` | 全部 7 类 |
+| `levelnone` | 目录、`TASK.taskType` 仅 `MsTx`（无计算/搬运算子） | **跳过** `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；其余（`cpu`/`npu_bubble`/`comm`/`pp_comm`）照跑 |
 | `level1` | profiler db 同目录有 `analysis.db` 且含 `CommAnalyzerBandwidth` 带宽 | 7 类，但 `comm` 用**新两级带宽口径**，且跳过 `pp_comm` |
 | `cluster` | `path` 是单文件 db，含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` 表 | 仅 `comm`（新两级带宽口径） |
 

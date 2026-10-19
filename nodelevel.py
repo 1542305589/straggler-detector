@@ -88,18 +88,23 @@ def delimit_detection(
     # ===== 指标 11：BubbleTime，单阈值检测（<5000ns，沿用） =====
     detection_zp_bubble_data(step_data.get(zpBubbleColumn, {}), local_result)
 
-    # ===== 指标 7：慢计算卡 KERNEL_AICORE（原 cal） =====
-    logger.info("\n慢计算卡检测 (KERNEL_AICORE):")
-    get_slow_calculate_ranks(cal_detection_group, step_data, cal_detection_group_name, local_result)
+    # ===== 指标 7 / 6 / 9：KERNEL_AICORE / KERNEL_AIVEC / MEMCPY_ASYNC =====
+    # levelnone（TASK 仅 MsTx）没有这些计算/搬运算子 → 直接跳过。
+    if config.get_profiling_level() == "levelnone":
+        logger.info("[SKIP] levelnone（TASK 仅 MsTx）：跳过 KERNEL_AICORE / KERNEL_AIVEC / MEMCPY_ASYNC 检测")
+    else:
+        # ===== 指标 7：慢计算卡 KERNEL_AICORE（原 cal） =====
+        logger.info("\n慢计算卡检测 (KERNEL_AICORE):")
+        get_slow_calculate_ranks(cal_detection_group, step_data, cal_detection_group_name, local_result)
 
-    # ===== 指标 4-10：使用选定的检测组，进入通用检测算法 =====
-    # 指标 6/9：KERNEL_AIVEC / MEMCPY_ASYNC
-    logger.info("\n通用检测（选定的检测组）:")
-    for column, category in GENERAL_METRIC_CATEGORIES:
-        if column == zpKernelColumn:
-            continue  # KERNEL_AICORE 已单独检测
-        get_slow_metric_ranks(cal_detection_group, step_data, column, category, local_result)
-        logger.info(f"  - {column} -> {category}")
+        # ===== 指标 4-10：使用选定的检测组，进入通用检测算法 =====
+        # 指标 6/9：KERNEL_AIVEC / MEMCPY_ASYNC
+        logger.info("\n通用检测（选定的检测组）:")
+        for column, category in GENERAL_METRIC_CATEGORIES:
+            if column == zpKernelColumn:
+                continue  # KERNEL_AICORE 已单独检测
+            get_slow_metric_ranks(cal_detection_group, step_data, column, category, local_result)
+            logger.info(f"  - {column} -> {category}")
 
     # ===== 慢通信域检测（带宽聚类，comm） =====
     # level1 / cluster：有 analysis.db 的带宽数据 → 用新两级带宽口径（域内 (算子类型,count)

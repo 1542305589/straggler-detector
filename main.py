@@ -227,6 +227,15 @@ def _process_colocate_root(input_path: str, worlds: List[dict], thresholds: tupl
     return results
 
 
+def _threshold_ask_keys(level: str) -> tuple:
+    """按数据级别决定要询问哪些阈值组：cluster 只需 comm；levelnone 跳过 compute（那三类不检测）。"""
+    if level == "cluster":
+        return ("comm",)
+    if level == "levelnone":
+        return ("io", "comm")
+    return ("compute", "io", "comm")   # level0 / level1
+
+
 def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
                         db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     """
@@ -246,14 +255,13 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     if output_path:
         config.set_output_path(output_path)
 
-    # === 数据级别识别（levelnone / level1 / cluster） ===
+    # === 数据级别识别（levelnone / level0 / level1 / cluster） ===
     level = nodelevel_data_handler.detect_profiling_level(job_path)
     config.set_profiling_level(level)
 
     if not skip_confirm:
-        # 向用户提问阈值（传入值作为默认/回退）；cluster 只检测 comm，仅问通信类
-        ask_keys = ("comm",) if level == "cluster" else ("compute", "io", "comm")
-        thresholds = utils.confirm_thresholds(thresholds, keys=ask_keys)
+        # 向用户提问阈值（传入值作为默认/回退）；按级别决定问哪几组
+        thresholds = utils.confirm_thresholds(thresholds, keys=_threshold_ask_keys(level))
     config.set_thresholds(*thresholds)
 
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
@@ -449,7 +457,7 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
-    # === 数据级别识别（levelnone / level1 / cluster）===
+    # === 数据级别识别（levelnone / level0 / level1 / cluster）===
     level = nodelevel_data_handler.detect_profiling_level(input_path)
     config.set_profiling_level(level)
 
@@ -473,9 +481,8 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
 
     # 设置全局配置（先设置，后续步骤可能用到）
     config.set_file_path(input_path)
-    # 向用户提问阈值（传入值作为默认/回退）；cluster 只检测 comm，仅问通信类
-    ask_keys = ("comm",) if level == "cluster" else ("compute", "io", "comm")
-    thresholds = utils.confirm_thresholds(thresholds, keys=ask_keys)
+    # 向用户提问阈值（传入值作为默认/回退）；按级别决定问哪几组
+    thresholds = utils.confirm_thresholds(thresholds, keys=_threshold_ask_keys(level))
     config.set_thresholds(*thresholds)
 
     logger.info(f"数据级别：{level}")

@@ -29,6 +29,8 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 | `npu_bubble` | `ZP_Bubble` | 单阈值 < 5000ns |
 | `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
 
+> 数据级别影响检测范围：`level0`/`level1` 做全部 7 类；`levelnone`（TASK 仅 `MsTx`，无计算/搬运算子）跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；`cluster` 单文件仅 `comm`。
+
 ## 使用方法
 
 ### 正确运行目录
@@ -75,7 +77,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
    - **候选项必须恒定**：同一阈值每次询问展示的候选项完全一致，不要临时增删变化。
    - **不要自行添加「其他」选项**：询问工具自带「输入其他内容」，自定义值走它即可。
    - 用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
-   - **若输入是 cluster db 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
+   - **按数据级别决定问哪几组**：`cluster`（单文件 db）只问 `comm`；`levelnone`（TASK 仅 MsTx）只问 `io` + `comm`（`cpu` 用 io、`comm`/`pp_comm` 用 comm，计算类已跳过）；`level0`/`level1` 问 `compute`+`io`+`comm`。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`

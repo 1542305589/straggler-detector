@@ -89,9 +89,10 @@ JobType = "unknown"
 
 
 # 数据级别：由 nodelevel_data_handler.detect_profiling_level 在检测时判定。
-#   "levelnone" → 无 analysis.db 带宽数据（原全量 profiling 流程）
+#   "level0"    → profiler db 的 TASK 含 KERNEL_AICORE/KERNEL_AIVEC/MEMCPY_ASYNC（完整 7 类）
+#   "levelnone" → TASK 仅 MsTx（无计算/搬运算子）→ 跳过 KERNEL_AICORE/KERNEL_AIVEC/MEMCPY_ASYNC
 #   "level1"    → 有 analysis.db 的 CommAnalyzerBandwidth 数据，走新两级带宽口径
-#   "cluster"   → 输入直接是 cluster_analysis.db 单文件，走新两级带宽口径
+#   "cluster"   → 输入是单文件 cluster db，仅检测 comm（新两级带宽口径）
 ProfilingLevel = "levelnone"
 
 
@@ -160,13 +161,13 @@ def get_job_type() -> str:
 
 
 def set_profiling_level(level: str):
-    """设置数据级别（levelnone / level1 / cluster）"""
+    """设置数据级别（levelnone / level0 / level1 / cluster）"""
     global ProfilingLevel
     ProfilingLevel = level
 
 
 def get_profiling_level() -> str:
-    """获取数据级别（levelnone / level1 / cluster）"""
+    """获取数据级别（levelnone / level0 / level1 / cluster）"""
     return ProfilingLevel
 
 

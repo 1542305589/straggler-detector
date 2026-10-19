@@ -516,24 +516,57 @@ _AGG_OP_NAME = "Total Op Info"
 
 
 def detect_profiling_level(input_path: str) -> str:
-    """识别输入数据级别：levelnone / level1 / cluster。
+    """识别输入数据级别：levelnone / level0 / level1 / cluster。
 
     - 输入是**文件**：能被 sqlite 打开、且含 cluster 需要的表（`CommunicationGroupMapping`、
       `ClusterCommunicationBandwidth`，且均有数据）→ cluster；否则 → levelnone。
       （不限制文件名。）
-    - 目录：找 `ascend_pytorch_profiler_*.db`，看其同目录 `analysis.db` 的
-      `CommAnalyzerBandwidth` 是否有数据；任一有 → level1，否则 → levelnone。
+    - 目录：找 `ascend_pytorch_profiler_*.db`：
+      1. 任一 db 同目录的 `analysis.db` 有 `CommAnalyzerBandwidth` 数据 → level1；
+      2. 否则看任一 db 的 `TASK.taskType`：含 KERNEL_AICORE / KERNEL_AIVEC / MEMCPY_ASYNC → level0；
+      3. 都没有（仅 MsTx）→ levelnone。
     """
     if os.path.isfile(input_path):
         return "cluster" if is_cluster_db(input_path) else "levelnone"
 
+    profiler_dbs = []
     for root, _dirs, files in os.walk(input_path):
         for fn in files:
             if fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db"):
-                if _analysis_db_has_bandwidth(os.path.join(root, "analysis.db")):
-                    logger.info(f"[SLOWNODE ALGO] 检测到 level1 数据（{os.path.join(root, 'analysis.db')} 有带宽数据）")
-                    return "level1"
+                profiler_dbs.append(os.path.join(root, fn))
+    if not profiler_dbs:
+        return "levelnone"
+
+    for db in profiler_dbs:
+        if _analysis_db_has_bandwidth(os.path.join(os.path.dirname(db), "analysis.db")):
+            logger.info(f"[SLOWNODE ALGO] 检测到 level1 数据（{os.path.dirname(db)}/analysis.db 有带宽数据）")
+            return "level1"
+
+    # 无 analysis.db 带宽：按 TASK.taskType 区分 level0 / levelnone（数据同构，查第一个 profiler db 即可）
+    if _db_has_kernel_tasks(profiler_dbs[0]):
+        return "level0"
     return "levelnone"
+
+
+def _db_has_kernel_tasks(db_path: str) -> bool:
+    """profiler db 的 TASK.taskType 是否含 KERNEL_AICORE / KERNEL_AIVEC / MEMCPY_ASYNC。
+
+    这些类型缺失（仅 MsTx）说明没有计算/搬运类算子数据 → levelnone，跳过对应检测。
+    """
+    if not os.path.isfile(db_path):
+        return False
+    try:
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        row = cur.execute(
+            "SELECT 1 FROM TASK t JOIN STRING_IDS s ON t.taskType = s.id "
+            "WHERE s.value IN ('KERNEL_AICORE','KERNEL_AIVEC','MEMCPY_ASYNC') LIMIT 1"
+        ).fetchone()
+        con.close()
+        return row is not None
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 读取 {db_path} 的 TASK 失败：{e}")
+        return False
 
 
 def _sqlite_has_tables(db_path: str, tables: Tuple[str, ...]) -> bool:
