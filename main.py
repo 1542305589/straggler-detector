@@ -248,21 +248,22 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     if output_path:
         config.set_output_path(output_path)
 
+    # === 数据级别识别（levelnone / level1 / cluster） ===
+    level = nodelevel_data_handler.detect_profiling_level(job_path)
+    config.set_profiling_level(level)
+
     if not skip_confirm:
-        # 总是向用户提问三组阈值（传入值作为默认/回退）
-        thresholds = utils.confirm_thresholds(thresholds)
+        # 向用户提问阈值（传入值作为默认/回退）；cluster 只检测 comm，仅问通信类
+        ask_keys = ("comm",) if level == "cluster" else ("compute", "io", "comm")
+        thresholds = utils.confirm_thresholds(thresholds, keys=ask_keys)
     config.set_thresholds(*thresholds)
 
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
+    logger.info(f"数据级别：{level}")
     logger.info(f"检测结果输出目录：{config.get_output_path()}")
 
     # 检测结果清理与输出目录（output_path），而非原始数据目录
     out_path = config.get_output_path()
-
-    # === 数据级别识别（levelnone / level1 / cluster） ===
-    level = nodelevel_data_handler.detect_profiling_level(job_path)
-    config.set_profiling_level(level)
-    logger.info(f"数据级别：{level}")
 
     # === cluster_analysis.db 单文件：跳过解析，直接走新两级带宽口径 ===
     if level == "cluster":
@@ -468,8 +469,9 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
 
     # 设置全局配置（先设置，后续步骤可能用到）
     config.set_file_path(input_path)
-    # 总是向用户提问三组阈值（传入值作为默认/回退）
-    thresholds = utils.confirm_thresholds(thresholds)
+    # 向用户提问阈值（传入值作为默认/回退）；cluster 只检测 comm，仅问通信类
+    ask_keys = ("comm",) if level == "cluster" else ("compute", "io", "comm")
+    thresholds = utils.confirm_thresholds(thresholds, keys=ask_keys)
     config.set_thresholds(*thresholds)
 
     logger.info(f"数据级别：{level}")

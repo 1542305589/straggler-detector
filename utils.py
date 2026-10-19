@@ -216,21 +216,26 @@ def _ask_threshold(name: str, default: float) -> float:
             print("请输入一个数字")
 
 
-def confirm_thresholds(thresholds: tuple) -> tuple:
+def confirm_thresholds(thresholds: tuple, keys: tuple = ("compute", "io", "comm")) -> tuple:
     """
-    交互式提问三组检测阈值：计算类 / IO(CPU) 类 / 通信类（总是提问，回车用默认）。
+    交互式提问检测阈值（回车用默认）。默认问三组，可用 `keys` 只问其中若干组
+    （cluster 只检测 comm 时传 keys=("comm",)）。
 
     参数:
         thresholds: (计算类, IO/CPU 类, 通信类) 默认值元组
+        keys: 需要提问的组，取值 "compute" / "io" / "comm"
 
     返回:
-        (计算类, IO/CPU 类, 通信类) 用户确认后的阈值元组
+        (计算类, IO/CPU 类, 通信类) 用户确认后的阈值元组（未提问的用传入默认值）
     """
     compute, io, comm = thresholds
     print("检测阈值设置（回车使用默认值）：")
-    compute = _ask_threshold("计算类阈值（KERNEL_AICORE / kernel_aivec）", compute)
-    io = _ask_threshold("IO/CPU 类阈值（cpu / memcpy_async）", io)
-    comm = _ask_threshold("通信类阈值（comm / pp_comm）", comm)
+    if "compute" in keys:
+        compute = _ask_threshold("计算类阈值（KERNEL_AICORE / kernel_aivec）", compute)
+    if "io" in keys:
+        io = _ask_threshold("IO/CPU 类阈值（cpu / memcpy_async）", io)
+    if "comm" in keys:
+        comm = _ask_threshold("通信类阈值（comm / pp_comm）", comm)
     return (compute, io, comm)
 
 

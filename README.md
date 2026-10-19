@@ -49,7 +49,7 @@ result = main.run_detection(
 
 - `npu_bubble` 为固定硬阈值 `< 5000ns`，不作为参数。
 - `no_align` 仅对 `levelnone` 的旧带宽口径有效；`level1` / `cluster` 用新口径，不受影响（见「检测原理 → comm」）。因此通过 agent 触发时，**只有 `levelnone` 会问 `no-align`**，`level1` / `cluster` 不问。
-- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（三组阈值 / 是否清理 / 是否 `no-align`）；直接跑命令行时按上表传参即可。
+- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（阈值 / 是否清理 / 是否 `no-align`）。其中 `cluster_analysis.db` 单文件只检测 `comm`，**只问通信类阈值、不问 `no-align`**；`levelnone` 才问三组阈值与 `no-align`。直接跑命令行时按上表传参即可。
 
 ### 3. 输入数据
 

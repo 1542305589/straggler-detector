@@ -73,6 +73,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
    - 通信类阈值 `comm`（comm / pp_comm），默认 `1.3`
    - `npu_bubble` 固定硬阈值 `< 5000ns`，不询问。
    用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
+   **若输入是 `cluster_analysis.db` 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
