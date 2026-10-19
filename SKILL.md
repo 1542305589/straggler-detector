@@ -67,13 +67,15 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 每次执行检测前，**必须依次询问以下参数**，等用户明确答复后再执行，**禁止跳过询问环节**：
 
-1. **三组检测阈值**（均回车/不指定则用默认值）：
-   - 计算类阈值 `compute`（KERNEL_AICORE / kernel_aivec），默认 `1.3`
-   - IO/CPU 类阈值 `io`（cpu / memcpy_async），默认 `2.5`
-   - 通信类阈值 `comm`（comm / pp_comm），默认 `1.3`
+1. **三组检测阈值**——**逐个询问**（一次只问一个阈值，禁止把多个阈值合成一个问题）：
+   - 计算类阈值 `compute`（KERNEL_AICORE / kernel_aivec），固定候选：`1.3`（默认）
+   - IO/CPU 类阈值 `io`（cpu / memcpy_async），固定候选：`2.5`（默认）
+   - 通信类阈值 `comm`（comm / pp_comm），固定候选：`1.3`（默认）
    - `npu_bubble` 固定硬阈值 `< 5000ns`，不询问。
-   用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
-   **若输入是 cluster db 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
+   - **候选项必须恒定**：同一阈值每次询问展示的候选项完全一致，不要临时增删变化。
+   - **不要自行添加「其他」选项**：询问工具自带「输入其他内容」，自定义值走它即可。
+   - 用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
+   - **若输入是 cluster db 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
