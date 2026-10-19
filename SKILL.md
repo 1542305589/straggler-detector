@@ -45,7 +45,7 @@ python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
 参数说明：
 | 参数 | 说明 | 默认值 |
 |------|------|--------|
-| `path` | 数据目录路径（必需） | - |
+| `path` | 数据目录，或 cluster db 单文件（文件名不限，含 `CommunicationGroupMapping`/`ClusterCommunicationBandwidth` 表即可）（必需） | - |
 | `compute` | 计算类阈值（KERNEL_AICORE / kernel_aivec） | 1.3 |
 | `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
 | `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
@@ -73,11 +73,11 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
    - 通信类阈值 `comm`（comm / pp_comm），默认 `1.3`
    - `npu_bubble` 固定硬阈值 `< 5000ns`，不询问。
    用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
-   **若输入是 `cluster_analysis.db` 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
+   **若输入是 cluster db 单文件**（只检测 comm），**只问通信类阈值 `comm`**，不问计算类 / IO 类。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
-3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**仅 `levelnone` 数据需要问**；若输入是 `cluster_analysis.db` 单文件或 `level1` 数据（用新两级带宽口径），**跳过此问**：
+3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**仅 `levelnone` 数据需要问**；若输入是 cluster db 单文件或 `level1` 数据（用新两级带宽口径），**跳过此问**：
    - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
    - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
 

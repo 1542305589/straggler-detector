@@ -368,7 +368,7 @@ def main():
     args = sys.argv[1:]
 
     if len(args) < 1:
-        logger.error("[SLOWNODE ALGO] Usage: python main.py path=/your/data/dir [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask]")
+        logger.error("[SLOWNODE ALGO] Usage: python main.py path=<dir | cluster.db> [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask]")
         sys.exit(1)
 
     # 解析参数
@@ -382,9 +382,11 @@ def main():
         logger.error("[SLOWNODE ALGO] Missing required parameter: path=/your/data/dir")
         sys.exit(1)
 
-    # 校验目录是否存在
-    if not os.path.isdir(input_path):
-        logger.error(f"[SLOWNODE ALGO] Invalid directory: {input_path}")
+    # 校验输入：目录，或可被 sqlite 打开且含所需表的单文件 db（cluster，不限制文件名）
+    if not os.path.isdir(input_path) and not (
+        os.path.isfile(input_path) and nodelevel_data_handler.is_cluster_db(input_path)
+    ):
+        logger.error(f"[SLOWNODE ALGO] Invalid input (need a directory, or a cluster db file): {input_path}")
         sys.exit(1)
 
     # 校验阈值范围

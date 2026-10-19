@@ -40,7 +40,7 @@ result = main.run_detection(
 
 | 参数 | 说明 | 默认 |
 |------|------|------|
-| `path` | 数据目录，或 `cluster_analysis.db` 单文件（必需） | - |
+| `path` | 数据目录，或 cluster db 单文件（含所需表即可，**文件名不限**）（必需） | - |
 | `compute` | 计算类阈值（`KERNEL_AICORE` / `kernel_aivec`） | `1.3` |
 | `io` | IO/CPU 类阈值（`cpu` / `memcpy_async`） | `2.5` |
 | `comm` | 通信类阈值（`comm` / `pp_comm`） | `1.3` |
@@ -49,7 +49,7 @@ result = main.run_detection(
 
 - `npu_bubble` 为固定硬阈值 `< 5000ns`，不作为参数。
 - `no_align` 仅对 `levelnone` 的旧带宽口径有效；`level1` / `cluster` 用新口径，不受影响（见「检测原理 → comm」）。因此通过 agent 触发时，**只有 `levelnone` 会问 `no-align`**，`level1` / `cluster` 不问。
-- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（阈值 / 是否清理 / 是否 `no-align`）。其中 `cluster_analysis.db` 单文件只检测 `comm`，**只问通信类阈值、不问 `no-align`**；`levelnone` 才问三组阈值与 `no-align`。直接跑命令行时按上表传参即可。
+- 若通过 agent 以 skill 方式触发，agent 会在执行前先向你确认这几项（阈值 / 是否清理 / 是否 `no-align`）。其中 cluster 单文件只检测 `comm`，**只问通信类阈值、不问 `no-align`**；`levelnone` 才问三组阈值与 `no-align`。直接跑命令行时按上表传参即可。
 
 ### 3. 输入数据
 
@@ -63,7 +63,7 @@ result = main.run_detection(
 └── ...
 ```
 
-也支持常见 dump 结构 `master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空的 master db 会被跳过）；或直接传入单文件 `cluster_analysis.db`。每张卡一个 profiler db。
+也支持常见 dump 结构 `master_xxx_ascend_pt/ASCEND_PROFILER_OUTPUT/ascend_pytorch_profiler_N.db`（空的 master db 会被跳过）；或直接传入单文件 cluster db（**文件名不限**，只要能被 sqlite 打开、含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` 表且均有数据即可）。每张卡一个 profiler db。
 
 **数据级别**（自动识别，决定 `comm` 的口径与检测范围）：
 
@@ -71,7 +71,7 @@ result = main.run_detection(
 |------|----------|----------|
 | `levelnone` | 只有 `ascend_pytorch_profiler_*.db` | 全部 7 类 |
 | `level1` | profiler db 同目录有 `analysis.db` 且含 `CommAnalyzerBandwidth` 带宽 | 7 类，但 `comm` 用**新两级带宽口径**，且跳过 `pp_comm` |
-| `cluster` | `path` 直接是 `cluster_analysis.db` 单文件 | 仅 `comm`（新两级带宽口径） |
+| `cluster` | `path` 是单文件 db，含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` 表 | 仅 `comm`（新两级带宽口径） |
 
 ### 4. 输出
 

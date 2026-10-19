@@ -518,12 +518,14 @@ _AGG_OP_NAME = "Total Op Info"
 def detect_profiling_level(input_path: str) -> str:
     """识别输入数据级别：levelnone / level1 / cluster。
 
-    - 输入本身是 `cluster_analysis.db` 单文件 → cluster（走新两级带宽口径）。
+    - 输入是**文件**：能被 sqlite 打开、且含 cluster 需要的表（`CommunicationGroupMapping`、
+      `ClusterCommunicationBandwidth`，且均有数据）→ cluster；否则 → levelnone。
+      （不限制文件名。）
     - 目录：找 `ascend_pytorch_profiler_*.db`，看其同目录 `analysis.db` 的
       `CommAnalyzerBandwidth` 是否有数据；任一有 → level1，否则 → levelnone。
     """
     if os.path.isfile(input_path):
-        return "cluster" if os.path.basename(input_path) == "cluster_analysis.db" else "levelnone"
+        return "cluster" if is_cluster_db(input_path) else "levelnone"
 
     for root, _dirs, files in os.walk(input_path):
         for fn in files:
@@ -532,6 +534,32 @@ def detect_profiling_level(input_path: str) -> str:
                     logger.info(f"[SLOWNODE ALGO] 检测到 level1 数据（{os.path.join(root, 'analysis.db')} 有带宽数据）")
                     return "level1"
     return "levelnone"
+
+
+def _sqlite_has_tables(db_path: str, tables: Tuple[str, ...]) -> bool:
+    """db 文件能被 sqlite 打开，且包含指定表、每张表都至少有一行数据。"""
+    if not os.path.isfile(db_path):
+        return False
+    try:
+        con = sqlite3.connect(db_path)
+        cur = con.cursor()
+        for t in tables:
+            row = cur.execute(
+                "SELECT name FROM sqlite_master WHERE type='table' AND name=?", (t,)
+            ).fetchone()
+            if not row or not cur.execute(f"SELECT COUNT(*) FROM {t}").fetchone()[0]:
+                con.close()
+                return False
+        con.close()
+        return True
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 读取 {db_path} 失败：{e}")
+        return False
+
+
+def is_cluster_db(db_path: str) -> bool:
+    """单文件 cluster 库：含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` 且均有数据。"""
+    return _sqlite_has_tables(db_path, ("CommunicationGroupMapping", "ClusterCommunicationBandwidth"))
 
 
 def _analysis_db_has_bandwidth(analysis_db: str) -> bool:
