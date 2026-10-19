@@ -1,7 +1,7 @@
 # straggler-detector 方案设计说明书（SPEC）
 
 > 本文档逐模块阐述 `straggler-detector` skill 的完整方案：架构、数据流、核心算法、各指标的定义与生成方式、检测逻辑与结果输出。
-> 代码版本：Python 移植版，检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
+> 检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
 
 ---
 
@@ -224,7 +224,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ### 8.5 慢通信域带宽检测（detect_slow_domain_by_bandwidth）
 
-数据来源：解析后带宽回填（`profilingdataparse.backfill_slow_domain_bandwidth`）写进 CSV 的动态列 `<domain>_<opType>_<count>`。**带宽分母**默认（跨卡对齐）：按 wall-clock 时间窗把每次集合通信 occurrence 跨 rank 对齐，每个 occurrence 取**组内最短时长**，再对全部 occurrence 的最短时长升序取**前 10% 均值**，`带宽 = count / 该均值`；传 `no-align`（对应 Go 的 `--comm-flat`）时改为**不做跨卡对齐**：把组内**全体 rank** 符合条件的算子时长按 `(opType,count)` 汇成扁平池，直接取池内前 10% 均值作分母。
+数据来源：解析后带宽回填（`profilingdataparse.backfill_slow_domain_bandwidth`）写进 CSV 的动态列 `<domain>_<opType>_<count>`。**带宽分母**默认（跨卡对齐）：按 wall-clock 时间窗把每次集合通信 occurrence 跨 rank 对齐，每个 occurrence 取**组内最短时长**，再对全部 occurrence 的最短时长升序取**前 10% 均值**，`带宽 = count / 该均值`；传 `no-align` 时改为**不做跨卡对齐**：把组内**全体 rank** 符合条件的算子时长按 `(opType,count)` 汇成扁平池，直接取池内前 10% 均值作分母。
 
 检测规则：
 - 遍历每个集合通信域（跳过 `pp` / `embd`，组数 <2 跳过）。

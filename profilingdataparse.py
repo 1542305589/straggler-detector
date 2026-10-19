@@ -1,5 +1,5 @@
 """
-Profiling 数据解析模块 - 对应 Go 代码中的 profilingdataparse/
+Profiling 数据解析模块
 将 SQLite profiling 数据库解析为 CSV/JSON 格式
 """
 
@@ -77,7 +77,6 @@ class PerformanceMetrics:
 def data_parsing(folder_path: str):
     """
     数据解析主入口
-    对应 Go 代码中的 DataParsing 函数
     递归查找目录下的 ascend_pytorch_profiler_*.db 文件，不使用别人处理后的中间数据（如 analysis.db、cluster_analysis.db 等）
     """
     # 递归查找所有符合条件的原始数据库文件
@@ -124,7 +123,6 @@ def data_parsing_paths(db_files: list, folder_path: str):
 def start_process(db_files: List[str], output_folder: str):
     """
     并发处理数据库文件
-    对应 Go 代码中的 StartProcess
     强制重新解析原始 db 数据，不使用已存在的中间数据
 
     db 从 input（folder_path）递归发现，op_metric 结果写入独立输出目录
@@ -207,7 +205,6 @@ def detect_job_type(conn: sqlite3.Connection) -> str:
 def process_database(db_file_path: str, output_dir: str) -> bool:
     """
     处理单个数据库文件并将结果保存到 CSV
-    对应 Go 代码中的 ProcessDatabase
     """
     try:
         conn = sqlite3.connect(db_file_path)
@@ -304,7 +301,6 @@ def extract_global_rank_from_filename(db_file_path: str) -> Optional[str]:
 def get_parallel_group_info(conn: sqlite3.Connection, filename: str) -> Dict[str, Any]:
     """
     获取并行域信息
-    对应 Go 代码中的 GetParallelGroupInfo
     """
     try:
         cursor = conn.execute("SELECT value FROM META_DATA WHERE name = 'parallel_group_info'")
@@ -331,7 +327,6 @@ def get_parallel_group_info(conn: sqlite3.Connection, filename: str) -> Dict[str
 def create_group_name_dicts(data: Dict[str, Any]) -> Tuple[Dict[str, str], Dict[str, Any], Dict[str, int]]:
     """
     创建 group_name 字典
-    对应 Go 代码中的 createGroupNameDicts
 
     返回:
         xp_to_group_name: {"dp": "group_name_115", ...}
@@ -397,7 +392,6 @@ def get_host_info(conn: sqlite3.Connection, global_rank: str):
 def get_all_step_times(conn: sqlite3.Connection) -> List[StepTime]:
     """
     获取所有 step 时间范围
-    对应 Go 代码中的 GetAllStepTimes
     """
     # 优先从 STEP_TIME 表获取
     if table_exists(conn, "STEP_TIME"):
@@ -484,7 +478,6 @@ def time_diff_for_step(
 ) -> Optional[PerformanceMetrics]:
     """
     计算 step 的时间差
-    对应 Go 代码中的 TimeDiffForStep
     当无法获取数据时，使用 -99999 标记缺失字段
     """
     # 定义无效数据标记
@@ -670,8 +663,7 @@ def get_device_op_list(
 
     placeholders = ",".join("?" * len(group_name_ids))
     # 注意 SELECT 列顺序：0=opName, 1=startNs, 2=endNs, 3=connectionId,
-    # 4=count, 5=_rowid_, 6=groupName。下面按此顺序取下标，与 Go 版
-    # (rows.Scan(&OpName,&StartNs,&EndNs,&ConnectionID,&Count,&OpStreamIndex,&DomainID)) 保持一致。
+    # 4=count, 5=_rowid_, 6=groupName。下面按此顺序取下标。
     cursor = conn.execute(
         f"""
         SELECT opName, startNs, endNs, connectionId, count, _rowid_, groupName
@@ -941,7 +933,7 @@ def write_results_to_csv(output_file: str, pms: List[PerformanceMetrics]):
 
 
 # ======================================================================
-# 慢通信带宽回填（对应 Go dataparse/slow_domain.go BackfillSlowDomainBandwidth）
+# 慢通信带宽回填
 #
 # 解析完成后，重新扫描 .db、重建并行拓扑、跨卡对齐集合通信算子，为每个
 # (opType, count) 组合计算带宽（count / 组内最快 10% 最短耗时均值），并把这些
@@ -1085,7 +1077,7 @@ def _compute_bandwidth_from_ops_flat(
     members: Dict[int, List[BwOp]], ranks: List[int]
 ) -> Dict[Tuple[str, int], float]:
     """
-    --no-align（对应 Go computeBandwidthFromOpsFlat）：不做跨 rank 对齐，把组内全体 rank
+    --no-align：不做跨 rank 对齐，把组内全体 rank
     符合条件的算子时长按 (opType,count) 汇成一个扁平池，直接取池内前 10% 均值作分母，
     带宽 = count / 该均值。
     """
@@ -1246,7 +1238,7 @@ def discover_db_files(input_path: str) -> List[str]:
 
 def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]] = None):
     """
-    慢通信带宽回填主入口（对应 Go BackfillSlowDomainBandwidth）。
+    慢通信带宽回填主入口。
     在 DataParsing 之后、检测读取 CSV 之前调用。失败不致命：调用方记录日志并继续。
     """
     min_count = config.SLOW_COMM_MIN_COUNT

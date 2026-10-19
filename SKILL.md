@@ -5,7 +5,7 @@ description: Detect slow nodes (stragglers) in AI training/inference clusters fr
 
 # straggler-detector
 
-Slow Node Detection 算法的 Python 实现，用于检测 AI 训练/推理集群中的慢节点（亚健康检测）。
+Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点（亚健康检测）。
 
 本 skill 自带完整可运行代码包（本目录下的 `*.py`）。
 

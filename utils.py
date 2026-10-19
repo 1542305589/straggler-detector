@@ -1,5 +1,5 @@
 """
-工具函数模块 - 对应 Go 代码中的 utils/tools.go
+工具函数模块
 """
 
 import json
@@ -76,7 +76,6 @@ def group_representative_bandwidth(
 def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None):
     """
     将检测结果写入 JSON 文件并打印到控制台
-    对应 Go 代码中的 Write_result 函数
 
     参数:
         final_result: 检测结果
@@ -299,7 +298,6 @@ def clean_detection_outputs(input_path: str):
 def read_file(file_path: str) -> bytes:
     """
     读取文件内容
-    对应 Go 代码中的 ReadFile 函数
     """
     if not os.path.exists(file_path):
         raise FileNotFoundError(f"文件不存在：{file_path}")
@@ -311,7 +309,6 @@ def read_file(file_path: str) -> bytes:
 def check_parallel_domain_is_exist(parallel: List[List[int]], cur_npus: int) -> bool:
     """
     检查并行域是否有效
-    对应 Go 代码中的 checkParallelDomainIsExist 函数
 
     注意：不再要求域中总卡数等于本节点卡数（cur_npus），
     因为 group_info 是全集群拓扑，可能包含其他节点的卡。

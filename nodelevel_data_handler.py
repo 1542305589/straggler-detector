@@ -1,6 +1,5 @@
 """
 Node Level 数据读取和解析模块
-对应 Go 代码中的 nodelevel/node_level_detection_data_handler.go
 
 主要功能：
 1. 读取 CSV 数据
@@ -33,7 +32,6 @@ data_file_field_global_ranks = "global_ranks"
 def read_csv_detection_data_all(file_path: str) -> Optional[Dict[str, List[float]]]:
     """
     读取 CSV 文件全部数据
-    对应 Go 代码中的 readCsvDetectionDataAll 函数
     """
     try:
         with open(file_path, 'r') as f:
@@ -63,7 +61,6 @@ def read_csv_detection_data_all(file_path: str) -> Optional[Dict[str, List[float
 def store_valid_data(container: Dict[str, List[float]], data: List[List[str]], header: List[str]) -> bool:
     """
     存储有效数据到容器
-    对应 Go 代码中的 storeValidData 函数
     """
     if container is None:
         logger.error("invalid container!")
@@ -96,7 +93,6 @@ def store_valid_data(container: Dict[str, List[float]], data: List[List[str]], h
 def get_cur_job_last_step_data(ranks: List[int]) -> Dict[str, Dict[int, float]]:
     """
     获取当前路径下所有 global_rank_npuId.csv 文件的"准最新"数据点
-    对应 Go 代码中的 GetCurJobLastStepData 函数
 
     规则：
     - 若某 (metric, rank) 的时间序列长度 > 1，取倒数第二个
@@ -148,7 +144,6 @@ def get_cur_job_last_step_data(ranks: List[int]) -> Dict[str, Dict[int, float]]:
 def get_cur_detection_info(job_path: str) -> Tuple[Dict[str, List[List[int]]], List[int]]:
     """
     获取当前检测信息（并行域和有效 ranks）
-    对应 Go 代码中的 GetCurDetectionInfo 函数
     """
     # 读取所有 rank 的并行拓扑信息
     cur_job_ranks_parallel, valid_ranks = get_cur_job_all_ranks_topo(job_path)
@@ -334,7 +329,6 @@ def _build_node_fallback_groups(valid_ranks: List[int]) -> List[List[int]]:
 def get_cur_job_all_ranks_topo(job_path: str) -> Tuple[Dict[int, Any], List[int]]:
     """
     获取所有卡的并行域信息
-    对应 Go 代码中的 getCurJobAllRanksTopo 函数
     """
     cur_job_ranks_topo = {}
     valid_ranks = []
@@ -386,7 +380,6 @@ def get_target_parallel_group_info(
 ) -> bool:
     """
     获取目标并行域信息
-    对应 Go 代码中的 getTargetParallelGroupInfo 函数
     """
     for key, parallel in rank_info.items():
         if not isinstance(parallel, dict):
@@ -433,7 +426,6 @@ def add_domain_to_array(
 ):
     """
     添加并行域到数组
-    对应 Go 代码中的 addDomainToArray 函数
     """
     # 转换 float64 到 int（JSON 解析后数字是 float）
     npu_parallel = transfer_float_array_to_int(npu_group)
@@ -448,7 +440,6 @@ def add_domain_to_array(
 def transfer_float_array_to_int(npu_group: List[Any]) -> Optional[List[int]]:
     """
     将 JSON 数字字符数组转换为 int 数组
-    对应 Go 代码中的 TransferFloatArrayToInt 函数
     """
     if not npu_group:
         return None
@@ -471,7 +462,6 @@ def check_rank_parallel_exist(
 ) -> bool:
     """
     检查当前 rank 的并行域信息是否已经通过其他同一个并行域中的 rank 并行域信息添加
-    对应 Go 代码中的 checkRankParallelExist 函数
     """
     # 检查并行域中是否已经存在当前并行域组
     for parallel_domain_groups in parallel_info.values():
@@ -494,7 +484,6 @@ def get_detection_job_parallel_info(
 ) -> List[List[int]]:
     """
     获取当前 JOB 的并行域信息
-    对应 Go 代码中的 getDetectionJobParallelInfo 函数
     """
     if not cur_job_ranks_topo:
         logger.warning("[SLOWNODE ALGO] Invalid job rank info!")

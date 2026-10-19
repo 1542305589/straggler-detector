@@ -1,7 +1,6 @@
 #!/usr/bin/env python3
 """
-Slow Node Detection - Python 版本主入口
-对应 Go 代码中的 main.go 和 export_interface.go
+Slow Node Detection - 主入口
 
 用法:
     python main.py path=/xxx compute=1.3 io=2.5 comm=1.3
@@ -34,7 +33,6 @@ logger = logging.getLogger("[SLOWNODE ALGO]")
 def parse_args(args: list) -> Dict[str, Any]:
     """
     解析命令行参数
-    对应 Go 代码中的 main 函数参数解析逻辑
 
     支持的参数:
         path=xxx     - 数据目录路径（必需）
@@ -366,7 +364,6 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
 def main():
     """
     主入口函数
-    对应 Go 代码中的 main 函数
     """
     args = sys.argv[1:]
 

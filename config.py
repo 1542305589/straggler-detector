@@ -1,5 +1,5 @@
 """
-配置模块 - 对应 Go 代码中的 config/config.go
+配置模块
 """
 
 # 全局变量
@@ -26,10 +26,10 @@ MAX_ITERATIONS = 300        # Lloyd 迭代轮数上限
 RECURSION_DEPTH = 10        # 异常递归检测深度上限
 CONVERGENCE_EPS = 1e-9      # 质心收敛位移阈值
 
-# ---- 慢通信带宽检测（对应 Go DetectSlowDomainByBandwidth）----
+# ---- 慢通信带宽检测 ----
 SLOW_COMM_MIN_COUNT = 1000       # 带宽回填时算子 count 的最小值
 SLOW_COMM_COUNT_FLOOR = 10240    # 检测时代表 count 的绝对下限（低于视为噪声）
-# --no-align（对应 Go 的 --comm-flat）：带宽回填不做跨 rank 对齐，改用全体 rank 算子时长
+# --no-align：带宽回填不做跨 rank 对齐，改用全体 rank 算子时长
 # 扁平池按 (opType,count) 直接取前 10% 均值作分母。默认 False（保持跨 rank 对齐口径）。
 COMM_NO_ALIGN = False
 
@@ -194,7 +194,7 @@ def get_has_named_domain() -> bool:
 
 class DegradationData(dict):
     """
-    劣化数据类 - 对应 Go 中的 DegradationData 类型
+    劣化数据类
     结构：map[string]map[string]float64
     例如：{"KERNEL_AICORE": {"0": 1.5, "1": 2.0}, "comm": {"0,1": 1.8}}
     """

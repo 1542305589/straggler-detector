@@ -1,5 +1,5 @@
 """
-Node Level 检测模块 - 对应 Go 代码中的 nodelevel/
+Node Level 检测模块
 慢节点检测核心逻辑
 """
 
@@ -21,7 +21,7 @@ import nodelevel_data_handler  # 供 get_cal_detection_group 无命名域/未命
 logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("[SLOWNODE ALGO]")
 
-# 常量定义（与 Go 代码一致）
+# 常量定义
 minRanksInGroup = 2
 zpDeviceColumn = "ZP_Device"
 zpKernelColumn = "KERNEL_AICORE"
@@ -51,7 +51,6 @@ def delimit_detection(
 ) -> Dict[str, Dict[str, float]]:
     """
     单次定界检测（最新检测方式）
-    对应 Go 代码中的 DelimitDetection 函数
 
     参数:
         step_data: 单个 step 的快照数据，如 {"ZP_Device": {0: 1.66e9, 1: 1.67e9, ...}, ...}
@@ -135,7 +134,6 @@ def delimit_detection(
 def get_detection_groups(tp_ranks: List[List[int]], node_global_rank: List[int]) -> Optional[List[List[int]]]:
     """
     通过并行域和当前节点侧任务级卡信息，获取检测组
-    对应 Go 代码中的 getDetectionGroups 函数
 
     将 TP 域中的 rank 过滤，只保留本地节点上的 rank
     """
@@ -162,7 +160,6 @@ def get_slow_calculate_ranks(
 ) -> bool:
     """
     获取通信域中的慢计算卡
-    对应 Go 代码中的 getSlowCalculateRanks 函数
     """
     if not aligned_data or (len(aligned_data.get(zpDeviceColumn, {})) == 0 and
                             len(aligned_data.get(zpKernelColumn, {})) == 0):
@@ -189,7 +186,6 @@ def det_cal_for_one_group(
 ) -> Tuple[List[int], List[float]]:
     """
     对单个检测组进行慢计算检测
-    对应 Go 代码中的 detCalForOneGroup 函数
 
     统一使用 KERNEL_AICORE 计算耗时，方向为 "max"（偏大异常），
     进入通用检测算法（kmeans_detector.general_anomaly_detection）。
@@ -269,7 +265,6 @@ def get_slow_metric_ranks(
 def detection_zp_bubble_data(npu_data: Dict[int, float], local_result: config.DegradationData):
     """
     检测 ZP bubble
-    对应 Go 代码中的 detectionZpBubbleData 函数
 
     bubble < BUBBLE_THRESHOLD_NS（5000ns）视为异常
     排除 -99999 和 ≤0 的无效数据
@@ -349,7 +344,6 @@ def get_slow_host_ranks_by_homogenize(
 ) -> List[int]:
     """
     获取慢 CPU ranks
-    对应 Go 代码中的 getSlowHostRanksByHomogenize 函数
     排除 -99999 标记的无效数据
     """
     have_data_ranks = []
@@ -393,7 +387,6 @@ def get_cal_detection_group(
 ) -> Tuple[str, List[List[int]]]:
     """
     选择用于检测的并行域，以及对应的检测组
-    对应 Go 代码中的 GetCalDetectionGroup 函数
 
     优先级：tp → exp → ep → tp_exp → cp → cp2 → cp_ulysses → cp_ring → dp → dp_cp → dp_modulo_exp_cp
 
@@ -457,7 +450,7 @@ def detect_slow_domain_by_bandwidth(
     local_result: config.DegradationData,
 ):
     """
-    按带宽聚类检测慢通信组（对应 Go DetectSlowDomainByBandwidth）。
+    按带宽聚类检测慢通信组。
 
     数据来源：带宽回填写进 CSV 的动态列 "<domain>_<opType>_<count>"。
     对每个集合通信域、每个 opType：
