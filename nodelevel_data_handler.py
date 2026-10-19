@@ -608,9 +608,9 @@ def _read_bandwidth_rows(analysis_db: str):
     return out
 
 
-def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> Dict[Any, Dict[int, float]]:
+def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float]]:
     """level1：遍历各 rank 的 analysis.db，读 CommAnalyzerBandwidth（HCCS），
-       按 (域, 算子类型, count) 聚合每 rank 的 Σsize/Σtime → {(域,算子类型,count): {rank: bw}}。
+       逐算子返回 (域, 算子类型, count, rank, bw=size/time)。
 
     域来自该 rank 所属的命名并行域（parallels）；无命名域时用 "default_group"。
     """
@@ -621,7 +621,7 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
             for r in g:
                 rank_domains.setdefault(int(r), set()).add(domain)
 
-    acc: Dict[Any, Dict[int, List[float]]] = {}  # (域,算子类型,count) -> {rank: [Σsize,Σtime]}
+    comm: List[Tuple[str, str, int, int, float]] = []
     for root, _dirs, files in os.walk(input_path):
         for fn in files:
             if not (fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db")):
@@ -635,23 +635,14 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
             domains = rank_domains.get(rank) or {"default_group"}
             for op_type, count, size, time in _read_bandwidth_rows(analysis_db):
                 for domain in domains:
-                    key = (domain, op_type, count)
-                    by_rank = acc.setdefault(key, {})
-                    s, t = by_rank.get(rank, [0.0, 0.0])
-                    by_rank[rank] = [s + size, t + time]
-
-    comm: Dict[Any, Dict[int, float]] = {}
-    for key, by_rank in acc.items():
-        m = {r: s / t for r, (s, t) in by_rank.items() if t > 0}
-        if m:
-            comm[key] = m
-    logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 个 (域,算子类型,count) 键")
+                    comm.append((domain, op_type, count, rank, size / time))
+    logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
 
 
-def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], Dict[Any, Dict[int, float]]]:
+def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], List[Tuple[str, str, int, int, float]]]:
     """cluster_analysis.db：读 CommunicationGroupMapping → parallels={域:[[ranks]]}；
-       读 ClusterCommunicationBandwidth（HCCS、排除聚合行）→ {(域,算子类型,count): {rank: bw}}。"""
+       读 ClusterCommunicationBandwidth（HCCS、排除聚合行）→ 逐算子 (域, 算子类型, count, rank, bw)。"""
     con = sqlite3.connect(db_path)
     cur = con.cursor()
 
@@ -669,7 +660,7 @@ def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], Dict[An
         if len(ranks) >= 2:
             parallels.setdefault(pg, []).append(ranks)
 
-    acc: Dict[Any, Dict[int, List[float]]] = {}
+    comm: List[Tuple[str, str, int, int, float]] = []
     q = (
         "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
         "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
@@ -682,16 +673,7 @@ def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], Dict[An
         t = float(time or 0.0)
         if s <= 0 or t <= 0:
             continue
-        key = (pg, _op_type(op), int(cnt or 0))
-        by_rank = acc.setdefault(key, {})
-        a, b = by_rank.get(int(rank), [0.0, 0.0])
-        by_rank[int(rank)] = [a + s, b + t]
+        comm.append((pg, _op_type(op), int(cnt or 0), int(rank), s / t))
     con.close()
-
-    comm: Dict[Any, Dict[int, float]] = {}
-    for key, by_rank in acc.items():
-        m = {r: s / t for r, (s, t) in by_rank.items() if t > 0}
-        if m:
-            comm[key] = m
-    logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 个 (域,算子类型,count) 键")
+    logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 条 per-op 记录")
     return parallels, comm

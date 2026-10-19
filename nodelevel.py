@@ -524,15 +524,15 @@ def detect_slow_domain_by_bandwidth(
 
 def detect_slow_comm_two_level(
     parallels: Dict[str, List[List[int]]],
-    comm: Dict[Any, Dict[int, float]],
+    comm: List[Tuple[str, str, int, int, float]],
     local_result: config.DegradationData,
     threshold: Optional[float] = None,
 ):
     """新两级带宽口径（level1 / cluster）。
 
-    comm: {(域, 算子类型, count): {rank: bw}}（bw = 该 rank 在该 (域,算子类型,count) 的聚合带宽）。
+    comm: [(域, 算子类型, count, rank, bw), ...]，**逐算子**记录，bw = size/time。
 
-    指标：每 rank = mean over (算子类型, count) of ( bw / median_bw(域,算子类型,count) )，
+    指标：每 rank = mean over 自己的所有算子 of ( bw / median_bw(域,算子类型,count) )，
         ≈1 正常、越小越慢（min 方向）。
     Level-1（组内）：每组内对组内 rank 指标做 kmeans（min 方向）→ 慢 rank（单卡键）。
     Level-2（组间）：每组取组内指标均值 → 域内所有组做 kmeans（min 方向）→ 慢组（组键）。
@@ -545,23 +545,20 @@ def detect_slow_comm_two_level(
     if not comm:
         return
 
-    # 基准：每 (域,算子类型,count) 全体 rank 的 bw 中位数
-    base: Dict[Any, float] = {}
-    for key, by_rank in comm.items():
-        vals = [v for v in by_rank.values() if v > 0]
-        if vals:
-            base[key] = statistics.median(vals)
+    # 基准：每 (域,算子类型,count) 全体算子的 bw 中位数
+    base_vals: Dict[Any, List[float]] = {}
+    for domain, op_type, count, rank, bw in comm:
+        base_vals.setdefault((domain, op_type, count), []).append(bw)
+    base = {k: statistics.median(v) for k, v in base_vals.items() if v}
 
-    # 每 (域, rank)：mean over (算子类型,count) of (bw / 基准)
+    # 每 (域, rank)：mean over 自己的所有算子 of (bw / 基准)
     acc: Dict[Any, List[float]] = {}
-    for key, by_rank in comm.items():
-        b = base.get(key)
+    for domain, op_type, count, rank, bw in comm:
+        b = base.get((domain, op_type, count))
         if not b or b <= 0:
             continue
-        domain = key[0]
-        for rank, bw in by_rank.items():
-            s, n = acc.get((domain, rank), [0.0, 0])
-            acc[(domain, rank)] = [s + bw / b, n + 1]
+        s, n = acc.get((domain, rank), [0.0, 0])
+        acc[(domain, rank)] = [s + bw / b, n + 1]
     metric = {k: s / n for k, (s, n) in acc.items() if n > 0}
     if not metric:
         return
