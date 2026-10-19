@@ -438,16 +438,24 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
                'ask' - 交互式询问（默认，需终端 TTY）
                'yes' - 强制清理并重新解析
                'no'  - 跳过清理，使用已有数据
-        no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 时交互式询问（默认否）
+        no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 且数据级别为 levelnone
+                  时交互式询问；level1/cluster 用新两级带宽口径，不询问
 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
     """
-    # 慢通信带宽口径：显式传入优先，否则交互式询问
-    if no_align is None:
+    # === 数据级别识别（levelnone / level1 / cluster）===
+    level = nodelevel_data_handler.detect_profiling_level(input_path)
+    config.set_profiling_level(level)
+
+    # 慢通信带宽口径：显式传入优先；no-align 仅对 levelnone 的旧带宽口径有意义，
+    # level1/cluster 用新两级带宽口径，不询问（直接置 False）。
+    if no_align is not None:
+        config.set_comm_no_align(bool(no_align))
+    elif level == "levelnone":
         config.set_comm_no_align(utils.confirm_no_align())
     else:
-        config.set_comm_no_align(bool(no_align))
+        config.set_comm_no_align(False)
 
     thresholds = (compute, io, comm)
 
@@ -464,9 +472,6 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     thresholds = utils.confirm_thresholds(thresholds)
     config.set_thresholds(*thresholds)
 
-    # === 数据级别识别（levelnone / level1 / cluster） ===
-    level = nodelevel_data_handler.detect_profiling_level(input_path)
-    config.set_profiling_level(level)
     logger.info(f"数据级别：{level}")
 
     # === cluster_analysis.db 单文件：跳过解析，直接走新两级带宽口径 ===
