@@ -12,7 +12,7 @@
 import os
 import sys
 import logging
-from typing import Dict, List, Optional
+from typing import Any, Dict, List, Optional
 from datetime import datetime
 
 # 添加父目录到路径以便导入 config
@@ -185,16 +185,73 @@ def _pp_comm_section(parallels: Dict[str, List[List[int]]],
     return "\n".join(lines)
 
 
+def _render_comm_two_level_detail(detail: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> str:
+    """全量绘制新两级带宽口径：逐域列出 Level-1 每个 rank、Level-2 每个组的指标（异常标 ***）。"""
+    l1 = detail.get("level1") or {}
+    l2 = detail.get("level2") or {}
+    if not l1 and not l2:
+        return ""
+
+    lines = []
+    lines.append("")
+    lines.append(_sep_line("慢通信域（两级带宽口径）", 70))
+    lines.append("")
+    lines.append("  指标 = 各 (算子类型,count) 上「该 rank 带宽 / 全体 rank 中位带宽」的均值（≈1 正常，越小越慢）")
+    lines.append("")
+
+    if l1:
+        lines.append("  Level-1 组内逐 rank（升序，越慢越前）：")
+        for domain in sorted(l1.keys()):
+            items = sorted(l1[domain], key=lambda x: x["metric"])
+            if not items:
+                continue
+            max_m = max(x["metric"] for x in items) or 1.0
+            lines.append(f"    [域 {domain}]  {len(items)} 卡")
+            lines.append("    " + f"{'#':>3}" + "  " + _disp_rjust("Rank", 6)
+                         + "  " + _disp_rjust("指标", 10) + "  柱状图")
+            for i, it in enumerate(items, 1):
+                bar = _bar(it["metric"], max_m) if max_m > 0 else ""
+                marker = " ***" if it["deg"] is not None else ""
+                lines.append("    " + f"{i:>3}" + "  " + f"{it['rank']:>6}"
+                             + "  " + f"{it['metric']:>10.4g}" + "  " + bar + marker)
+            lines.append("")
+
+    if l2:
+        lines.append("  Level-2 组间逐组（升序）：")
+        for domain in sorted(l2.keys()):
+            items = sorted(l2[domain], key=lambda x: x["metric"])
+            if not items:
+                continue
+            max_m = max(x["metric"] for x in items) or 1.0
+            lines.append(f"    [域 {domain}]  {len(items)} 组")
+            lines.append("    " + f"{'#':>3}" + "  " + _disp_rjust("Group", 22)
+                         + "  " + _disp_rjust("指标", 10) + "  柱状图")
+            for i, it in enumerate(items, 1):
+                label = "[" + ", ".join(str(r) for r in it["group"]) + "]"
+                bar = _bar(it["metric"], max_m) if max_m > 0 else ""
+                marker = " ***" if it["deg"] is not None else ""
+                lines.append("    " + f"{i:>3}" + "  " + _disp_ljust(label, 22)
+                             + "  " + f"{it['metric']:>10.4g}" + "  " + bar + marker)
+            lines.append("")
+
+    lines.append("  *** = 异常（kmeans 判为偏离基线，指标明显低于同域其他）")
+    lines.append("")
+    return "\n".join(lines)
+
+
 def _comm_two_level_section(detection_result: Optional[Dict[str, Dict[str, float]]],
                             parallels: Dict[str, List[List[int]]]) -> str:
     """
-    level1 / cluster 的慢通信域展示（新两级带宽口径）：直接从 `detection_result["comm"]` 取。
+    level1 / cluster 的慢通信域展示（新两级带宽口径）。
 
-    - 单 rank 键 → **Level-1**（组内慢 rank）
-    - 多 rank 键 → **Level-2**（组间慢组）
-
-    劣化指数 = 基线带宽 / 该 rank（或组）指标（min 方向，越大越慢）。
+    优先用检测时记录的**逐 rank / 逐组指标明细**（`config.get_comm_two_level_detail()`）做**全量绘制**
+    （Level-1 每个 rank、Level-2 每个组都列出）；拿不到明细时退回只列异常项。
     """
+    detail = config.get_comm_two_level_detail()
+    if detail and (detail.get("level1") or detail.get("level2")):
+        return _render_comm_two_level_detail(detail)
+
+    # ---- 回退：仅列异常项 ----
     comm = (detection_result or {}).get("comm") or {}
     if not comm:
         return ""

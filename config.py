@@ -44,6 +44,20 @@ def get_comm_no_align() -> bool:
     """慢通信带宽是否关闭跨 rank 对齐。"""
     return COMM_NO_ALIGN
 
+
+# 新两级带宽口径（level1/cluster）的**逐 rank / 逐组指标**（内存，供报告全量绘制；不进文件）。
+# 结构：{"level1": {域: [{"rank", "metric", "deg"}]}, "level2": {域: [{"group", "metric", "deg"}]}}
+CommTwoLevelDetail = None
+
+
+def set_comm_two_level_detail(detail):
+    global CommTwoLevelDetail
+    CommTwoLevelDetail = detail
+
+
+def get_comm_two_level_detail():
+    return CommTwoLevelDetail
+
 # ---- PP 流水线慢通信检测（v6pp：点对点结束 → 下一次集合通信结束 的间隔）----
 # PP 组从 parallel_group_info 的 pp 项读取；比较域按 TP > CP > DP，都没有时用 PP stage 转置。
 # 记录每卡点对点传输（BatchSendRecv，或 Send/Recv）结束到其下一次集合通信结束的间隔，

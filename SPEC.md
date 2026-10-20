@@ -308,7 +308,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 - `visualizer.run_visualization`：控制台实时反馈 + 调用 `markdown_viz.write_report` 生成 `analysis_result/detection_report.log`。
 - `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、各域集合通信带宽排序、各域带宽概览。其中 `cpu`（ZP_Host）段按**物理节点**聚合展示（一行一个节点、标签列显示 hostName、节点值取去首尾均值、异常节点标 `***`）；无节点映射时退回逐卡。
 - **`pp_comm 占比排序` 段**（控制台 + 报告）：按比较域分段、逐 rank 列出 `PP等待 / ΔPP等待 / Δ占比`（`ΔPP等待 = 域内最大 PP等待 − 本卡`；`Δ占比 = ΔPP等待 / 会话时长`），柱状图绘制 **Δ占比**，`> 5%` 标 `***`（Δ占比越大越异常）。
-- **`慢通信域（两级带宽口径）` 段**（`level1` / `cluster`）：直接从 `detection_result["comm"]` 渲染 —— 单 rank 键 → Level-1 组内慢 rank、多 rank 键 → Level-2 组间慢组，劣化指数 = 基线带宽/该指标。`levelnone` 仍按 `step_data` 带宽列渲染各域排序 + 概览。`cluster` 分支也会生成该报告（只含本段）。
+- **`慢通信域（两级带宽口径）` 段**（`level1` / `cluster`）：优先用检测时记录的**逐 rank / 逐组指标明细**（`config.get_comm_two_level_detail()`，检测时由 `detect_slow_comm_two_level` 写入内存）做**全量绘制** —— 每个域分 Level-1（逐 rank）与 Level-2（逐组）两段，按指标升序列出**全部** rank / 组并画柱状图（指标 = 各 `(算子类型,count)` 上 `带宽/中位基准` 的均值，≈1 正常、越小越慢），异常项标 `***`；拿不到明细时退回只列异常项。`levelnone` 仍按 `step_data` 带宽列渲染各域排序 + 概览。`cluster` 分支也会生成该报告（只含本段）。
 
 ---
 

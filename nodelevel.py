@@ -536,6 +536,7 @@ def detect_slow_comm_two_level(
     Level-2（组间）：每组取组内指标均值 → 域内所有组做 kmeans（min 方向）→ 慢组（组键）。
     两级结果都写进 comm 类别。
     """
+    config.set_comm_two_level_detail(None)   # 先清空，避免多 job 进程内残留
     if threshold is None:
         threshold = config.get_comm_threshold()
     if threshold <= 0:
@@ -561,6 +562,9 @@ def detect_slow_comm_two_level(
     if not metric:
         return
 
+    # 逐 rank / 逐组指标明细（供报告全量绘制）：{"level1": {域: [...]}, "level2": {域: [...]}}
+    detail: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"level1": {}, "level2": {}}
+
     for domain, groups in parallels.items():
         if domain == ppParallelDomainName or domain == "embd":
             continue
@@ -576,8 +580,13 @@ def detect_slow_comm_two_level(
             abnormal, degs = kmeans_detector.general_anomaly_detection(
                 ranks, vals, threshold, high_is_anomaly=False
             )
-            for r, d in zip(abnormal, degs):
-                local_result.add_single("comm", r, d)
+            deg_of = {r: d for r, d in zip(abnormal, degs)}
+            for r in ranks:
+                d = deg_of.get(r)
+                detail["level1"].setdefault(domain, []).append(
+                    {"rank": r, "metric": metric[(domain, r)], "deg": d})
+                if d is not None:
+                    local_result.add_single("comm", r, d)
 
         # ---- Level-2：组间慢组 ----
         group_means = []
@@ -592,8 +601,15 @@ def detect_slow_comm_two_level(
         abnormal, degs = kmeans_detector.general_anomaly_detection(
             ids, means, threshold, high_is_anomaly=False
         )
-        for gi, d in zip(abnormal, degs):
-            local_result.add_group("comm", group_means[gi][0], d)
+        deg_of_gi = {gi: d for gi, d in zip(abnormal, degs)}
+        for gi, (group, m) in enumerate(group_means):
+            d = deg_of_gi.get(gi)
+            detail["level2"].setdefault(domain, []).append(
+                {"group": list(group), "metric": m, "deg": d})
+            if d is not None:
+                local_result.add_group("comm", group, d)
+
+    config.set_comm_two_level_detail(detail)
 
 
 def _bw_set_for_group(
