@@ -233,7 +233,7 @@ def _render_comm_two_level_detail(detail: Dict[str, Any]) -> str:
             for i, (it, label) in enumerate(zip(items, labels), 1):
                 bar = _bar(it["metric"], max_m) if max_m > 0 else ""
                 marker = " ***" if it["deg"] is not None else ""
-                lines.append("    " + f"{i:>3}" + "  " + _disp_ljust(label, label_w)
+                lines.append("    " + f"{i:>3}" + "  " + summary_table._disp_ljust(label, label_w)
                              + "  " + f"{it['metric']:>10.4g}" + "  " + bar + marker)
             lines.append("")
 
