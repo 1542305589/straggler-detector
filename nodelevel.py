@@ -562,8 +562,10 @@ def detect_slow_comm_two_level(
     if not metric:
         return
 
-    # 逐 rank / 逐组指标明细（供报告全量绘制）：{"level1": {域: [...]}, "level2": {域: [...]}}
-    detail: Dict[str, Dict[str, List[Dict[str, Any]]]] = {"level1": {}, "level2": {}}
+    # 逐 rank / 逐组指标明细（供报告全量绘制）：
+    #   level1: [{"domain", "group", "ranks": [{"rank","metric","deg"}]}]   ← 按组
+    #   level2: {域: [{"group", "metric", "deg"}]}                          ← 按域
+    detail: Dict[str, Any] = {"level1": [], "level2": {}}
 
     for domain, groups in parallels.items():
         if domain == ppParallelDomainName or domain == "embd":
@@ -571,7 +573,7 @@ def detect_slow_comm_two_level(
         if len(groups) < 2:
             continue
 
-        # ---- Level-1：组内慢 rank ----
+        # ---- Level-1：组内慢 rank（逐组） ----
         for group in groups:
             ranks = [int(r) for r in group if (domain, int(r)) in metric]
             if len(ranks) < minRanksInGroup:
@@ -581,12 +583,14 @@ def detect_slow_comm_two_level(
                 ranks, vals, threshold, high_is_anomaly=False
             )
             deg_of = {r: d for r, d in zip(abnormal, degs)}
+            ranks_out = []
             for r in ranks:
                 d = deg_of.get(r)
-                detail["level1"].setdefault(domain, []).append(
-                    {"rank": r, "metric": metric[(domain, r)], "deg": d})
+                ranks_out.append({"rank": r, "metric": metric[(domain, r)], "deg": d})
                 if d is not None:
                     local_result.add_single("comm", r, d)
+            detail["level1"].append(
+                {"domain": domain, "group": list(group), "ranks": ranks_out})
 
         # ---- Level-2：组间慢组 ----
         group_means = []

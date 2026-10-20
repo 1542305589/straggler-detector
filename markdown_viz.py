@@ -185,10 +185,10 @@ def _pp_comm_section(parallels: Dict[str, List[List[int]]],
     return "\n".join(lines)
 
 
-def _render_comm_two_level_detail(detail: Dict[str, Dict[str, List[Dict[str, Any]]]]) -> str:
-    """全量绘制新两级带宽口径：逐域列出 Level-1 每个 rank、Level-2 每个组的指标（异常标 ***）。"""
-    l1 = detail.get("level1") or {}
-    l2 = detail.get("level2") or {}
+def _render_comm_two_level_detail(detail: Dict[str, Any]) -> str:
+    """全量绘制新两级带宽口径：Level-1 按组逐 rank、Level-2 按域逐组，异常标 ***。"""
+    l1 = detail.get("level1") or []    # [{"domain", "group", "ranks": [...]}]
+    l2 = detail.get("level2") or {}    # {域: [{"group","metric","deg"}]}
     if not l1 and not l2:
         return ""
 
@@ -200,16 +200,18 @@ def _render_comm_two_level_detail(detail: Dict[str, Dict[str, List[Dict[str, Any
     lines.append("")
 
     if l1:
-        lines.append("  Level-1 组内逐 rank（升序，越慢越前）：")
-        for domain in sorted(l1.keys()):
-            items = sorted(l1[domain], key=lambda x: x["metric"])
-            if not items:
+        lines.append("  Level-1 组内逐 rank（按组列出；组内按指标升序，越慢越前）：")
+        for entry in l1:
+            ranks = sorted(entry.get("ranks") or [], key=lambda x: x["metric"])
+            if not ranks:
                 continue
-            max_m = max(x["metric"] for x in items) or 1.0
-            lines.append(f"    [域 {domain}]  {len(items)} 卡")
+            group = entry.get("group") or []
+            grouplabel = "[" + ", ".join(str(r) for r in group) + "]"
+            max_m = max(x["metric"] for x in ranks) or 1.0
+            lines.append(f"    [域 {entry.get('domain', '')}] 组 {grouplabel}  {len(ranks)} 卡")
             lines.append("    " + f"{'#':>3}" + "  " + _disp_rjust("Rank", 6)
                          + "  " + _disp_rjust("指标", 10) + "  柱状图")
-            for i, it in enumerate(items, 1):
+            for i, it in enumerate(ranks, 1):
                 bar = _bar(it["metric"], max_m) if max_m > 0 else ""
                 marker = " ***" if it["deg"] is not None else ""
                 lines.append("    " + f"{i:>3}" + "  " + f"{it['rank']:>6}"
@@ -217,7 +219,7 @@ def _render_comm_two_level_detail(detail: Dict[str, Dict[str, List[Dict[str, Any
             lines.append("")
 
     if l2:
-        lines.append("  Level-2 组间逐组（升序）：")
+        lines.append("  Level-2 组间逐组（按域；域内按指标升序）：")
         for domain in sorted(l2.keys()):
             items = sorted(l2[domain], key=lambda x: x["metric"])
             if not items:
