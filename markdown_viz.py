@@ -224,15 +224,16 @@ def _render_comm_two_level_detail(detail: Dict[str, Any]) -> str:
             items = sorted(l2[domain], key=lambda x: x["metric"])
             if not items:
                 continue
+            labels = ["[" + ", ".join(str(r) for r in it["group"]) + "]" for it in items]
+            label_w = max([_disp_len("Group")] + [_disp_len(l) for l in labels])
             max_m = max(x["metric"] for x in items) or 1.0
             lines.append(f"    [域 {domain}]  {len(items)} 组")
-            lines.append("    " + f"{'#':>3}" + "  " + _disp_rjust("Group", 22)
+            lines.append("    " + f"{'#':>3}" + "  " + _disp_rjust("Group", label_w)
                          + "  " + _disp_rjust("指标", 10) + "  柱状图")
-            for i, it in enumerate(items, 1):
-                label = "[" + ", ".join(str(r) for r in it["group"]) + "]"
+            for i, (it, label) in enumerate(zip(items, labels), 1):
                 bar = _bar(it["metric"], max_m) if max_m > 0 else ""
                 marker = " ***" if it["deg"] is not None else ""
-                lines.append("    " + f"{i:>3}" + "  " + _disp_ljust(label, 22)
+                lines.append("    " + f"{i:>3}" + "  " + _disp_ljust(label, label_w)
                              + "  " + f"{it['metric']:>10.4g}" + "  " + bar + marker)
             lines.append("")
 
