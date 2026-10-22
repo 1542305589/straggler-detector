@@ -1,0 +1,72 @@
+{
+  "$schema": "http://json-schema.org/draft-07/schema#",
+  "title": "straggler-detector 结果分析层输出",
+  "type": "object",
+  "required": ["schema_version", "verdict", "confidence", "primary", "rules_fired", "rules_checked", "evidence", "limitations", "actions"],
+  "additionalProperties": true,
+  "properties": {
+    "schema_version": { "type": "string", "const": "1.0" },
+    "verdict": {
+      "type": "string",
+      "enum": ["slow_group", "slow_rank", "multiple", "no_anomaly", "insufficient_evidence"]
+    },
+    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "primary": {
+      "type": "object",
+      "required": ["category", "rule_id", "summary"],
+      "properties": {
+        "category": {
+          "type": "string",
+          "enum": ["comm", "compute", "io", "host", "pp_comm", "npu_bubble", "multiple"]
+        },
+        "rule_id": { "type": "string" },
+        "slow_side": { "type": "array", "items": { "type": "integer" } },
+        "baseline_side": { "type": "array", "items": { "type": "integer" } },
+        "degradation": { "type": "number" },
+        "summary": { "type": "string" }
+      }
+    },
+    "secondary_findings": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["category", "rule_id", "summary"],
+        "properties": {
+          "category": {
+            "type": "string",
+            "enum": ["comm", "compute", "io", "host", "pp_comm", "npu_bubble", "multiple"]
+          },
+          "rule_id": { "type": "string" },
+          "slow_side": { "type": "array", "items": { "type": "integer" } },
+          "baseline_side": { "type": "array", "items": { "type": "integer" } },
+          "ratio": { "type": "number" },
+          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+          "summary": { "type": "string" }
+        }
+      }
+    },
+    "rules_fired": { "type": "array", "items": { "type": "string" } },
+    "rules_checked": { "type": "array", "items": { "type": "string" } },
+    "evidence": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["source", "field", "direction"],
+        "properties": {
+          "source": {
+            "type": "string",
+            "enum": ["straggler_detection_result.json", "analysis_result/detection_report.log"]
+          },
+          "field": { "type": "string" },
+          "slow_value": { "type": "number" },
+          "baseline_value": { "type": "number" },
+          "ratio": { "type": "number" },
+          "direction": { "type": "string", "enum": ["max", "min"] },
+          "note": { "type": "string" }
+        }
+      }
+    },
+    "limitations": { "type": "array", "items": { "type": "string" } },
+    "actions": { "type": "array", "items": { "type": "string" } }
+  }
+}

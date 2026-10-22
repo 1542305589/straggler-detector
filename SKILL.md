@@ -11,11 +11,30 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ## 触发条件
 
-当用户需要：
+**走「检测流程」**（跑检测 / 重新检测 / 解析 `.db`）——用户需要：
 - 执行慢节点 / 亚健康检测分析
 - 解析 Ascend PyTorch Profiler 的 `.db` 文件
 - 识别慢计算卡、慢通信域、慢 CPU 卡
 - 看各卡在通信类 / 计算类 / IO 类指标下的耗时分布与异常
+
+**走「结果分析层」**（不重跑检测，只解读已有结果）——用户说：
+- 分析检测结果 / 为什么慢 / 根因是什么 / 谁慢
+
+## 结果分析层（解读已有结果，不重跑检测）
+
+> 本层只读 `straggler_detection_result.json` 和 `analysis_result/detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
+
+- **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
+- **输入**（**只允许**这两个文件，字段见 `references/analysis_layer.md` §2）：
+  - `<数据目录>/straggler_detection_result.json`
+  - `<数据目录>/analysis_result/detection_report.log`
+- **硬约束**：不改检测代码；不读 `.db`、不跑 SQL、不写 Python 分析器；规则只能引用这两个文件里**已有**的字段；字段缺失 → `insufficient_evidence`；检测与报告冲突 → 标「一致性异常，建议复核」。
+- **规则库（A–E）、执行顺序、口径对照、禁止的规则、A3 回归样例、验收标准**：见 `references/analysis_layer.md`。
+- **输出契约**（固定 JSON schema 见 `references/output_schema.json`）：
+  - **固定 JSON**：`schema_version / verdict / confidence / primary / secondary_findings / rules_fired / rules_checked / evidence / limitations / actions`。
+  - **固定 Markdown**：`数据概览 → 检测结论 → 慢/基准侧 → 类别 → 规则命中与证据 → 一致性 → 结论建议 → 置信度与局限`。
+  - 每条结论必须带**规则 ID** + 证据引用 `<source>::<field> = <slow> vs <baseline>, ratio=<x>, direction=<max|min>`；`source` 只能是上面两个文件，禁止出现 DB 表名 / SQL / 脚本输出。
+- **置信度**：高 = JSON 异常 + 报告同向 + 模式清晰 + 无缺失；中 = 仅一方 / 单 opType / 报告未报但超阈值；低 = 单组域 / 无带宽 / 报告缺失 / 规则冲突；`—` = `insufficient_evidence`。
 
 ## 检测的 7 类指标
 
