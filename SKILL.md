@@ -101,9 +101,11 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
    - **cluster db 单文件无需询问**：无解析步骤、无中间产物，输出文件（`straggler_detection_result.json` / `detection_report.log`）每次直接覆盖写，`clean` 对它无意义。
-3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**`levelnone` / `level0`（旧带宽口径）需要问**；若输入是 cluster db 单文件或 `level1` 数据（用新两级带宽口径），**跳过此问**：
-   - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
-   - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
+3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**按数据级别决定**：
+   - **`levelnone` / `level0`（旧带宽口径）→ 需要问**：
+     - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
+     - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
+   - **`level1` / `cluster`（新两级带宽口径）→ 无需问**（`no-align` 对它们无意义，直接跳过、不展示此项）。
 
 ### 清理范围
 
