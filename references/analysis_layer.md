@@ -64,7 +64,9 @@
 | `[ep] 无带宽数据` / `[mc2] 无带宽数据` | 缺失标记 | **不能判「正常」** |
 | 慢通信域（两级带宽口径）（level1/cluster） | Level-1 逐 rank、Level-2 逐组，指标 + `***` | 新口径下的 comm 明细 |
 
-> 说明：`level0`/`levelnone` 报告里 comm 是「tp 带宽表 + 各域带宽概览」；`level1`/`cluster` 报告里 comm 是「慢通信域（两级带宽口径）」段（逐 rank / 逐组）。两者都只能引用报告里**已出现**的内容。
+> 说明：`level0`/`levelnone` 报告里 comm 是「tp 带宽表 + 各域带宽概览」；`level1`/`cluster` 报告里 comm 是「慢通信域（两级带宽口径）」段（Level-1 逐 rank / Level-2 逐组）。两者都只能引用报告里**已出现**的内容。
+>
+> **单组域**（如 `tp` 只有 1 个 Group）在 `level1`/`cluster` 报告里：**Level-1（组内逐 rank）仍然有效**（组内比较只依赖本组 rank）；只是**没有 Level-2**（组间无法比较）。**不要把「无 Level-2」当成「正常」** —— 应看 Level-1 是否有 `***` 慢 rank。
 
 ### 2.3 口径对照表（必须遵守）
 

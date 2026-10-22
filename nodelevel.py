@@ -570,10 +570,8 @@ def detect_slow_comm_two_level(
     for domain, groups in parallels.items():
         if domain == ppParallelDomainName or domain == "embd":
             continue
-        if len(groups) < 2:
-            continue
 
-        # ---- Level-1：组内慢 rank（逐组） ----
+        # ---- Level-1：组内慢 rank（逐组） ----（与组数无关：单组域也要做组内逐 rank）
         for group in groups:
             ranks = [int(r) for r in group if (domain, int(r)) in metric]
             if len(ranks) < minRanksInGroup:
