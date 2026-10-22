@@ -451,8 +451,8 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
                'ask' - 交互式询问（默认，需终端 TTY）
                'yes' - 强制清理并重新解析
                'no'  - 跳过清理，使用已有数据
-        no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 且数据级别为 levelnone
-                  时交互式询问；level1/cluster 用新两级带宽口径，不询问
+        no_align: 慢通信带宽是否关闭跨 rank 对齐（True=扁平池）；为 None 且数据级别为
+                  levelnone / level0（旧带宽口径）时交互式询问；level1/cluster 用新两级带宽口径，不询问
 
     返回:
         检测结果：{"KERNEL_AICORE": {"0": 1.5}, "comm": {"0,1": 1.8}, "cpu": {"5": 2.1}}
@@ -461,11 +461,11 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     level = nodelevel_data_handler.detect_profiling_level(input_path)
     config.set_profiling_level(level)
 
-    # 慢通信带宽口径：显式传入优先；no-align 仅对 levelnone 的旧带宽口径有意义，
+    # 慢通信带宽口径：显式传入优先；no-align 仅对**旧带宽口径**有意义（levelnone / level0），
     # level1/cluster 用新两级带宽口径，不询问（直接置 False）。
     if no_align is not None:
         config.set_comm_no_align(bool(no_align))
-    elif level == "levelnone":
+    elif level in ("levelnone", "level0"):
         config.set_comm_no_align(utils.confirm_no_align())
     else:
         config.set_comm_no_align(False)
