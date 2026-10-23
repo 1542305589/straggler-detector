@@ -147,6 +147,31 @@ def _safe_print(text: str):
             sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
 
 
+def _print_diagnosis(job_path: str, detection: dict, thresholds: tuple):
+    """检测完成后，把根因结论和关键证据直接打印到调用方 agent 的 stdout。"""
+    try:
+        import config
+        from diagnosis import evidence, render, rules
+        det = evidence.load_detection(job_path, config.get_output_path())
+        ev = evidence.build_evidence(job_path, detection=det or detection)
+        diag = rules.evaluate(ev, {
+            "compute": thresholds[0],
+            "io": thresholds[1],
+            "comm": thresholds[2],
+        })
+        _safe_print("")
+        _safe_print(render.console_evidence(ev, diag))
+        paths = render.write_outputs(ev, diag, config.get_output_path())
+        out = config.get_output_path()
+        _safe_print(f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}")
+        _safe_print(f"检测报告: {os.path.join(out, 'analysis_result', 'detection_report.log')}")
+        _safe_print(f"诊断报告: {paths['report']}")
+        _safe_print(f"完整证据: {paths['evidence']}")
+        _safe_print(f"诊断结论: {paths['result']}")
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 结果分析失败：{e}")
+
+
 def _backfill_slow_domain(job_path: str, db_files: list = None):
     """慢通信带宽 / PP 等待回填（附加步骤，失败仅告警不中断检测）。"""
     try:
@@ -296,6 +321,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             _safe_print(summary)
         except Exception as e:
             logger.warning(f"生成汇总表失败：{e}")
+        _print_diagnosis(job_path, result, thresholds)
         return result
 
     # === 步骤 1: 清理/解析（清理决策优先取调用方已确认值） ===
@@ -366,6 +392,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测
         logger.warning(f"生成汇总表失败：{e}")
 
+    _print_diagnosis(job_path, result, thresholds)
     return result
 
 
@@ -512,6 +539,7 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
             _safe_print(summary)
         except Exception as e:
             logger.warning(f"生成汇总表失败：{e}")
+        _print_diagnosis(job_path, result, thresholds)
         return result
 
     if skip_parsing:
@@ -578,6 +606,7 @@ def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: 
     except Exception as e:  # 汇总表为附加展示，失败不应中断检测
         logger.warning(f"生成汇总表失败：{e}")
 
+    _print_diagnosis(job_path, result, thresholds)
     return result
 
 
