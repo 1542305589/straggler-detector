@@ -27,11 +27,25 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 ## 结果分析层（解读已有结果，不重跑检测）
 
 - **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
-- **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`。
 - **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
 - **编排**：取证 → 规则 → 校验门 → 落盘只在 `diagnosis/pipeline.py` 一处；`main.py`（检测后自动诊断）与 `diagnose.py`（独立入口）共用，两条路径都会跑校验门。
-- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻，且不得进入正式结论。
-- **详细规格**（规则库 A–E / F1–F6、输出契约、置信度、校验门、回归样例）见 `references/analysis_layer.md`；JSON schema 见 `references/output_schema.json`。
+- **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`；检测层无异常时才兜底，且置信度最多 `medium`。控制台会打印「结论来源」和「辅助发现（不改变检测结论）」。
+- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻（标 `confidence=speculative`），校验门禁止其进入 `verdict/primary/actions`。
+- **规则库**：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）。
+- **单独运行**（不重跑检测、不改检测代码）：
+
+```bash
+python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
+# 可选阈值：compute=1.3 io=2.5 comm=1.3
+# cluster 单文件默认跳过逐 op 等待分解；加 full-cluster 打开（较慢）
+```
+
+  `diagnose.py` 默认**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互加 `no-ask`，并用 `clean=yes|no`、`no-align` 显式指定。
+- **产物**（输出到 `<out>/`，默认 `<数据目录>/`，全部同级）：
+  1. `evidence.json` — 确定性证据（`analysis.db` 优先 + 裸 profiler db 回退 + cluster db）
+  2. `formal_result.json` — 正式结论（每条带 `rule_id` + `evidence_refs`，并含校验门结果 `validation`）
+  3. `diagnosis_report.md` — 固定骨架报告（第 9 节为推测区）
+- **详细规格**（规则库全表、输出契约、置信度、校验门、回归样例）见 `references/analysis_layer.md`；JSON schema 见 `references/output_schema.json`。
 
 ## 检测的 7 类指标
 
@@ -155,30 +169,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 - **空 / master db 处理**：部分 `master_*` 目录下有空的 master db（无 `STEP_TIME`/`PYTORCH_API`/`TASK` 表），应跳过，仅用含核心表的 rank db。
 - **无通信域名时（情况 A，group_name 全空）的检测退化**：按 `HOST_INFO.hostUid` 物理节点分组（相同 hostUid 的 rank 为一组）作为检测组，检测计算/IO/通信单卡类指标；通信域组间指标（`comm`，`HasNamedDomain=False` 时）**直接跳过**（无域名无法解释对应 tp/ep）。Host 维持节点间拉齐，Bubble 维持固定阈值。
 - **有命名域但未命中检测优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标**仍然检测**（`HasNamedDomain=True`），检出慢通信组时可带域名。
-
-## 结果分析层：运行方式与产物
-
-检测完成后，可单独运行确定性诊断（不重跑检测、不改检测代码）：
-
-```bash
-python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
-# 可选阈值：compute=1.3 io=2.5 comm=1.3
-# cluster 单文件默认跳过逐 op 等待分解；加 full-cluster 打开（较慢）
-```
-
-与 `main.py` 一致，`diagnose.py` 默认会**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互场景可加 `no-ask` 跳过，并用 `clean=yes|no`、`no-align` 显式指定。
-
-输出到 `<out>/`（默认 `<数据目录>/`，全部产物同级）：
-
-1. `evidence.json` — 确定性证据（`analysis.db` 优先 + 裸 profiler db 回退 + cluster db）
-2. `formal_result.json` — 正式结论（每条带 `rule_id` + `evidence_refs`）
-3. `diagnosis_report.md` — 固定骨架报告
-
-规则库：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）。
-
-**权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时/通信带宽）**优先**；结论层的 A–E / F1–F6 只做**辅助**，不改变 `verdict / primary / actions`。检测层无异常时才用结论层兜底，且置信度最多 `medium`。控制台会打印「结论来源」和「辅助发现（不改变检测结论）」。
-
-**正式结论只由脚本规则产出**；LLM 只能在报告第 9 节「推测与待验证假设」里自主下钻，每条必须标 `confidence=speculative`，且校验门禁止其进入 `verdict/primary/actions`。
 
 ## 输出
 
