@@ -122,7 +122,7 @@ def run_visualization(
         detection_result: 检测结果（用于异常高亮）
         data_path: 原始数据目录（用于报告中显示）
     """
-    # 报告与其余输出同级：不再单建 analysis_result/ 子目录
+    # 报告与其余输出同级，直接写到输出目录
     result_dir = output_dir
     os.makedirs(result_dir, exist_ok=True)
 

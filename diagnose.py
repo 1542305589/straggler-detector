@@ -131,7 +131,7 @@ def main():
         print(f"路径不存在: {path}", file=sys.stderr)
         return 1
 
-    # 输出与其余产物同级（默认落到数据目录自身，不再单建 analysis_result/ 子目录）
+    # 输出与其余产物同级（默认落到数据目录自身）
     out_dir = args["out"] or (
         path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
     )
@@ -186,8 +186,6 @@ def main():
         det_report = next((p for p in (
             os.path.join(out_dir, "detection_report.log"),
             os.path.join(path, "detection_report.log"),
-            os.path.join(out_dir, "analysis_result", "detection_report.log"),  # 旧布局兜底
-            os.path.join(path, "analysis_result", "detection_report.log"),
         ) if os.path.isfile(p)), "")
         for line in render.format_artifacts([
             ("检测结果", det_result),

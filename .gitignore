@@ -9,7 +9,6 @@ env/
 # 本 skill 运行产物（SPEC §12.5 / §12.4）
 op_metric/
 straggler_analysis_output/
-analysis_result/
 straggler_detection_result.json
 straggler_detection_result/
 detection_output/
