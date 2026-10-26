@@ -7,9 +7,13 @@ description: Detect slow nodes (stragglers) in AI training/inference clusters fr
 
 Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点（亚健康检测）。
 
-本 skill 自带完整可运行代码包（本目录下的 `*.py`）。
+本 skill 自带完整可运行代码包（本目录下的 `*.py`）：**Python 3.8+，仅标准库**
+（`sqlite3` / `csv` / `json` / `os` / `logging` / `math` / `random`），无第三方依赖、不需要编译。
 
 ## 触发条件
+
+用户通常用**自然语言**描述问题（例如「部分卡明显偏慢、step 耗时变高，看看是哪里拖慢了性能」），
+**不需要用户自己写代码或敲命令**——由 agent 识别意图后按本文件的流程执行。
 
 **走「检测流程」**（跑检测 / 重新检测 / 解析 `.db`）——用户需要：
 - 执行慢节点 / 亚健康检测分析
@@ -41,6 +45,15 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 | `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
 
 > 数据级别影响检测范围：`level0`/`level1` 做全部 7 类；`levelnone`（TASK 仅 `MsTx`，无计算/搬运算子）跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；`cluster` 单文件仅 `comm`。
+
+**数据级别**（自动识别，决定 `comm` 的口径与检测范围）：
+
+| 级别 | 触发条件 | 检测范围 |
+|------|----------|----------|
+| `level0` | 目录；`ascend_pytorch_profiler_*.db` 的 `TASK.taskType` 含 `KERNEL_AICORE`/`KERNEL_AIVEC`/`MEMCPY_ASYNC` | 全部 7 类 |
+| `levelnone` | 目录；`TASK.taskType` 仅 `MsTx`（无计算/搬运算子） | 跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；其余照跑 |
+| `level1` | profiler db 同目录有 `analysis.db` 且含 `CommAnalyzerBandwidth` 带宽 | 7 类，但 `comm` 用新两级带宽口径，且跳过 `pp_comm` |
+| `cluster` | `path` 是单文件 db，含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` | 仅 `comm`（新两级带宽口径） |
 
 ## 使用方法
 
@@ -110,6 +123,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 <path>/
 ├── ascend_pytorch_profiler_0.db
 ├── ascend_pytorch_profiler_1.db
+├── analysis.db            # 可选：含 CommAnalyzerBandwidth 带宽 → level1
 └── ...
 ```
 或常见 dump 结构：
@@ -176,8 +190,6 @@ python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
 
 ## 算法说明
 
-检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`：过滤 ≤0/-99999 → Z-score → 肘部法选 K → KMeans++ → 偏大方向异常簇（簇均值 > 基线×阈值）→ **异常簇递归细分**（对异常簇数据再次聚类，更深层异常替换父层、更深层无异常保持父层，减少误检；劣化指数统一用**第一次 KMeans（全数据）的基线簇均值**为分母，degradation = 异常值/第一次基线，同一刻度可比）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 用固定阈值 `< 5000ns`。检测组由 `nodelevel.get_cal_detection_group` 按优先级（tp→exp→ep→…→dp）选定，集群数据用完整分组、非集群按节点过滤，无命名域时退化按 hostUid 物理节点分组。
+检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 固定 `< 5000ns`。
 
-**PP 慢通信（`pp_comm`）另一方案**：PP 传输（点对点）不在带宽白名单内，单独检测。**若已检出计算类故障（`KERNEL_AICORE`/`kernel_aivec`）则直接跳过**（v6pp 统计区间内必含计算算子，会被污染）。解析后回填每卡 `PP_WaitGap` = 「点对点传输结束 → 其下一次集合通信结束」的间隔之和（锚点：出现 `BatchSendRecv` 用 BatchSendRecv，否则用 Send/Recv；找其后第一个集合通信、跳过中间点对点；无下一次集合通信则不计）。检测时按**比较域**（命名域优先级 **TP > CP > DP**，都没有时用 **PP stage 转置**）把 rank 分组，域内**逐 rank** 与组内最大值比较：`(组内最大 − 本 rank) / 会话时长 > 5%` 判异常（**偏小异常**）。**上报单位为 PP 通信组**：组内至少一个 rank 异常即上报该组，取组内异常 rank 的最大占比（不上报具体 rank）。会话时长取各 rank 合并 profiling 窗口的最大值。
-
-**PP 分组来源**：PP 组直接读 `parallel_group_info` 的 `pp` 项（`group_name=="pp"` 的 `global_ranks`），读不到则不检测。同一 PP 组内 rank 升序视为 stage 顺序；相邻两 stage 组成一条链路，两端点对点算子按传输序号（slot）对齐后取时间窗重叠作为该链路指标。
+**需要解释「为什么这么判」时，按需加载 `references/detection.md`**：七类指标总览、通用异常算法逐步流程、检测组优先级、`comm` 两套口径的完整公式、`cpu` 节点拉齐机制、`pp_comm` 的 `PP_WaitGap` 定义与比较域、实现文件一览。
