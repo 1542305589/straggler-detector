@@ -292,3 +292,22 @@ KERNEL_AICORE 组间平移 1.59x、MEMCPY_ASYNC 4.49x（`mean/median ≈ 1`，�
 1. **只检测 `comm`**（不会出现 `KERNEL_AICORE` / `cpu` / `npu_bubble` / `pp_comm`），日志会提示「无单卡快照数据」；
 2. 产物落在 **`<db 所在目录>/detection_output/`**，而不是 db 所在目录本身（避免把结果写到 db 文件旁边）；
 3. Level-1 的键同样**带域名**（`ep[0]` 而非 `[0]`）。
+
+### 10.4 levelnone（16 卡，`TASK` 仅 `MsTx`）
+
+**场景**：`TASK.taskType` 只有 `MsTx`（无计算/搬运算子）→ 识别为 `levelnone`；
+人为使 rank `3` / `12` 所在的 `dp_modulo_exp_cp` 链路变慢。
+
+**验证过的输出基线**：
+
+| 层级 | 项 | 劣化指数 |
+|---|---|---|
+| Level-2（组键） | `dp_modulo_exp_cp[3, 11]` | `57.5273` |
+| Level-2（组键） | `dp_modulo_exp_cp[4, 12]` | `57.5267` |
+
+要点：
+
+1. **只问 `io` + `comm`**（`compute` 跳过，命令里不带 `compute=`）；仍问 `clean` 与 `no-align`（levelnone 属旧带宽口径）；
+2. **跳过** `KERNEL_AICORE` / `kernel_aivec` / `memcpy_async`（汇总表不会出现这三类）；
+3. levelnone 走**旧口径**，只产出**组键**（不会出现 `ep[5]` 这类单卡带域名的项）；
+4. 域名较长时（`dp_modulo_exp_cp`）汇总表显示正常。
