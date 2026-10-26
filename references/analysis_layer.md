@@ -218,11 +218,14 @@
 
 ---
 
-## 9. 已知限制（尚未验证项）
+## 9. 已知限制
 
-- 本层**尚未在真机运行验证**（开发机无 Python）：断言脚本见 `verify_comm_domain_key.py`。
-- 裸 db 取数依赖的表/列（`PYTORCH_API` / `CANN_API` / `COMPUTE_TASK_INFO` / `AICORE_FREQ` 等）为**推断**，
-  需在真实数据上确认；缺失时会落到 `coverage.missing` 与 `not_evaluated`。
+- **`coverage.missing` 不完整**：它只在三种情况下记录（`levelnone` 无计算算子、
+  `parallel_group_info` 缺失、`RANK_DEVICE_MAP` / `HOST_INFO` 缺失）；各取数子函数**取不到表时
+  不会写入**该字段。因此「`coverage.missing` 为空」**不足以证明**没有缺表——需直接检查
+  `host` / `compute` / `freq` / `macro.comm_time` 四块是否非空。
+- 裸 db 取数依赖的表/列（`PYTORCH_API` / `CANN_API` / `COMPUTE_TASK_INFO` / `AICORE_FREQ` 等）
+  已在 level0 真机确认可用（四块证据均非空）；**换 CANN 版本时需重新核对**。
 - `cluster` 单文件无逐算子计算 count / Host API / 频率，F1/F2/F3/F6 不适用。
 - `no_align` 只影响**检测层**的带宽回填，与本层无关。
 
