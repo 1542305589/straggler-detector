@@ -308,6 +308,14 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         thresholds = utils.confirm_thresholds(thresholds, keys=_threshold_ask_keys(level))
     config.set_thresholds(*thresholds)
 
+    # cluster 单文件：结果输出到 db 所在目录下的 detection_output/
+    # 必须在打印「检测结果输出目录」之前算好，否则会把 db 文件自身的路径当成输出目录打印出来。
+    is_cluster_input = (level == "cluster")
+    if is_cluster_input:
+        out_dir = os.path.join(os.path.dirname(os.path.abspath(job_path)), "detection_output")
+        os.makedirs(out_dir, exist_ok=True)
+        config.set_output_path(out_dir)
+
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
     logger.info(f"数据级别：{level}")
     logger.info(f"检测结果输出目录：{config.get_output_path()}")
@@ -316,11 +324,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     out_path = config.get_output_path()
 
     # === cluster_analysis.db 单文件：跳过解析，直接走新两级带宽口径 ===
-    if level == "cluster":
-        # 输入是文件，结果输出到其所在目录下的 detection_output（避免写到文件本身）
-        out_dir = os.path.join(os.path.dirname(os.path.abspath(job_path)), "detection_output")
-        os.makedirs(out_dir, exist_ok=True)
-        config.set_output_path(out_dir)
+    if is_cluster_input:
         parallels, comm = nodelevel_data_handler.load_cluster_comm(job_path)
         if not parallels or not comm:
             logger.error("cluster 数据为空，无法检测")

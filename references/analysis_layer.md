@@ -273,6 +273,22 @@ KERNEL_AICORE 组间平移 1.59x、MEMCPY_ASYNC 4.49x（`mean/median ≈ 1`，�
 2. 域名**含数字时也要正确解析出 rank**（`mc2[0]` → rank `0`，不是 `[2, 0]`）；
 3. 汇总表里**不应出现 `pp_comm`**。
 
-### 10.3 cluster 单文件
+### 10.3 cluster 单文件（`cluster_analysis.db`）
 
-**尚未在真机跑通**，待补（只检测 `comm`；产物落在 `<db 所在目录>/detection_output/`）。
+**场景**：同一批数据生成的 `cluster_analysis.db` 单文件；识别到 `2` 个域、7036 条 per-op 记录。
+
+**验证过的输出基线**：
+
+| 层级 | 项 | 劣化指数 |
+|---|---|---|
+| Level-2（组键） | `tp[0, 1, 2, 3]` | `5.33032` |
+| Level-1（单卡，带域名） | `ep[3]` | `2.86893` |
+| Level-1 | `ep[2]` | `2.76` |
+| Level-1 | `ep[1]` | `2.63832` |
+| Level-1 | `ep[0]` | `2.49197` |
+
+要点：
+
+1. **只检测 `comm`**（不会出现 `KERNEL_AICORE` / `cpu` / `npu_bubble` / `pp_comm`），日志会提示「无单卡快照数据」；
+2. 产物落在 **`<db 所在目录>/detection_output/`**，而不是 db 所在目录本身（避免把结果写到 db 文件旁边）；
+3. Level-1 的键同样**带域名**（`ep[0]` 而非 `[0]`）。
