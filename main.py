@@ -166,18 +166,19 @@ def _print_diagnosis(job_path: str, detection: dict, thresholds: tuple):
     """检测完成后，把根因结论和关键证据直接打印到调用方 agent 的 stdout。"""
     try:
         import config
-        from diagnosis import evidence, render, rules
-        det = evidence.load_detection(job_path, config.get_output_path())
-        ev = evidence.build_evidence(job_path, detection=det or detection)
-        diag = rules.evaluate(ev, {
-            "compute": thresholds[0],
-            "io": thresholds[1],
-            "comm": thresholds[2],
-        })
+        from diagnosis import pipeline, render
+        out = config.get_output_path()
+        ev, diag, paths, errors, warnings = pipeline.run_diagnosis(
+            job_path, out,
+            {"compute": thresholds[0], "io": thresholds[1], "comm": thresholds[2]},
+            detection=detection,
+        )
+        for w in warnings:
+            logger.warning(f"[SLOWNODE ALGO] 诊断校验警告：{w}")
+        for e in errors:
+            logger.warning(f"[SLOWNODE ALGO] 诊断校验错误：{e}")
         _safe_print("")
         _safe_print(render.console_evidence(ev, diag))
-        paths = render.write_outputs(ev, diag, config.get_output_path())
-        out = config.get_output_path()
         _safe_print(f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}")
         _safe_print(f"检测报告: {os.path.join(out, 'detection_report.log')}")
         _safe_print(f"诊断报告: {paths['report']}")

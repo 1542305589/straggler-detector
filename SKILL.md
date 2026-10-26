@@ -29,6 +29,7 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 - **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
 - **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`。
 - **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
+- **编排**：取证 → 规则 → 校验门 → 落盘只在 `diagnosis/pipeline.py` 一处；`main.py`（检测后自动诊断）与 `diagnose.py`（独立入口）共用，两条路径都会跑校验门。
 - **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻，且不得进入正式结论。
 - **详细规格**（规则库 A–E / F1–F6、输出契约、置信度、校验门、回归样例）见 `references/analysis_layer.md`；JSON schema 见 `references/output_schema.json`。
 

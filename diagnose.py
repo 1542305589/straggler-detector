@@ -28,7 +28,7 @@ import sys
 
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from diagnosis import evidence, render, rules, validate  # noqa: E402
+from diagnosis import evidence, pipeline, render  # noqa: E402
 
 
 def parse_args(args):
@@ -164,19 +164,15 @@ def main():
     print("## 检测结果")
     print(json.dumps(detection, ensure_ascii=False, indent=2))
     print("")
-    ev = evidence.build_evidence(path, detection=detection, full_cluster=args["full_cluster"])
-    result = rules.evaluate(ev, {
-        "compute": thresholds[0],
-        "io": thresholds[1],
-        "comm": thresholds[2],
-    })
-    errors, warnings = validate.validate(ev, result)
+    ev, result, paths, errors, warnings = pipeline.run_diagnosis(
+        path, out_dir,
+        {"compute": thresholds[0], "io": thresholds[1], "comm": thresholds[2]},
+        detection=detection, full_cluster=args["full_cluster"],
+    )
     for w in warnings:
         print(f"[WARN] {w}", file=sys.stderr)
     for e in errors:
         print(f"[ERROR] {e}", file=sys.stderr)
-    result["validation"] = {"passed": not errors, "errors": errors, "warnings": warnings}
-    paths = render.write_outputs(ev, result, out_dir)
 
     if args["json"]:
         print(json.dumps(result, ensure_ascii=False, indent=2))
