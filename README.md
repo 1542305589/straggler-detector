@@ -101,7 +101,7 @@ result = main.run_detection(
 **② 结果文件**
 
 - `straggler_detection_result.json` — 结构化检测结果（按类别列出异常项与劣化指数）。
-- `analysis_result/detection_report.log` — 各指标排序 / 通信带宽 / 统计信息的文本详情报告。
+- `detection_report.log` — 各指标排序 / 通信带宽 / 统计信息的文本详情报告。
 
 **③ 中间产物**：`op_metric/global_rank_N.csv` + `group_info_N.json`（解析产物；`clean=no` 可直接复用）。
 
@@ -168,7 +168,7 @@ nodelevel.py              # 各维度慢节点检测核心逻辑
 nodelevel_data_handler.py # 读 CSV/拓扑，构建快照与检测组
 kmeans_detector.py        # 通用异常算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
 summary_table.py          # 汇总表渲染（ASCII，供 stdout 输出）
-markdown_viz.py / visualizer.py  # 文本详情报告（analysis_result/detection_report.log）
+markdown_viz.py / visualizer.py  # 文本详情报告（detection_report.log，与其余输出同级）
 utils.py                  # 结果写入、清理、交互询问
 ```
 

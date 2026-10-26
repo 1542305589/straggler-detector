@@ -1,6 +1,6 @@
 # 结果分析层（Diagnosis）
 
-> **本层只读 `straggler_detection_result.json` 和 `analysis_result/detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。**
+> **本层只读 `straggler_detection_result.json` 和 `detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。**
 
 本层是**提示词/文档**，不是 Python 分析器。检测脚本、算法、输出格式一律不动。
 
@@ -16,7 +16,7 @@
 
 1. **只允许读两个文件**：
    - `<数据目录>/straggler_detection_result.json`
-   - `<数据目录>/analysis_result/detection_report.log`
+   - `<数据目录>/detection_report.log`
 2. 禁止读取 `master_*_ascend_pt/ASCEND_PROFILER_OUTPUT/*.db`，禁止 SQL，禁止调用 `msprof-analyze`，禁止写 Python 分析脚本，禁止让 Agent 自己找数据。
 3. 禁止修改检测代码：`main.py`、`nodelevel.py`、`kmeans_detector.py`、`profilingdataparse.py`、`nodelevel_data_handler.py` 等一律不动。
 4. 规则只能引用上述两个文件中**已经存在**的字段。字段缺失时，输出 `insufficient_evidence`，并列出缺失项，不得猜测。
@@ -48,7 +48,7 @@
 > `comm` 的 `display_key` 有两种形态：**组键** `tp[0, 1, 2, 3]`（Level-2 组间慢组）、
 > **单卡键** `ep[5]`（Level-1 组内慢 rank，带域名说明这个 rank 的异常是哪个域报出来的）。
 
-### 2.2 analysis_result/detection_report.log
+### 2.2 detection_report.log
 
 必须能识别以下区块：
 
@@ -244,7 +244,7 @@
 <source>::<field> = <slow_value> vs <baseline_value>, ratio=<x>, direction=<max|min>
 ```
 
-- `source` 只能是 `straggler_detection_result.json` 或 `analysis_result/detection_report.log`。
+- `source` 只能是 `straggler_detection_result.json` 或 `detection_report.log`。
 - 不允许出现 DB 表名、SQL、脚本输出。
 - 字段缺失写 `insufficient_evidence`，并列出缺失项。
 
@@ -363,7 +363,7 @@ D:\Sessions\a3_data\a3_data\2026_0921_qwen30b_a3b_tp4dp2_level0_comm_stress_rank
   - 「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」 → 走分析层。
   - 「重新检测 / 跑检测」 → 走原检测流程。
 - 分析层开头必须写一句：
-  > 本层只读 `straggler_detection_result.json` 和 `analysis_result/detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
+  > 本层只读 `straggler_detection_result.json` 和 `detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
 
 ---
 

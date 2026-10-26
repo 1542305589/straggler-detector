@@ -22,12 +22,12 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ## 结果分析层（解读已有结果，不重跑检测）
 
-> 本层只读 `straggler_detection_result.json` 和 `analysis_result/detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
+> 本层只读 `straggler_detection_result.json` 和 `detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
 
 - **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
 - **输入**（**只允许**这两个文件，字段见 `references/analysis_layer.md` §2）：
   - `<数据目录>/straggler_detection_result.json`
-  - `<数据目录>/analysis_result/detection_report.log`
+  - `<数据目录>/detection_report.log`
 - **硬约束**：不改检测代码；不读 `.db`、不跑 SQL、不写 Python 分析器；规则只能引用这两个文件里**已有**的字段；字段缺失 → `insufficient_evidence`；检测与报告冲突 → 标「一致性异常，建议复核」。
 - **规则库（A–E）、执行顺序、口径对照、禁止的规则、A3 回归样例、验收标准**：见 `references/analysis_layer.md`。
 - **输出契约**（固定 JSON schema 见 `references/output_schema.json`）：
@@ -109,7 +109,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`analysis_result/`、`straggler_detection_result.json`、`straggler_detection_result/`，然后从 `.db` 重新解析。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`（以及旧布局遗留的 `analysis_result/`），然后从 `.db` 重新解析。
 
 ## 输入数据
 
@@ -161,7 +161,7 @@ python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
 
 与 `main.py` 一致，`diagnose.py` 默认会**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互场景可加 `no-ask` 跳过，并用 `clean=yes|no`、`no-align` 显式指定。
 
-输出到 `<out>/`（默认 `<数据目录>/analysis_result/`）：
+输出到 `<out>/`（默认 `<数据目录>/`，全部产物同级）：
 
 1. `evidence.json` — 确定性证据（`analysis.db` 优先 + 裸 profiler db 回退 + cluster db）
 2. `formal_result.json` — 正式结论（每条带 `rule_id` + `evidence_refs`）
@@ -178,8 +178,9 @@ python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
 1. `op_metric/global_rank_*.csv` — 解析后的性能指标
 2. `op_metric/group_info_*.json` — 并行域信息
 3. `straggler_detection_result.json` — 检测结果（含全部类别）
-4. `analysis_result/detection_report.log` — 可视化详情报告
-5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、**通信单卡（Level-1 组内）如 `ep[5]:2.5`**、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
+4. `detection_report.log` — 可视化详情报告
+5. `evidence.json` / `formal_result.json` / `diagnosis_report.md` — 结果分析层产物
+6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、**通信单卡（Level-1 组内）如 `ep[5]:2.5`**、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
 

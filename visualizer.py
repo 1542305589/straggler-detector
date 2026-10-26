@@ -4,7 +4,7 @@
 功能:
 1. 单卡指标排序（控制台）
 2. 各并行域集合通信带宽排序（控制台）
-3. 调用 markdown_viz 生成 analysis_result/detection_report.log
+3. 调用 markdown_viz 生成 detection_report.log（与其余输出同级）
 """
 
 import os
@@ -107,7 +107,8 @@ def run_visualization(
         detection_result: 检测结果（用于异常高亮）
         data_path: 原始数据目录（用于报告中显示）
     """
-    result_dir = os.path.join(output_dir, "analysis_result")
+    # 报告与其余输出同级：不再单建 analysis_result/ 子目录
+    result_dir = output_dir
     os.makedirs(result_dir, exist_ok=True)
 
     # 控制台：单卡指标实时反馈

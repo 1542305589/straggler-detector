@@ -13,6 +13,10 @@ analysis_result/
 straggler_detection_result.json
 straggler_detection_result/
 detection_output/
+detection_report.log
+evidence.json
+formal_result.json
+diagnosis_report.md
 
 # 日志
 *.log

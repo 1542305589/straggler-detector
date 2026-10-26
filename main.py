@@ -164,7 +164,7 @@ def _print_diagnosis(job_path: str, detection: dict, thresholds: tuple):
         paths = render.write_outputs(ev, diag, config.get_output_path())
         out = config.get_output_path()
         _safe_print(f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}")
-        _safe_print(f"检测报告: {os.path.join(out, 'analysis_result', 'detection_report.log')}")
+        _safe_print(f"检测报告: {os.path.join(out, 'detection_report.log')}")
         _safe_print(f"诊断报告: {paths['report']}")
         _safe_print(f"完整证据: {paths['evidence']}")
         _safe_print(f"诊断结论: {paths['result']}")

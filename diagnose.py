@@ -96,8 +96,10 @@ def _ensure_detection(path: str, out_dir: str, thresholds: tuple, detection: dic
                 path, thresholds, "no", output_path=None,
                 skip_confirm=True, clean_decision=True)
         src = os.path.join(path, "straggler_detection_result.json")
-        if os.path.isfile(src):
-            shutil.copy2(src, os.path.join(out_dir, "straggler_detection_result.json"))
+        dst = os.path.join(out_dir, "straggler_detection_result.json")
+        # out_dir 默认就是数据目录本身，同路径时不能 copy2（会抛 SameFileError）
+        if os.path.isfile(src) and os.path.abspath(src) != os.path.abspath(dst):
+            shutil.copy2(src, dst)
         return evidence.load_detection(path, out_dir)
     except Exception as e:
         print(f"[WARN] 检测未运行：{e}", file=sys.stderr)
@@ -114,9 +116,9 @@ def main():
         print(f"路径不存在: {path}", file=sys.stderr)
         return 1
 
-    out_dir = args["out"] or os.path.join(
-        path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path)),
-        "analysis_result",
+    # 输出与其余产物同级（默认落到数据目录自身，不再单建 analysis_result/ 子目录）
+    out_dir = args["out"] or (
+        path if os.path.isdir(path) else os.path.dirname(os.path.abspath(path))
     )
     import config
     import nodelevel_data_handler
@@ -171,7 +173,9 @@ def main():
             os.path.join(path, "straggler_detection_result.json"),
         ) if os.path.isfile(p)), "")
         det_report = next((p for p in (
-            os.path.join(out_dir, "analysis_result", "detection_report.log"),
+            os.path.join(out_dir, "detection_report.log"),
+            os.path.join(path, "detection_report.log"),
+            os.path.join(out_dir, "analysis_result", "detection_report.log"),  # 旧布局兜底
             os.path.join(path, "analysis_result", "detection_report.log"),
         ) if os.path.isfile(p)), "")
         print(f"检测结果: {det_result}")

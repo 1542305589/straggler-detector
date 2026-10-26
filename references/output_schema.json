@@ -55,7 +55,7 @@
         "properties": {
           "source": {
             "type": "string",
-            "enum": ["straggler_detection_result.json", "analysis_result/detection_report.log"]
+            "enum": ["straggler_detection_result.json", "detection_report.log"]
           },
           "field": { "type": "string" },
           "slow_value": { "type": "number" },
