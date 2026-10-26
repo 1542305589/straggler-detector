@@ -218,9 +218,9 @@ class DegradationData(dict):
         super().__init__()
 
     @staticmethod
-    def _single_key(rank: int) -> str:
-        """将单个 rank 转为字符串 key"""
-        return str(rank)
+    def _single_key(rank: int, domain: str = None) -> str:
+        """将单个 rank 转为字符串 key；带域名时为 "<domain>:<rank>"（如 "ep:5"）。"""
+        return f"{domain}:{rank}" if domain else str(rank)
 
     @staticmethod
     def _group_key(ranks: list) -> str:
@@ -230,11 +230,16 @@ class DegradationData(dict):
         sorted_ranks = sorted(ranks)
         return ",".join(str(r) for r in sorted_ranks)
 
-    def add_single(self, category: str, rank: int, degradation: float):
-        """添加单个 rank 的劣化数据"""
+    def add_single(self, category: str, rank: int, degradation: float, domain: str = None):
+        """添加单个 rank 的劣化数据。
+
+        domain 非空时 key 为 "<domain>:<rank>"（如 "ep:5"）：同一个 rank 可能在多个通信域
+        各自被报出单卡异常，带域名既避免 key 冲突互相覆盖，也让报告/JSON 能说明「这个 rank
+        的异常是哪个域报出来的」。domain 缺省时保持旧的裸 rank 形式（如 "5"）。
+        """
         if category not in self:
             self[category] = {}
-        key = self._single_key(rank)
+        key = self._single_key(rank, domain)
         self[category][key] = degradation
 
     def add_group(self, category: str, ranks: list, degradation: float):

@@ -296,7 +296,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 `build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **ASCII 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
 
 - **类别**：`CATEGORY_DISPLAY`（大小写对齐 op_metric 指标列名），如 `KERNEL_AICORE`、`KERNEL_AIVEC`、`MEMCPY_ASYNC`、`comm`、`pp_comm`、`cpu`、`npu_bubble`（无括号描述）。
-- **异常卡**：由 result 各 key 解析——单卡 `rank 0, 3`；comm 组 `tp[0, 1]`；pp_comm 链路 `0->4`。
+- **异常卡**：由 result 各 key 解析——单卡 `rank 0, 3`；comm 组 `tp[0, 1]`；comm 单卡（Level-1，key 带域名如 `ep:5`）`ep[5]`；pp_comm 链路 `0->4`。
 - **劣化指数**：逐项 `项:值`（自然精度，`g` 格式）——单卡 `0:1.397，3:1.398`；comm `tp[0, 1]:2.5`；pp_comm `0->4:2.5`。
 - **劣化阈值**：`npu_bubble` → `<{BUBBLE_THRESHOLD_NS}ns`；通信类（comm / pp_comm）→ `COMM_THRESHOLD`；IO/CPU 类（cpu / memcpy_async）→ `IO_THRESHOLD`；计算类（KERNEL_AICORE / kernel_aivec）→ `COMPUTE_THRESHOLD`。
 - 无任何异常时返回含"无异常"提示的单行表。

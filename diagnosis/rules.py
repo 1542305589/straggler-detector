@@ -47,7 +47,11 @@ def _median(values: List[float]) -> float:
 
 
 def _ranks_from_key(key: str) -> List[int]:
-    return sorted(int(x) for x in re.findall(r"\d+", str(key)))
+    # 先剥掉域名前缀再看数字：域名里可能含数字（如 mc2），直接对整串 findall 会把 2 当成 rank。
+    inner = str(key)
+    if "[" in inner and inner.endswith("]"):
+        inner = inner[inner.index("[") + 1:-1]
+    return sorted(int(x) for x in re.findall(r"\d+", inner))
 
 
 def _detection_map(detection: Dict) -> Dict[str, List[Dict]]:

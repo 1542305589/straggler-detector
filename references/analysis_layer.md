@@ -45,6 +45,9 @@
 
 可用字段只有：**类别、`display_key`（rank 或组）、`metric_value`（劣化指数）、`is_abnormal`**。
 
+> `comm` 的 `display_key` 有两种形态：**组键** `tp[0, 1, 2, 3]`（Level-2 组间慢组）、
+> **单卡键** `ep[5]`（Level-1 组内慢 rank，带域名说明这个 rank 的异常是哪个域报出来的）。
+
 ### 2.2 analysis_result/detection_report.log
 
 必须能识别以下区块：

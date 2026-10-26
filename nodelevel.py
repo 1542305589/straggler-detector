@@ -586,7 +586,7 @@ def detect_slow_comm_two_level(
                 d = deg_of.get(r)
                 ranks_out.append({"rank": r, "metric": metric[(domain, r)], "deg": d})
                 if d is not None:
-                    local_result.add_single("comm", r, d)
+                    local_result.add_single("comm", r, d, domain)
             detail["level1"].append(
                 {"domain": domain, "group": list(group), "ranks": ranks_out})
 

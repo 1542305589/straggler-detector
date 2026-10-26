@@ -12,6 +12,7 @@ import logging
 from typing import Dict, List, Optional
 
 import markdown_viz
+import summary_table
 import utils
 
 logger = logging.getLogger("[VISUALIZER]")
@@ -120,8 +121,9 @@ def run_visualization(
         abnormal_groups = []
         for group_key in comm_abnormal:
             try:
-                abnormal_groups.append([int(r) for r in group_key.split(",")])
-            except (ValueError, AttributeError):
+                _, ranks_key = summary_table._split_domain_key(group_key)
+                abnormal_groups.append([int(r) for r in ranks_key.split(",")])
+            except (ValueError, AttributeError, TypeError):
                 pass
 
         for domain_name, domain_groups in parallels.items():

@@ -11,6 +11,7 @@ from typing import Dict, List, Any
 # 添加父目录到路径以便导入 config
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import summary_table
 
 
 def parse_bandwidth_col(prefix: str, col: str):
@@ -124,12 +125,14 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                 # PP 通信组：key 是组内 rank 列表，显示为 [r0, r1, ...]
                 display_key = "[" + ", ".join(key.split(",")) + "]"
             elif is_group_category:
-                ranks = key.split(",")
-                # 查找这个 group 属于哪个域
-                rank_tuple = tuple(int(r) for r in ranks)
-                domain_name = rank_set_to_domain.get(rank_tuple, "")
-                if domain_name:
-                    display_key = f"{domain_name}[{', '.join(ranks)}]"
+                # key 形如 "ep:5"（Level-1 单卡，域名已写在 key 里）或 "0,1,2,3"（组键，需反查域名）
+                key_domain, ranks_key = summary_table._split_domain_key(key)
+                ranks = ranks_key.split(",")
+                if not key_domain:
+                    rank_tuple = tuple(int(r) for r in ranks)
+                    key_domain = rank_set_to_domain.get(rank_tuple, "")
+                if key_domain:
+                    display_key = f"{key_domain}[{', '.join(ranks)}]"
                 else:
                     display_key = "[" + ", ".join(ranks) + "]"
             else:

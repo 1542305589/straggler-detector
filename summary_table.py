@@ -97,9 +97,22 @@ def _domain_of_group(parallels: dict, ranks_key: str) -> str:
     return ""
 
 
+def _split_domain_key(key: str):
+    """拆分结果 key → (domain, ranks_key)。
+
+    - Level-1 单卡（新两级带宽口径）的 key 自带域名：`"ep:5"` → `("ep", "5")`
+    - 组键 / 旧单卡键不带域名：`"0,1,2"` → `("", "0,1,2")`、`"5"` → `("", "5")`
+    """
+    prefix, sep, rest = str(key).partition(":")
+    if sep and rest and not prefix.isdigit():
+        return prefix, rest
+    return "", str(key)
+
+
 def _parse_ranks_from_key(key: str):
-    """把类别结果的 key 解析成 rank 列表（单卡 key 是 "0"，组 key 是 "0,1,2"）"""
-    return [int(r) for r in key.split(",")]
+    """把类别结果的 key 解析成 rank 列表（单卡 key 是 "0" 或 "ep:5"，组 key 是 "0,1,2"）"""
+    _, ranks_key = _split_domain_key(key)
+    return [int(r) for r in ranks_key.split(",")]
 
 
 # 物理设备列显示宽度上限（超出以 ... 截断）
@@ -159,8 +172,9 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
         deg_parts = []
         dev_parts = []
         for key, val in sorted_items:
+            key_domain, ranks_key = _split_domain_key(key)
             ranks = _parse_ranks_from_key(key)
-            domain_name = _domain_of_group(parallels, key)
+            domain_name = key_domain or _domain_of_group(parallels, ranks_key)
             inner = ", ".join(str(r) for r in ranks)
             label = f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
             cards_parts.append(label)

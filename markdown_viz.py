@@ -262,16 +262,18 @@ def _comm_two_level_section(detection_result: Optional[Dict[str, Dict[str, float
     singles = []
     groups = []
     for key, deg in comm.items():
+        key_domain, ranks_key = summary_table._split_domain_key(key)
         try:
-            ranks = sorted(int(r) for r in key.split(","))
+            ranks = sorted(int(r) for r in ranks_key.split(","))
         except (TypeError, ValueError):
             continue
         if not ranks:
             continue
         if len(ranks) == 1:
-            singles.append((ranks[0], deg))
+            singles.append((ranks[0], deg, key_domain))
         else:
-            groups.append((ranks, deg, summary_table._domain_of_group(parallels, key)))
+            groups.append((ranks, deg,
+                           key_domain or summary_table._domain_of_group(parallels, ranks_key)))
     if not singles and not groups:
         return ""
 
@@ -284,8 +286,9 @@ def _comm_two_level_section(detection_result: Optional[Dict[str, Dict[str, float
     if singles:
         singles.sort(key=lambda x: -x[1])
         lines.append("  Level-1 组内慢 rank:")
-        for r, d in singles:
-            lines.append("    " + f"rank {r}".ljust(16) + f"{d:.3g}x")
+        for r, d, dom in singles:
+            label = f"{dom}[{r}]" if dom else f"rank {r}"
+            lines.append("    " + label.ljust(16) + f"{d:.3g}x")
         lines.append("")
     if groups:
         groups.sort(key=lambda x: -x[1])
