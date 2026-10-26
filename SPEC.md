@@ -271,7 +271,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 
 ### 9.2 清理（utils）
 
-`clean_detection_outputs` 清理：`op_metric`、`straggler_analysis_output`、`analysis_result`（旧布局遗留）、`straggler_detection_result.json`、`straggler_detection_result`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`、`joint_failure_analysis.log`。
+`clean_detection_outputs` 清理：`op_metric`、`straggler_analysis_output`、`straggler_detection_result.json`、`straggler_detection_result`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`、`joint_failure_analysis.log`（**只删本 skill 自己的产物**）。
 `confirm_clean` 交互式询问（skill 调用时**须先问用户**）。
 
 ---

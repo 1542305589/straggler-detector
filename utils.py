@@ -201,7 +201,6 @@ def confirm_clean(input_path: str) -> bool:
     items_to_clean = [
         "op_metric",
         "straggler_analysis_output",
-        "analysis_result",              # 旧布局（报告曾放在 analysis_result/），清理历史遗留
         "straggler_detection_result.json",
         "straggler_detection_result",
         "detection_report.log",
@@ -300,8 +299,8 @@ def confirm_no_align(default: bool = False) -> bool:
 def clean_detection_outputs(input_path: str):
     """
     删除检测前需要清理的文件和目录
-    包括：op_metric, straggler_analysis_output, analysis_result（旧布局遗留）,
-    straggler_detection_result.json, detection_report.log 等检测/诊断产物
+    包括：op_metric, straggler_analysis_output, straggler_detection_result.json,
+    detection_report.log 等检测/诊断产物（只删本 skill 自己的产物）
 
     参数:
         input_path: 数据目录路径
@@ -312,7 +311,6 @@ def clean_detection_outputs(input_path: str):
     items_to_clean = [
         "op_metric",
         "straggler_analysis_output",
-        "analysis_result",              # 旧布局（报告曾放在 analysis_result/），清理历史遗留
         "straggler_detection_result.json",
         "straggler_detection_result",
         "detection_report.log",

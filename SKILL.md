@@ -139,7 +139,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`（以及旧布局遗留的 `analysis_result/`），然后从 `.db` 重新解析。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
 
 ## 输入数据
 
