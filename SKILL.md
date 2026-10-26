@@ -127,6 +127,16 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
      - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
    - **`level1` / `cluster`（新两级带宽口径）→ 无需问**（`no-align` 对它们无意义，直接跳过、不展示此项）。
 
+### 必须在最终回答中原样列出产物绝对路径
+
+检测/诊断结束后，程序会在 stdout 打印 5 行产物路径（**检测结果 / 检测报告 / 诊断报告 / 完整证据 / 诊断结论**），且**已经是绝对路径**。
+
+**最终回答里必须原样带上这 5 行绝对路径**，禁止：
+- 只写文件名（如 `straggler_detection_result.json`）或省略目录；
+- 省略其中几个、或用"产物：…等"概括。
+
+**原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，`diagnose.py` 由 `out=` 参数决定。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
+
 ### 清理范围
 
 若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`（以及旧布局遗留的 `analysis_result/`），然后从 `.db` 重新解析。
