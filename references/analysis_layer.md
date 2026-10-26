@@ -118,6 +118,9 @@
 | `evidence_refs` | 指向 `evidence.json` 的点分路径（校验门逐个解析） |
 | `derived` | `true` = 数值为派生比值，跳过数值直接命中检查 |
 
+> 非有限值（`Infinity` / `NaN`）在写盘前会被统一替换为 `null`，并在 `validation.warnings` 里记一笔——
+> 保证 `formal_result.json` / `evidence.json` 一定是严格合法 JSON（否则 JS 的 `JSON.parse` 等严格解析器会直接报错）。
+
 ### 4.2 `diagnosis_report.md`（固定 9 节骨架）
 
 ```

@@ -57,7 +57,7 @@
         "baseline_value": { "type": ["number", "null"] },
         "ratio": {
           "type": ["number", "null"],
-          "description": "注意：内部可能为 float('inf')（基线为 0 时），此时 json.dump 会写出 Infinity —— 非严格 JSON"
+          "description": "非有限值（Infinity/NaN）在写盘前会被统一替换为 null，保证产物是严格合法 JSON；出现时会在 validation.warnings 里记一笔"
         },
         "summary": { "type": "string" },
         "evidence_refs": {

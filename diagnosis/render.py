@@ -17,6 +17,7 @@
 from __future__ import annotations
 
 import json
+import math
 import os
 from typing import Dict, List
 
@@ -379,6 +380,30 @@ def console_evidence(ev: Dict, result: Dict) -> str:
     return "\n".join(lines)
 
 
+def _sanitize_non_finite(obj, found: List[float] = None):
+    """递归把非有限浮点（Infinity / NaN）就地替换为 None，并收集它们。
+
+    JSON 标准不认 Infinity / NaN，而 `json.dump` 默认会把它们写成 `Infinity` /
+    `NaN` 字样——严格解析器（例如 JS 的 `JSON.parse`）读到会直接报错。
+    目前所有 `ratio` 的来源都有"分母 > 0"守卫，理论上不会产生非有限值；
+    这里是最后一道保险，保证写出去的文件一定是严格合法的 JSON。
+    """
+    if found is None:
+        found = []
+    if isinstance(obj, float):
+        if math.isinf(obj) or math.isnan(obj):
+            found.append(obj)
+            return None
+        return obj
+    if isinstance(obj, dict):
+        for k in list(obj.keys()):
+            obj[k] = _sanitize_non_finite(obj[k], found)
+    elif isinstance(obj, list):
+        for i in range(len(obj)):
+            obj[i] = _sanitize_non_finite(obj[i], found)
+    return obj
+
+
 def format_artifacts(items: List[tuple]) -> List[str]:
     """把 [(标签, 路径), ...] 格式化成「标签: 绝对路径」的行。
 
@@ -397,10 +422,19 @@ def write_outputs(ev: Dict, result: Dict, out_dir: str) -> Dict[str, str]:
     result_path = os.path.join(out_dir, "formal_result.json")
     report_path = os.path.join(out_dir, "diagnosis_report.md")
     evidence_path = os.path.join(out_dir, "evidence.json")
+    # 写出前统一清掉非有限浮点（勿让 Infinity / NaN 进入 JSON）；
+    # allow_nan=False 是第二道保险：万一还有漏网的，宁可显式报错也不要写出坏文件。
+    non_finite: List[float] = []
+    _sanitize_non_finite(result, non_finite)
+    _sanitize_non_finite(ev, non_finite)
+    if non_finite:
+        validation = result.setdefault("validation", {})
+        validation.setdefault("warnings", []).append(
+            f"{len(non_finite)} 个非有限数值（Infinity/NaN）已写成 null")
     with open(result_path, "w", encoding="utf-8") as f:
-        json.dump(result, f, ensure_ascii=False, indent=2)
+        json.dump(result, f, ensure_ascii=False, indent=2, allow_nan=False)
     with open(evidence_path, "w", encoding="utf-8") as f:
-        json.dump(ev, f, ensure_ascii=False, indent=2)
+        json.dump(ev, f, ensure_ascii=False, indent=2, allow_nan=False)
     with open(report_path, "w", encoding="utf-8") as f:
         f.write(render_markdown(ev, result))
     return {
