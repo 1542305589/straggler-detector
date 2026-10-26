@@ -1,9 +1,9 @@
 # 检测原理（实现规格）
 
 > 本文是**逐条对着代码核对过**的检测原理说明，供 agent 需要解释结论时按需加载。
-> 对应实现：`kmeans_detector.py`（通用算法）、`nodelevel.py`（各类指标检测）、
-> `nodelevel_data_handler.py`（取数与检测组）、`profilingdataparse.py`（解析与带宽/PP 回填）。
-> 默认数值均取自 `config.py`。
+> 对应实现：`scripts/kmeans_detector.py`（通用算法）、`scripts/nodelevel.py`（各类指标检测）、
+> `scripts/nodelevel_data_handler.py`（取数与检测组）、`scripts/profilingdataparse.py`（解析与带宽/PP 回填）。
+> 默认数值均取自 `scripts/config.py`。
 
 ---
 
@@ -32,7 +32,7 @@
 
 ## 2. 通用异常算法（`kmeans_detector.general_anomaly_detection`）
 
-所有「检测组内」的指标共用这一套（与 `kmeans_detector.py` 模块 docstring 一致）：
+所有「检测组内」的指标共用这一套（与 `scripts/kmeans_detector.py` 模块 docstring 一致）：
 
 1. **过滤**：剔除 `≤0` 与 `-99999`（`INVALID_MARKER`）；过滤后不足 2 个 → 判无异常退出。
 2. **Z-score 标准化**；标准差 ≈ 0 时强制置 1，避免除零。
@@ -106,15 +106,15 @@ tp → exp → ep → tp_exp → cp → cp2 → cp_ulysses → cp_ring
 
 | 文件 | 职责 |
 |---|---|
-| `config.py` | 全局配置、阈值、劣化数据容器、节点/域名标志 |
-| `main.py` | 入口（skill 调用 `run_detection` / CLI） |
-| `diagnose.py` | 结果分析层独立入口（CLI） |
-| `diagnosis/` | 结果分析层：`pipeline`（编排）/ `evidence`（只读取证）/ `rules`（规则）/ `render`（渲染）/ `validate`（校验门） |
-| `profilingdataparse.py` | `.db`(SQLite) → `op_metric` CSV/JSON；带宽 / PP 等待回填 |
-| `nodelevel.py` | 各维度慢节点检测核心逻辑 |
-| `nodelevel_data_handler.py` | 读 CSV/拓扑，构建快照与检测组 |
-| `kmeans_detector.py` | 通用异常算法（KMeans + Z-score + 肘部法 + 异常簇递归细分） |
-| `summary_table.py` | 汇总表渲染（ASCII，供 stdout 输出） |
-| `markdown_viz.py` / `visualizer.py` | 文本详情报告（`detection_report.log`） |
-| `utils.py` | 结果写入、清理、交互询问 |
-| `classify_role.py` | verl colocate：训练 / rollout 分层判据 |
+| `scripts/config.py` | 全局配置、阈值、劣化数据容器、节点/域名标志 |
+| `scripts/main.py` | 入口（skill 调用 `run_detection` / CLI） |
+| `scripts/diagnose.py` | 结果分析层独立入口（CLI） |
+| `scripts/diagnosis/` | 结果分析层：`pipeline`（编排）/ `evidence`（只读取证）/ `rules`（规则）/ `render`（渲染）/ `validate`（校验门） |
+| `scripts/profilingdataparse.py` | `.db`(SQLite) → `op_metric` CSV/JSON；带宽 / PP 等待回填 |
+| `scripts/nodelevel.py` | 各维度慢节点检测核心逻辑 |
+| `scripts/nodelevel_data_handler.py` | 读 CSV/拓扑，构建快照与检测组 |
+| `scripts/kmeans_detector.py` | 通用异常算法（KMeans + Z-score + 肘部法 + 异常簇递归细分） |
+| `scripts/summary_table.py` | 汇总表渲染（ASCII，供 stdout 输出） |
+| `scripts/markdown_viz.py` / `scripts/visualizer.py` | 文本详情报告（`detection_report.log`） |
+| `scripts/utils.py` | 结果写入、清理、交互询问 |
+| `scripts/classify_role.py` | verl colocate：训练 / rollout 分层判据 |

@@ -27,20 +27,20 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 ## 结果分析层（解读已有结果，不重跑检测）
 
 - **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
-- **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
-- **编排**：取证 → 规则 → 校验门 → 落盘只在 `diagnosis/pipeline.py` 一处；`main.py`（检测后自动诊断）与 `diagnose.py`（独立入口）共用，两条路径都会跑校验门。
+- **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`scripts/diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
+- **编排**：取证 → 规则 → 校验门 → 落盘只在 `scripts/diagnosis/pipeline.py` 一处；`scripts/main.py`（检测后自动诊断）与 `scripts/diagnose.py`（独立入口）共用，两条路径都会跑校验门。
 - **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`；检测层无异常时才兜底，且置信度最多 `medium`。控制台会打印「结论来源」和「辅助发现（不改变检测结论）」。
-- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻（标 `confidence=speculative`），校验门禁止其进入 `verdict/primary/actions`。
+- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `scripts/diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻（标 `confidence=speculative`），校验门禁止其进入 `verdict/primary/actions`。
 - **规则库**：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）。
 - **单独运行**（不重跑检测、不改检测代码）：
 
 ```bash
-python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
+python scripts/diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
 # 可选阈值：compute=1.3 io=2.5 comm=1.3
 # cluster 单文件默认跳过逐 op 等待分解；加 full-cluster 打开（较慢）
 ```
 
-  `diagnose.py` 默认**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互加 `no-ask`，并用 `clean=yes|no`、`no-align` 显式指定。
+  `scripts/diagnose.py` 默认**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互加 `no-ask`，并用 `clean=yes|no`、`no-align` 显式指定。
 - **产物**（输出到 `<out>/`，默认 `<数据目录>/`，全部同级）：
   1. `evidence.json` — 确定性证据（`analysis.db` 优先 + 裸 profiler db 回退 + cluster db）
   2. `formal_result.json` — 正式结论（每条带 `rule_id` + `evidence_refs`，并含校验门结果 `validation`）
@@ -72,15 +72,22 @@ python diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
 
 ## 使用方法
 
-### 正确运行目录
+### 代码位置与运行方式
 
-所有命令都应在**本 skill 目录**（含 `main.py` 的目录）内执行。agent 调用时使用本 skill 自身的目录（`SKILL.md` 所在目录），**不要写死任何绝对路径**。
+可执行代码全部在 **`scripts/`** 下。命令形式：
+
+```bash
+cd <本 skill 目录>          # SKILL.md 所在目录
+python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
+# 可选：追加 no-align 关闭慢通信带宽的跨 rank 对齐
+```
+
+agent 调用时使用本 skill 自身的目录，**不要写死任何绝对路径**；也可以直接给脚本完整路径（`python <本 skill 目录>/scripts/main.py ...`），无需先 `cd`。
 
 ### 命令行执行
 
 ```bash
-python main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
-# 可选：追加 no-align 关闭慢通信带宽的跨 rank 对齐
+python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
 ```
 
 参数说明：
@@ -135,7 +142,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 - 只写文件名（如 `straggler_detection_result.json`）或省略目录；
 - 省略其中几个、或用"产物：…等"概括。
 
-**原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，`diagnose.py` 由 `out=` 参数决定。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
+**原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，`scripts/diagnose.py` 由 `out=` 参数决定。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
 
 ### 清理范围
 
@@ -163,7 +170,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 verl 混合部署时，一次采集会在同一节点产出**多组 worker*_ascend_pt 目录**（每组各自独立进程、一个 rank 一个 db）。此时训练（FSDP）与 rollout（vLLM/SGLang）的 rank 编号会重复（如都含 0~3），**绝不能混在一起检测**。
 
-- 传入含同层 `worker*_ascend_pt` 的根目录，检测前会自动用 `classify_role.py` 分层判据（L1 backward 决定性 > L3 行为指纹 > L2 引擎词表）把 worker 分成训练 / rollout 两个"世界"，并做时间窗交叉验证。
+- 传入含同层 `worker*_ascend_pt` 的根目录，检测前会自动用 `scripts/classify_role.py` 分层判据（L1 backward 决定性 > L3 行为指纹 > L2 引擎词表）把 worker 分成训练 / rollout 两个"世界"，并做时间窗交叉验证。
 - 每个世界**独立解析 + 独立检测**，结果分开输出：
   ```
   <path>/detection_output/training/    # 训练（FSDP）4 rank 完整检测
@@ -191,6 +198,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 ## 算法说明
 
-检测核心为 `kmeans_detector.py` 的 `general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 固定 `< 5000ns`。
+检测核心为 `scripts/kmeans_detector.py` 的 `general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；`npu_bubble` 固定 `< 5000ns`。
 
 **需要解释「为什么这么判」时，按需加载 `references/detection.md`**：七类指标总览、通用异常算法逐步流程、检测组优先级、`comm` 两套口径的完整公式、`cpu` 节点拉齐机制、`pp_comm` 的 `PP_WaitGap` 定义与比较域、实现文件一览。

@@ -1,7 +1,7 @@
 # straggler-detector 方案设计说明书（SPEC）
 
 > 本文档逐模块阐述 `straggler-detector` skill 的完整方案：架构、数据流、核心算法、各指标的定义与生成方式、检测逻辑与结果输出。
-> 检测核心为 `kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
+> 检测核心为 `scripts/kmeans_detector.py` 的通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）。
 
 ---
 
@@ -29,19 +29,27 @@
 
 ```
 straggler-detector/
-├── __init__.py                 # 包初始化（版本号）
-├── config.py                   # 全局配置、阈值、劣化数据容器、节点映射、域名标志
-├── utils.py                    # 结果写入、清理、交互式询问、通用工具
-├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
-├── profilingdataparse.py       # .db(SQLite) → op_metric CSV/JSON
-├── nodelevel.py                # 各维度慢节点检测核心逻辑
-├── nodelevel_data_handler.py   # 读取 op_metric CSV + group_info JSON，构建快照/并行域/节点组
-├── markdown_viz.py             # 生成文本格式检测报告
-├── visualizer.py               # 可视化编排（控制台 + 详情报告）
-├── summary_table.py            # 检测结果汇总表工具（ASCII 表格渲染 + 单元格格式化）
-├── main.py                     # 主入口 / skill 调用入口
-├── skill.md                    # skill 使用说明（与 SKILL.md 同步）
-└── README.md / SPEC.md         # 使用说明 / 本文档
+├── SKILL.md                        # skill 使用说明（agent 加载的入口）
+├── references/                     # 规格文档（按需加载）
+│   ├── analysis_layer.md           # 结果分析层规格（规则库 / 输出契约 / 回归基线）
+│   ├── detection.md                # 检测原理（算法步骤 / 各类指标 / 实现文件一览）
+│   └── output_schema.json          # formal_result.json 的 JSON schema
+├── scripts/                        # 全部可执行代码
+│   ├── main.py                     # 主入口 / skill 调用入口
+│   ├── diagnose.py                 # 结果分析层独立入口（CLI）
+│   ├── config.py                   # 全局配置、阈值、劣化数据容器、节点映射、域名标志
+│   ├── utils.py                    # 结果写入、清理、交互式询问、通用工具
+│   ├── kmeans_detector.py          # 通用检测算法（KMeans + Z-score + 肘部法 + 异常簇递归细分）
+│   ├── profilingdataparse.py       # .db(SQLite) → op_metric CSV/JSON
+│   ├── nodelevel.py                # 各维度慢节点检测核心逻辑
+│   ├── nodelevel_data_handler.py   # 读取 op_metric CSV + group_info JSON，构建快照/并行域/节点组
+│   ├── markdown_viz.py             # 生成文本格式检测报告
+│   ├── visualizer.py               # 可视化编排（控制台 + 详情报告）
+│   ├── summary_table.py            # 检测结果汇总表工具（ASCII 表格渲染 + 单元格格式化）
+│   ├── classify_role.py            # verl colocate：训练 / rollout 分层判据
+│   └── diagnosis/                  # 结果分析层：pipeline / evidence / rules / render / validate / db
+├── LICENSE
+└── SPEC.md                         # 本文档（开发产物，不随 skill 合入）
 ```
 
 ---
@@ -89,7 +97,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ---
 
-## 4. 配置模块（config.py）
+## 4. 配置模块（scripts/config.py）
 
 | 全局 | 作用 |
 |------|------|
@@ -110,7 +118,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ---
 
-## 5. 通用检测算法（kmeans_detector.py）—— 唯一异常检测算法
+## 5. 通用检测算法（scripts/kmeans_detector.py）—— 唯一异常检测算法
 
 `general_anomaly_detection(ranks, values, anomaly_multiplier, ...)`，始终 **max 方向**（值偏大为异常）。返回 `(异常 rank 列表, 各异常 degradation 列表)`。
 
@@ -137,7 +145,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ---
 
-## 6. Profiling 数据解析（profilingdataparse.py）
+## 6. Profiling 数据解析（scripts/profilingdataparse.py）
 
 ### 6.1 表结构访问
 
@@ -184,7 +192,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ---
 
-## 7. 数据读取与快照构建（nodelevel_data_handler.py）
+## 7. 数据读取与快照构建（scripts/nodelevel_data_handler.py）
 
 - `get_cur_detection_info(job_path)`：
   - 遍历 `group_info_*.json`，收集 `valid_ranks` 与每卡拓扑。
@@ -199,7 +207,7 @@ ascend_pytorch_profiler_{N}.db（每 NPU 一个）
 
 ---
 
-## 8. 检测逻辑（nodelevel.py）
+## 8. 检测逻辑（scripts/nodelevel.py）
 
 常量列名：`ZP_Device`、`KERNEL_AICORE`（原 `ZP_Kernel`）、`ZP_Duration`、`ZP_Host`、`ZP_Bubble`、`DataLoader`、`MEMCPY_ASYNC`、`KERNEL_AIVEC`、`StepDuration`、`HostDuration`；`minRanksInGroup=2`。
 
@@ -276,9 +284,9 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 
 ---
 
-## 10. 检测结果汇总（summary_table.py）
+## 10. 检测结果汇总（scripts/summary_table.py）
 
-`summary_table.py` 只保留 ASCII 框线表的底层渲染（`_render_box_table`）与「检测结果 → 表格单元格」的格式化（`_summary_cells`），供控制台最终汇总表与文本报告摘要复用。早期版本的「故障联合分析」（硬件流水线因果推断、传播链、根因卡判定、`joint_failure_analysis.log`）已移除。
+`scripts/summary_table.py` 只保留 ASCII 框线表的底层渲染（`_render_box_table`）与「检测结果 → 表格单元格」的格式化（`_summary_cells`），供控制台最终汇总表与文本报告摘要复用。早期版本的「故障联合分析」（硬件流水线因果推断、传播链、根因卡判定、`joint_failure_analysis.log`）已移除。
 
 ### 10.1 类别与指标映射
 
@@ -293,7 +301,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 
 ### 10.2 最终输出逐类别汇总表（build_summary_table）
 
-`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **ASCII 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
+`build_summary_table(result, parallels=None, step_data=None) -> str`：生成 **ASCII 框线表格**（`_render_box_table`，按列宽 + CJK 显示宽度自动对齐），一行一个"有异常的类别"，**由 `scripts/main.py` 经 `_safe_print` 打印到调用方 agent 的 stdout，不进任何 log 文件**。表头：`类别 | 异常卡 | 劣化指数 | 劣化阈值`。
 
 - **类别**：`CATEGORY_DISPLAY`（大小写对齐 op_metric 指标列名），如 `KERNEL_AICORE`、`KERNEL_AIVEC`、`MEMCPY_ASYNC`、`comm`、`pp_comm`、`cpu`、`npu_bubble`（无括号描述）。
 - **异常卡**：由 result 各 key 解析——单卡 `rank 0, 3`；comm 组 `tp[0, 1]`；comm 单卡（Level-1，key 带域名如 `ep:5`）`ep[5]`；pp_comm 链路 `0->4`。
@@ -303,7 +311,7 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 
 ---
 
-## 11. 可视化（visualizer.py + markdown_viz.py）
+## 11. 可视化（scripts/visualizer.py + scripts/markdown_viz.py）
 
 - `visualizer.run_visualization`：控制台实时反馈 + 调用 `markdown_viz.write_report` 生成 `detection_report.log`（与其余输出同级）。
 - `markdown_viz`：文本报告，含指标排序柱状图、异常卡高亮、统计信息、各域集合通信带宽排序、各域带宽概览。其中 `cpu`（ZP_Host）段按**物理节点**聚合展示（一行一个节点、标签列显示 hostName、节点值取去首尾均值、异常节点标 `***`）；无节点映射时退回逐卡。
@@ -312,9 +320,9 @@ PP 传输（点对点）不在带宽白名单内，单独检测。PP 组取自 `
 
 ---
 
-## 12. 主入口（main.py）
+## 12. 主入口（scripts/main.py）
 
-- CLI：`python main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask|yes|no]`。
+- CLI：`python scripts/main.py path=<dir> [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask|yes|no]`。
 - `run_detection(input_path, compute=1.3, io=2.5, comm=1.3, skip_parsing=False, clean='ask', no_align=None)`：skill 调用入口，返回 `{category: {key: degradation}}`。
 - 流程：确认阈值（计算/IO/通信）→ 清理/解析 → 获取并行域与有效 ranks → 取最新 step 快照 → `delimit_detection` → `write_result` → `run_visualization` → `build_summary_table`（`_safe_print` 打印到 stdout，失败仅告警不中断）。
 

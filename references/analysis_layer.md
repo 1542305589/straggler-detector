@@ -2,10 +2,10 @@
 
 > 本层**只读**原始 profiler 数据（`ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`）与检测产物
 > （`straggler_detection_result.json`）；**不写库、不改检测数据、不重跑检测**。
-> 正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节写推测，且不得进入正式结论。
+> 正式结论**只由** `scripts/diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节写推测，且不得进入正式结论。
 >
-> 实现：`diagnose.py`（入口）→ `diagnosis/evidence.py`（证据）→ `diagnosis/rules.py`（规则）→ `diagnosis/render.py`（渲染）
-> / `diagnosis/validate.py`（校验门）。
+> 实现：`scripts/diagnose.py`（入口）→ `scripts/diagnosis/evidence.py`（证据）→ `scripts/diagnosis/rules.py`（规则）→ `scripts/diagnosis/render.py`（渲染）
+> / `scripts/diagnosis/validate.py`（校验门）。
 
 ---
 
@@ -18,10 +18,10 @@
 
 ## 2. 硬约束
 
-1. 只读：数据库一律以 `file:...?mode=ro` 只读 URI 打开（`diagnosis/db.py::open_ro`）。
-2. 不改检测：`main.py` 的检测流程、`nodelevel.py`、`kmeans_detector.py`、`profilingdataparse.py` 一律不动。
+1. 只读：数据库一律以 `file:...?mode=ro` 只读 URI 打开（`scripts/diagnosis/db.py::open_ro`）。
+2. 不改检测：`scripts/main.py` 的检测流程、`scripts/nodelevel.py`、`scripts/kmeans_detector.py`、`scripts/profilingdataparse.py` 一律不动。
 3. 正式结论只由规则产出：`verdict / primary / secondary_findings / rules_fired` 只能来自 `rules.evaluate()`。
-4. 模型不得越界：`speculations`（推测）不得出现在 `verdict / primary / rules_fired / actions` 里（由 `validate.py` 卡）。
+4. 模型不得越界：`speculations`（推测）不得出现在 `verdict / primary / rules_fired / actions` 里（由 `scripts/diagnosis/validate.py` 卡）。
 5. 字段缺失 → 该类别标 `not_evaluated` 并写入 `limitations`，**不得猜**。
 
 ---
@@ -100,7 +100,7 @@
 | `rules_checked` | 已检查的规则 ID 列表（含 `DET`） |
 | `limitations` | 未评估 / 数据缺失说明 |
 | `actions` | 按 `primary.category` 给出的处置建议 |
-| `validation` | 由 `diagnose.py` 写入：`{passed, errors, warnings}` |
+| `validation` | 由 `scripts/diagnose.py` 写入：`{passed, errors, warnings}` |
 | `speculations` | **仅由调用方（agent）填写**；不进正式结论 |
 
 `findings[]` 结构：
@@ -199,11 +199,11 @@
 ## 7. 推测区隔离与校验门
 
 - 报告第 9 节 `speculations[]`：每条写 `hypothesis` / `evidence_refs` / `verification`，标注 `confidence=speculative`。
-- `diagnosis/validate.py` 检查：
+- `scripts/diagnosis/validate.py` 检查：
   1. 每条 finding 必带 `rule_id`，`status` 合法；
   2. `evidence_refs` 每个点分路径都能在 `evidence.json` 里解析到（解析不到 → error）；
   3. 推测内容不得出现在 `verdict / primary / actions`（出现 → error）。
-- `diagnose.py` 把 `{passed, errors, warnings}` 写进 `formal_result.json.validation`；有 error 时报告顶部打警告，进程返回码 `2`。
+- `scripts/diagnose.py` 把 `{passed, errors, warnings}` 写进 `formal_result.json.validation`；有 error 时报告顶部打警告，进程返回码 `2`。
 
 ---
 
