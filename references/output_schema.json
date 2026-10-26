@@ -1,72 +1,143 @@
 {
   "$schema": "http://json-schema.org/draft-07/schema#",
-  "title": "straggler-detector 结果分析层输出",
+  "title": "straggler-detector 结果分析层 formal_result.json",
+  "description": "由 diagnose.py / main.py._print_diagnosis 产出（diagnosis/rules.py 的 evaluate() 返回值 + diagnose.py 补写的 validation）。字段与代码逐一对齐。",
   "type": "object",
-  "required": ["schema_version", "verdict", "confidence", "primary", "rules_fired", "rules_checked", "evidence", "limitations", "actions"],
   "additionalProperties": true,
+  "required": [
+    "schema_version",
+    "verdict",
+    "confidence",
+    "primary",
+    "conclusion_source",
+    "findings",
+    "rules_fired",
+    "rules_checked",
+    "limitations",
+    "actions"
+  ],
+  "definitions": {
+    "category": {
+      "description": "结论类别（含汇总用的 multiple / insufficient_evidence / none，以及无法归类时的 unknown）",
+      "type": "string",
+      "enum": ["comm", "compute", "io", "host", "npu_bubble", "pp_comm",
+               "multiple", "insufficient_evidence", "none", "unknown"]
+    },
+    "status": {
+      "type": "string",
+      "enum": ["authoritative", "fired", "conflict", "auxiliary", "not_evaluated"],
+      "description": "authoritative=检测层原始结论；fired=规则命中；conflict=与检测层冲突；auxiliary=检测层已下结论时的辅助发现；not_evaluated=证据不足未评估"
+    },
+    "confidence": {
+      "type": "string",
+      "enum": ["high", "medium", "low"]
+    },
+    "ranks": {
+      "type": "array",
+      "items": { "type": "integer" }
+    },
+    "finding": {
+      "type": "object",
+      "additionalProperties": true,
+      "required": ["rule_id", "category", "status", "summary"],
+      "properties": {
+        "rule_id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "必填。DET_<类别> 为检测层转写；其余为 A1–A4 / B1–B4 / C1–C4 / D1–D4 / E1–E4 / F1–F6"
+        },
+        "category": { "$ref": "#/definitions/category" },
+        "status": { "$ref": "#/definitions/status" },
+        "confidence": { "$ref": "#/definitions/confidence" },
+        "slow_side": { "$ref": "#/definitions/ranks" },
+        "baseline_side": { "$ref": "#/definitions/ranks" },
+        "waiters": { "$ref": "#/definitions/ranks" },
+        "metric": { "type": "string" },
+        "value": { "type": ["number", "null"] },
+        "baseline_value": { "type": ["number", "null"] },
+        "ratio": {
+          "type": ["number", "null"],
+          "description": "注意：内部可能为 float('inf')（基线为 0 时），此时 json.dump 会写出 Infinity —— 非严格 JSON"
+        },
+        "summary": { "type": "string" },
+        "evidence_refs": {
+          "type": "array",
+          "items": { "type": "string" },
+          "description": "指向 evidence.json 的点分路径；由 validate.py 逐个解析，解析不到即 error"
+        },
+        "derived": {
+          "type": "boolean",
+          "description": "true = 数值为派生比值，校验门跳过数值直接命中检查"
+        }
+      }
+    }
+  },
   "properties": {
     "schema_version": { "type": "string", "const": "1.0" },
     "verdict": {
       "type": "string",
-      "enum": ["slow_group", "slow_rank", "multiple", "no_anomaly", "insufficient_evidence"]
+      "enum": ["slow_rank", "slow_group", "multiple", "no_anomaly", "insufficient_evidence"]
     },
-    "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
+    "confidence": { "$ref": "#/definitions/confidence" },
+    "conclusion_source": {
+      "type": "string",
+      "enum": ["detection", "analysis_fallback"],
+      "description": "detection = 检测结果优先（分析层只做辅助）；analysis_fallback = 检测层无异常，分析层兜底（置信度封顶 medium）"
+    },
     "primary": {
       "type": "object",
+      "additionalProperties": true,
       "required": ["category", "rule_id", "summary"],
       "properties": {
-        "category": {
-          "type": "string",
-          "enum": ["comm", "compute", "io", "host", "pp_comm", "npu_bubble", "multiple"]
-        },
+        "category": { "$ref": "#/definitions/category" },
         "rule_id": { "type": "string" },
-        "slow_side": { "type": "array", "items": { "type": "integer" } },
-        "baseline_side": { "type": "array", "items": { "type": "integer" } },
-        "degradation": { "type": "number" },
+        "slow_side": { "$ref": "#/definitions/ranks" },
+        "baseline_side": { "$ref": "#/definitions/ranks" },
+        "degradation": { "type": ["number", "null"] },
         "summary": { "type": "string" }
       }
     },
     "secondary_findings": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["category", "rule_id", "summary"],
-        "properties": {
-          "category": {
-            "type": "string",
-            "enum": ["comm", "compute", "io", "host", "pp_comm", "npu_bubble", "multiple"]
-          },
-          "rule_id": { "type": "string" },
-          "slow_side": { "type": "array", "items": { "type": "integer" } },
-          "baseline_side": { "type": "array", "items": { "type": "integer" } },
-          "ratio": { "type": "number" },
-          "confidence": { "type": "string", "enum": ["high", "medium", "low"] },
-          "summary": { "type": "string" }
-        }
-      }
+      "items": { "$ref": "#/definitions/finding" }
+    },
+    "findings": {
+      "type": "array",
+      "items": { "$ref": "#/definitions/finding" },
+      "description": "全部结论项（含 authoritative / auxiliary / conflict / not_evaluated），每条带 rule_id 与 evidence_refs"
     },
     "rules_fired": { "type": "array", "items": { "type": "string" } },
-    "rules_checked": { "type": "array", "items": { "type": "string" } },
-    "evidence": {
+    "rules_checked": {
       "type": "array",
-      "items": {
-        "type": "object",
-        "required": ["source", "field", "direction"],
-        "properties": {
-          "source": {
-            "type": "string",
-            "enum": ["straggler_detection_result.json", "detection_report.log"]
-          },
-          "field": { "type": "string" },
-          "slow_value": { "type": "number" },
-          "baseline_value": { "type": "number" },
-          "ratio": { "type": "number" },
-          "direction": { "type": "string", "enum": ["max", "min"] },
-          "note": { "type": "string" }
-        }
-      }
+      "items": { "type": "string" },
+      "description": "已检查的规则 ID；始终包含 DET"
     },
     "limitations": { "type": "array", "items": { "type": "string" } },
-    "actions": { "type": "array", "items": { "type": "string" } }
+    "actions": { "type": "array", "items": { "type": "string" } },
+    "validation": {
+      "type": "object",
+      "additionalProperties": true,
+      "description": "由 diagnose.py 写入（校验门结果）",
+      "properties": {
+        "passed": { "type": "boolean" },
+        "errors": { "type": "array", "items": { "type": "string" } },
+        "warnings": { "type": "array", "items": { "type": "string" } }
+      }
+    },
+    "speculations": {
+      "type": "array",
+      "description": "仅由调用方 agent 填写；validate.py 会检查其内容不得出现在 verdict / primary / actions",
+      "items": {
+        "type": "object",
+        "additionalProperties": true,
+        "required": ["hypothesis"],
+        "properties": {
+          "hypothesis": { "type": "string" },
+          "evidence_refs": { "type": "array", "items": { "type": "string" } },
+          "verification": { "type": "string" },
+          "confidence": { "type": "string", "const": "speculative" }
+        }
+      }
+    }
   }
 }

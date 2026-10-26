@@ -22,19 +22,11 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ## 结果分析层（解读已有结果，不重跑检测）
 
-> 本层只读 `straggler_detection_result.json` 和 `detection_report.log`；不读 DB、不跑 SQL、不写脚本。需要额外数据时输出 `insufficient_evidence`，并列出缺失项。
-
 - **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
-- **输入**（**只允许**这两个文件，字段见 `references/analysis_layer.md` §2）：
-  - `<数据目录>/straggler_detection_result.json`
-  - `<数据目录>/detection_report.log`
-- **硬约束**：不改检测代码；不读 `.db`、不跑 SQL、不写 Python 分析器；规则只能引用这两个文件里**已有**的字段；字段缺失 → `insufficient_evidence`；检测与报告冲突 → 标「一致性异常，建议复核」。
-- **规则库（A–E）、执行顺序、口径对照、禁止的规则、A3 回归样例、验收标准**：见 `references/analysis_layer.md`。
-- **输出契约**（固定 JSON schema 见 `references/output_schema.json`）：
-  - **固定 JSON**：`schema_version / verdict / confidence / primary / secondary_findings / rules_fired / rules_checked / evidence / limitations / actions`。
-  - **固定 Markdown**：`数据概览 → 检测结论 → 慢/基准侧 → 类别 → 规则命中与证据 → 一致性 → 结论建议 → 置信度与局限`。
-  - 每条结论必须带**规则 ID** + 证据引用 `<source>::<field> = <slow> vs <baseline>, ratio=<x>, direction=<max|min>`；`source` 只能是上面两个文件，禁止出现 DB 表名 / SQL / 脚本输出。
-- **置信度**：高 = JSON 异常 + 报告同向 + 模式清晰 + 无缺失；中 = 仅一方 / 单 opType / 报告未报但超阈值；低 = 单组域 / 无带宽 / 报告缺失 / 规则冲突；`—` = `insufficient_evidence`。
+- **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`。
+- **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
+- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻，且不得进入正式结论。
+- **详细规格**（规则库 A–E / F1–F6、输出契约、置信度、校验门、回归样例）见 `references/analysis_layer.md`；JSON schema 见 `references/output_schema.json`。
 
 ## 检测的 7 类指标
 
@@ -54,7 +46,7 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ### 正确运行目录
 
-所有命令都应在**本 skill 目录**（含 `main.py` 的目录）内执行：`cd "C:\Users\n30082019\.claude\skills\straggler-detector"`。
+所有命令都应在**本 skill 目录**（含 `main.py` 的目录）内执行。agent 调用时使用本 skill 自身的目录（`SKILL.md` 所在目录），**不要写死任何绝对路径**。
 
 ### 命令行执行
 
@@ -149,7 +141,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 - **无通信域名时（情况 A，group_name 全空）的检测退化**：按 `HOST_INFO.hostUid` 物理节点分组（相同 hostUid 的 rank 为一组）作为检测组，检测计算/IO/通信单卡类指标；通信域组间指标（`comm`，`HasNamedDomain=False` 时）**直接跳过**（无域名无法解释对应 tp/ep）。Host 维持节点间拉齐，Bubble 维持固定阈值。
 - **有命名域但未命中检测优先级（情况 B）**：检测组同样退化到物理节点分组，但通信域组间指标**仍然检测**（`HasNamedDomain=True`），检出慢通信组时可带域名。
 
-## 结果分析层 v2（确定性证据 + 规则 + 推测区）
+## 结果分析层：运行方式与产物
 
 检测完成后，可单独运行确定性诊断（不重跑检测、不改检测代码）：
 
