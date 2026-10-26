@@ -379,6 +379,19 @@ def console_evidence(ev: Dict, result: Dict) -> str:
     return "\n".join(lines)
 
 
+def format_artifacts(items: List[tuple]) -> List[str]:
+    """把 [(标签, 路径), ...] 格式化成「标签: 绝对路径」的行。
+
+    不同数据级别的产物目录不同（levelnone/level0/level1 落在数据目录或 job 输出目录，
+    cluster 单文件落在 `<db 所在目录>/detection_output`，diagnose.py 由 `out=` 决定），
+    统一打印**绝对路径**，避免使用者不知道产物到底写在哪。
+    """
+    lines = []
+    for label, path in items:
+        lines.append(f"{label}: {os.path.abspath(path)}" if path else f"{label}: -")
+    return lines
+
+
 def write_outputs(ev: Dict, result: Dict, out_dir: str) -> Dict[str, str]:
     os.makedirs(out_dir, exist_ok=True)
     result_path = os.path.join(out_dir, "formal_result.json")

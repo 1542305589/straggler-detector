@@ -189,11 +189,14 @@ def main():
             os.path.join(out_dir, "analysis_result", "detection_report.log"),  # 旧布局兜底
             os.path.join(path, "analysis_result", "detection_report.log"),
         ) if os.path.isfile(p)), "")
-        print(f"检测结果: {det_result}")
-        print(f"检测报告: {det_report}")
-        print(f"诊断报告: {paths['report']}")
-        print(f"完整证据: {paths['evidence']}")
-        print(f"诊断结论: {paths['result']}")
+        for line in render.format_artifacts([
+            ("检测结果", det_result),
+            ("检测报告", det_report),
+            ("诊断报告", paths["report"]),
+            ("完整证据", paths["evidence"]),
+            ("诊断结论", paths["result"]),
+        ]):
+            print(line)
     return 0 if not errors else 2
 
 
