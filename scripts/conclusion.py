@@ -16,9 +16,12 @@ _CATEGORY_CN = {
 _ORDER = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
           "cpu", "npu_bubble", "pp_comm")
 _LEVEL_NOTE = {
-    "levelnone": "本次数据只含 MsTx，没有计算 / 搬运算子，计算类与搬运类未参与检测。",
-    "level0": "level0 数据没有通信带宽表，通信带宽未评估（**不能当作正常**）。",
-    "level1": "通信按 analysis.db 的两级带宽口径评估。",
+    "levelnone": "本次数据只含 MsTx，没有计算 / 搬运算子，计算类与搬运类未参与检测；"
+                 "通信带宽由 COMMUNICATION_OP 粗算（跨 rank 对齐取组内最短时长）。",
+    "level0": "level0 没有 CommAnalyzerBandwidth，通信带宽由 COMMUNICATION_OP 粗算"
+              "（默认跨 rank 对齐取组内最短时长；no-align 时取全体 rank 前 10% 均值），"
+              "精度低于 level1；也没有 CommAnalyzerTime，transit / idle 为近似值。",
+    "level1": "通信按 analysis.db 的 CommAnalyzerBandwidth 两级口径评估。",
     "cluster": "cluster 单文件只评估通信，其他类别未参与。",
 }
 
