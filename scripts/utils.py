@@ -96,6 +96,8 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                 display_key = key
             if is_bubble:
                 print(f"  {i+1}. {display_key} → bubble = {value:.3f}")
+            elif category == "pp_comm":
+                print(f"  {i+1}. {display_key} → 等待占比 = {value * 100:.2f}%")
             else:
                 print(f"  {i+1}. {display_key} → 劣化指数 = {value:.3f}")
             json_items.append({

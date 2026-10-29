@@ -23,6 +23,7 @@ def parse_args(args: list) -> Dict[str, Any]:
         'compute': 1.3,
         'io': 2.5,
         'comm': 1.3,
+        'pp_comm': 5.0,
         'no_align': False,
         'clean': 'ask'
     }

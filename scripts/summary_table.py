@@ -103,7 +103,7 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
             ranks = _parse_ranks_from_key(key)
             label = "[" + ", ".join(str(r) for r in ranks) + "]"
             cards_parts.append(label)
-            deg_parts.append(f"{label}:{val:g}")
+            deg_parts.append(f"{label}:{val * 100:g}%")
             dev_parts.append(", ".join(_rank_to_device(r) for r in ranks))
         cards_str = "，".join(cards_parts)
         deg_str = "，".join(deg_parts)
