@@ -342,7 +342,9 @@ def _pp_line(items: List[Dict]) -> str:
     parts = []
     for i in items:
         pct = float(i.get("metric_value") or 0) * 100.0
-        parts.append(f"{_ranks_text(i.get('display_key'))} 的点对点等待时间占会话时长约 {pct:.2f}%")
+        ranks = sorted({int(r) for r in _ranks_from_key(i.get("display_key"))})
+        label = f"pp[{','.join(str(r) for r in ranks)}]" if ranks else _ranks_text(i.get("display_key"))
+        parts.append(f"{label} 的点对点等待时间占会话时长约 {pct:.2f}%")
     return f"{_CATEGORY_CN.get('pp_comm')}：" + "、".join(parts) + f"，超过阈值 {_pp_percent()}%"
 
 def _bubble_line(items: List[Dict]) -> str:
