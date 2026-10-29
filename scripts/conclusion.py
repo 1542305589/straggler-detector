@@ -212,6 +212,59 @@ def _detail_line(cat: str, items: List[Dict], metric_dir: str,
     return f"{label}：" + "。".join(parts)
 
 
+def _node_ranks_map() -> Dict[str, List[int]]:
+    """节点名 -> 该节点的 rank 列表（来自 config 的 host 映射）。"""
+    try:
+        import config
+        host_map = config.get_host_rank_map() or {}
+    except Exception:
+        return {}
+    out: Dict[str, List[int]] = {}
+    for rank_str in host_map:
+        try:
+            r = int(rank_str)
+        except (TypeError, ValueError):
+            continue
+        try:
+            label = config.get_node_name(r)
+        except Exception:
+            label = ""
+        if label:
+            out.setdefault(str(label), []).append(r)
+    return {k: sorted(v) for k, v in out.items()}
+
+def _node_value(metric_dir: str, nodes: Dict[str, List[int]], name: str):
+    ranks = nodes.get(name) or []
+    vals = [v for v in (_read_metric(metric_dir, r, "ZP_Host") for r in ranks) if v is not None]
+    if not vals:
+        return None
+    return sum(vals) / len(vals)
+
+def _node_line(items: List[Dict], metric_dir: str) -> str:
+    """cpu 类：节点维度描述（基线 = 其它节点）。"""
+    label = _CATEGORY_CN.get("cpu", "cpu")
+    nodes = _node_ranks_map()
+    names = [str(i.get("display_key")) for i in items]
+    ratios = "、".join(
+        f"{n} 相对其它节点基线约 {float(i.get('metric_value') or 0):.2f} 倍"
+        for n, i in zip(names, items))
+    sentence = ratios
+    values = []
+    for n in names:
+        v = _node_value(metric_dir, nodes, n)
+        if v is not None:
+            values.append(f"{n} 为 {v:.3f} ms")
+    if values:
+        sentence += "，" + "，".join(values)
+    base_nodes = [n for n in nodes if n not in names]
+    base_vals = [v for v in (_node_value(metric_dir, nodes, n) for n in base_nodes) if v is not None]
+    if base_vals:
+        who = "、".join(base_nodes)
+        sentence += (f"，其它节点基线平均（{who}）为 {sum(base_vals) / len(base_vals):.3f} ms")
+    else:
+        sentence += "，其它节点基线无可用数据"
+    return f"{label}：{sentence}"
+
 def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
            data_dir: str = "") -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
@@ -233,7 +286,9 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     lines.append("")
     mapping, _groups = _detection_groups(data_dir) if data_dir else ({}, [])
     for cat, items in found:
-        if cat in _DETAIL_CATS:
+        if cat == "cpu":
+            lines.append(f"- {_node_line(items, metric_dir)}")
+        elif cat in _DETAIL_CATS:
             lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
         else:
             detail = "、".join(
