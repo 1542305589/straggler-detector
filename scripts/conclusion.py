@@ -375,15 +375,17 @@ def _parse_comm_key(key) -> tuple:
         ranks = []
     return m.group(1), ranks
 
-def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
+_COMM_NOTE = "（取该组内劣化最严重的［并行域, 算子, Count］组合）"
+
+def _comm_lines(items: List[Dict], data_dir: str = "", level: str = "") -> List[str]:
     """通信类描述。基线一律排除本类别已判为异常的卡 / 组。
 
-    level1 / cluster 为两级口径：Level-1 = 组内逐卡（单卡键），Level-2 = 组间逐组（组键）。
+    level1 / cluster 为两级口径，分两段输出：组内逐卡检测、组间逐组检测。
     """
     domains = _domain_groups_map(data_dir) if data_dir else {}
     two_level = level in ("level1", "cluster")
 
-    parsed = [(i, ) + _parse_comm_key(i.get("display_key")) for i in items]
+    parsed = [(i,) + _parse_comm_key(i.get("display_key")) for i in items]
     flagged_ranks: Dict[str, set] = {}
     flagged_groups: Dict[str, List[List[int]]] = {}
     for _i, domain, target in parsed:
@@ -399,14 +401,14 @@ def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
         for g in groups:
             if exclude and g == exclude:
                 continue
-            if set(g) & bad:          # 含已判异常卡 -> 不能当基线
+            if set(g) & bad:
                 continue
             out.append(g)
         return out
 
-    parts: List[str] = []
-    level1_parts: List[str] = []
-    level2_parts: List[str] = []
+    plain: List[str] = []
+    within: List[str] = []
+    between: List[str] = []
     for item, domain, target in parsed:
         ratio = float(item.get("metric_value") or 0)
         groups = domains.get(domain) or []
@@ -423,10 +425,7 @@ def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
                      if domain and target else _ranks_text(item.get("display_key")))
             head = f"{domain} 域的 " if not two_level and domain else ""
             text = f"{head}{label} 相对域内基线（{who}）约 {ratio:.2f} 倍"
-            if two_level:
-                level2_parts.append(f"Level-2（组间逐组）" + text)
-            else:
-                parts.append(text)
+            (between if two_level else plain).append(text)
             continue
 
         rank = target[0]
@@ -439,12 +438,17 @@ def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
             who = "同组其它卡均为异常卡，无可用基线"
         else:
             who = "组信息不可用"
-        level1_parts.append(
-            f"Level-1（组内逐卡）{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
+        within.append(f"{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
 
-    ordered = parts + level1_parts + level2_parts
-    return (f"{_CATEGORY_CN.get('comm')}：" + "；".join(ordered)
-            + "（取该组内劣化最严重的［并行域, 算子, Count］组合）")
+    label = _CATEGORY_CN.get("comm")
+    out: List[str] = []
+    if plain:
+        out.append(f"{label}：" + "；".join(plain) + _COMM_NOTE)
+    if within:
+        out.append(f"{label} · 组内逐卡检测：" + "；".join(within) + _COMM_NOTE)
+    if between:
+        out.append(f"{label} · 组间逐组检测：" + "；".join(between) + _COMM_NOTE)
+    return out
 
 def _pp_line(items: List[Dict]) -> str:
     parts = []
@@ -485,7 +489,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         elif cat in _DETAIL_CATS:
             lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
         elif cat == "comm":
-            lines.append(f"- {_comm_line(items, data_dir, level)}")
+            lines.extend(f"- {ln}" for ln in _comm_lines(items, data_dir, level))
         elif cat == "pp_comm":
             lines.append(f"- {_pp_line(items)}")
         elif cat == "npu_bubble":
