@@ -48,6 +48,13 @@ def _first_rank(item: Dict) -> str:
     ranks = _ranks_from_key(item.get("display_key"))
     return str(ranks[0]) if ranks else str(item.get("display_key"))
 
+def _pp_percent() -> str:
+    try:
+        import config
+        return f"{config.PP_WAIT_RATIO_THRESHOLD * 100:g}"
+    except Exception:
+        return "5"
+
 def _fmt_ranks(ranks) -> str:
     rs = sorted({int(r) for r in (ranks or [])})
     if not rs:
@@ -238,7 +245,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。本次阈值："
         f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{thresholds[0]} 倍、"
         f"IO/CPU（针对MEMCPY_ASYNC和Host）{thresholds[1]} 倍、"
-        f"通信（针对集合通信和PP点对点通信）{thresholds[2]} 倍。")
+        f"集合通信（comm）{thresholds[2]} 倍、"
+        f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%。")
 
     if any(cat == "memcpy_async" for cat, _ in found):
         lines.append("")

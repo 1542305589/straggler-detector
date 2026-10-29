@@ -66,7 +66,7 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ```bash
 cd <本 skill 目录>          # SKILL.md 所在目录
-python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
+python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp_comm=5 clean=ask
 # 可选：追加 no-align 关闭慢通信带宽的跨 rank 对齐
 ```
 
@@ -75,7 +75,7 @@ agent 调用时使用本 skill 自身的目录，**不要写死任何绝对路�
 ### 命令行执行
 
 ```bash
-python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
+python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 pp_comm=5 clean=ask
 ```
 
 参数说明：
@@ -84,11 +84,12 @@ python scripts/main.py path=/path/to/data compute=1.3 io=2.5 comm=1.3 clean=ask
 | `path` | 数据目录，或 cluster db 单文件（文件名不限，含 `CommunicationGroupMapping`/`ClusterCommunicationBandwidth` 表即可）（必需） | - |
 | `compute` | 计算类阈值（KERNEL_AICORE / kernel_aivec） | 1.3 |
 | `io` | IO/CPU 类阈值（cpu / memcpy_async） | 2.5 |
-| `comm` | 通信类阈值（comm / pp_comm） | 1.3 |
+| `comm` | 集合通信阈值（**只作用于 comm**） | 1.3 |
+| `pp_comm` | PP 点对点通信等待占比阈值（百分比，只作用于 pp_comm） | 5 |
 | `clean` | `yes`/`no`/`ask`：是否清理中间数据并重新解析 | `ask` |
 | `no-align` | 关闭慢通信带宽的跨 rank 对齐（裸参，或 `no-align=true`） | 关（跨 rank 对齐） |
 
-（`npu_bubble` 为固定硬阈值 `< 5000ns`，不询问。）
+（`npu_bubble` 为固定硬阈值 `< 5000ns`，不询问；`pp_comm` 仅在 `levelnone` / `level0` 询问。）
 
 ### 作为 Python 模块调用
 
@@ -103,15 +104,21 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 每次执行检测前，**必须依次询问以下参数**，等用户明确答复后再执行，**禁止跳过询问环节**：
 
-1. **三组检测阈值**——**逐个询问**（一次只问一个阈值，禁止把多个阈值合成一个问题）：
-   - 计算类阈值 `compute`（KERNEL_AICORE / kernel_aivec），固定候选：`1.3`（默认）
-   - IO/CPU 类阈值 `io`（cpu / memcpy_async），固定候选：`2.5`（默认）
-   - 通信类阈值 `comm`（comm / pp_comm），固定候选：`1.3`（默认）
+1. **四组检测阈值**——**逐个询问**（一次只问一个阈值，禁止把多个阈值合成一个问题）：
+   - 计算类阈值 `compute`（作用于 KERNEL_AICORE / kernel_aivec），固定候选：`1.3`（默认）
+   - IO/CPU 类阈值 `io`（作用于 memcpy_async / cpu），固定候选：`2.5`（默认）
+   - 集合通信阈值 `comm`（**只作用于 comm，不含 pp_comm**），固定候选：`1.3`（默认）
+   - PP 点对点通信等待占比阈值 `pp_comm`（作用于 pp_comm，单位是百分比），固定候选：
+     `5`（默认）/ `10` / `15`
    - `npu_bubble` 固定硬阈值 `< 5000ns`，不询问。
    - **候选项必须恒定**：同一阈值每次询问展示的候选项完全一致，不要临时增删变化。
    - **不要自行添加「其他」选项**：询问工具自带「输入其他内容」，自定义值走它即可。
-   - 用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值>`。
-   - **按数据级别决定问哪几组**：`cluster`（单文件 db）只问 `comm`；`levelnone`（TASK 仅 MsTx）只问 `io` + `comm`（`cpu` 用 io、`comm`/`pp_comm` 用 comm，计算类已跳过）；`level0`/`level1` 问 `compute`+`io`+`comm`。
+   - 用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值> pp_comm=<百分比>`。
+   - **按数据级别决定问哪几组**：
+     - `cluster`（单文件 db）只问 `comm`（不做 pp_comm 检测，**不要问**）；
+     - `levelnone`（TASK 仅 MsTx）问 `io` + `comm` + `pp_comm`（计算类已跳过）；
+     - `level0` 问 `compute` + `io` + `comm` + `pp_comm`；
+     - `level1` 问 `compute` + `io` + `comm`（level1 不做 pp_comm 检测，**不要问**）。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`

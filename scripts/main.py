@@ -40,7 +40,7 @@ def parse_args(args: list) -> Dict[str, Any]:
         key, val = parts[0], parts[1]
         if key == 'path':
             result['path'] = val
-        elif key in ('compute', 'io', 'comm'):
+        elif key in ('compute', 'io', 'comm', 'pp_comm', 'pp'):
             try:
                 f = float(val)
                 if f > 0:
@@ -291,6 +291,7 @@ def main():
     thresholds = (parsed['compute'], parsed['io'], parsed['comm'])
     clean_mode = parsed['clean']
     config.set_comm_no_align(parsed['no_align'])
+    config.PP_WAIT_RATIO_THRESHOLD = parsed['pp_comm'] / 100.0
     if not input_path:
         logger.error("[SLOWNODE ALGO] Missing required parameter: path=/your/data/dir")
         sys.exit(1)
