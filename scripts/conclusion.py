@@ -6,9 +6,9 @@ import re
 from typing import Dict, List, Optional, Tuple
 
 _CATEGORY_CN = {
-    "KERNEL_AICORE": "计算类（AI Core 算子）",
-    "kernel_aivec": "计算类（AI Vector 算子）",
-    "memcpy_async": "内存搬运类",
+    "KERNEL_AICORE": "KERNEL_AICORE类算子",
+    "kernel_aivec": "KERNEL_AIVEC类算子",
+    "memcpy_async": "MEMCPY_ASYNC类算子",
     "comm": "通信类",
     "cpu": "主机侧（Host 下发）",
     "npu_bubble": "NPU 气泡（算子间空转）",
@@ -29,12 +29,13 @@ _LEVEL_NOTE = {
     "cluster": "cluster 单文件只评估通信，其他类别未参与。",
 }
 _MEMCPY_NOTE = """关于 memcpy_async 的说明：该指标统计的是「单次拷贝算子的平均耗时」，而这类任务里混了
-外部拷贝（aclrtMemcpyAsync）、设备内拷贝和集合通信拷贝。下面这些已知情况会让少数卡的均值
+主机-设备拷贝（H2D/D2H）、设备内拷贝（D2D）和集合通信拷贝。下面这些已知情况会让少数卡的均值
 结构性偏高，看着像慢卡、其实不是：
 
-1. **PP>1 且 TP>1**：只有首/末 stage 的 tp0 需要把 data/label 从主机搬到卡上、再广播给同 TP 组，
-   其余卡为 0。例：PP4TP4 时就是 rank0 和 rank12。
-2. **PP=1 且 TP>1**（如 TP4DP4）：各 DP 组的 tp0 承担同样的 H2D，例：rank0/4/8/12。
+1. **PP>1 且 TP>1（Megatron 框架特有）**：只有首/末 stage 的 tp0 需要把 data/label 从主机搬到
+   卡上、再广播给同 TP 组，其余卡为 0。例：PP4TP4 时就是 rank0 和 rank12。
+2. **PP=1 且 TP>1（Megatron 框架特有，如 TP4DP4）**：各 DP 组的 tp0 承担同样的 H2D，
+   例：rank0/4/8/12。
 3. **任务数不均**：任务少的卡缺少短任务，平均值容易贴线偏高。
 4. **采集窗口残缺**：某些卡 STEP_TIME 只覆盖少量 step 时，均值会假性偏移，还会把其它卡带成
    镜像误报。
@@ -234,8 +235,10 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
             lines.append(f"- {_CATEGORY_CN.get(cat, cat)}：{detail}")
     lines.append("")
     lines.append(
-        "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。"
-        f"本次阈值：计算 {thresholds[0]} 倍、IO/CPU {thresholds[1]} 倍、通信 {thresholds[2]} 倍。")
+        "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。本次阈值："
+        f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{thresholds[0]} 倍、"
+        f"IO/CPU（针对MEMCPY_ASYNC和Host）{thresholds[1]} 倍、"
+        f"通信（针对集合通信和PP点对点通信）{thresholds[2]} 倍。")
 
     if any(cat == "memcpy_async" for cat, _ in found):
         lines.append("")
@@ -249,18 +252,14 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     return "\n".join(lines)
 
 
-def write(out_dir: str, level: str, thresholds):
-    """读检测结果 JSON → 生成 conclusion.md，返回 (文本, 路径)。"""
-    det: Dict = {}
+def render_from_dir(out_dir: str, level: str, thresholds) -> str:
+    """读检测结果 JSON，返回结论文本（只在控制台输出，不落盘）。"""
+    det = {}
     src = os.path.join(out_dir, "straggler_detection_result.json")
     try:
         with open(src, "r", encoding="utf-8") as f:
             det = json.load(f) or {}
     except (OSError, ValueError):
         det = {}
-    text = render(det, level, thresholds,
+    return render(det, level, thresholds,
                   metric_dir=os.path.join(out_dir, "op_metric"), data_dir=out_dir)
-    path = os.path.join(out_dir, "conclusion.md")
-    with open(path, "w", encoding="utf-8") as f:
-        f.write(text)
-    return text, path

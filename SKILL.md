@@ -26,14 +26,14 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ## 检测结论（自然语言）
 
-- 检测结束后自动生成 `conclusion.md`：把 `straggler_detection_result.json` 那张表逐类别翻成
-  自然语言（哪张卡 / 哪个组、相对组内基线几倍、该卡实测耗时与组内基线均值、哪些类别未命中）。
-- **最终回答里必须原样引用 `conclusion.md` 的内容**，逐字照抄（含括号里的基线 rank 列表），
-  **禁止改写、精简、换说法，禁止补充 `conclusion.md` 里没有的解释或推断**。
+- 检测结束后**直接在控制台输出**结论文本（不落盘）：把 `straggler_detection_result.json` 那张表
+  逐类别翻成自然语言（哪张卡 / 哪个组、相对组内基线几倍、该卡实测耗时与组内基线均值、哪些类别未命中）。
+- **最终回答里必须原样引用控制台输出的结论**，逐字照抄（含括号里的基线 rank 列表），
+  **禁止改写、精简、换说法，禁止补充结论里没有的解释或推断**。
 - **禁止**提 `verdict`、`rule_id`、置信度、检测组判定逻辑等内部概念。
 - **禁止**自行添加数据级别限制。特别地：level0 的通信带宽是 `COMMUNICATION_OP` **粗算**的
   （跨 rank 对齐取组内最短时长 / no-align 取前 10% 均值），**不要说成"未评估"或"没有带宽数据"**。
-  `conclusion.md` 里怎么写，你就怎么说；它没写的，不要补。
+  控制台怎么输出，你就怎么说；它没写的，不要补。
 
 ## 检测的 7 类指标
 
@@ -124,9 +124,9 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 必须在最终回答中原样列出产物绝对路径
 
-检测结束后，程序会在 stdout 打印 3 行产物路径（**检测结果 / 检测报告 / 检测结论**），且**已经是绝对路径**。
+检测结束后，程序会在 stdout 打印 2 行产物路径（**检测结果 / 检测报告**），且**已经是绝对路径**。
 
-**最终回答里必须原样带上这 3 行绝对路径**，禁止：
+**最终回答里必须原样带上这 2 行绝对路径**，禁止：
 - 只写文件名（如 `straggler_detection_result.json`）或省略目录；
 - 省略其中几个、或用"产物：…等"概括。
 
@@ -134,7 +134,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`conclusion.md`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
 
 ## 输入数据
 
@@ -181,7 +181,6 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 2. `op_metric/group_info_*.json` — 并行域信息
 3. `straggler_detection_result.json` — 检测结果（含全部类别）
 4. `detection_report.log` — 可视化详情报告
-5. 结论只写 `conclusion.md`；不再生成 `evidence.json` / `formal_result.json` / `diagnosis_report.md`（结论层已移除）
 6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、**通信单卡（Level-1 组内）如 `ep[5]:2.5`**、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
