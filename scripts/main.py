@@ -116,7 +116,7 @@ def _print_conclusion(job_path: str, detection: dict, thresholds: tuple):
             level = nodelevel_data_handler.detect_profiling_level(job_path)
         except Exception:
             pass
-        text = conclusion.render_from_dir(out, level, thresholds)
+        text = conclusion.render_from_dir(out, level, thresholds, source_path=job_path)
         _safe_print("")
         _safe_print(text)
         for line in (f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}",

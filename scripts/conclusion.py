@@ -293,10 +293,43 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
         sentence += "，其它节点基线无可用数据"
     return f"{label}：{sentence}"
 
-def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
-    """通信域 -> 该域内的所有 Group（rank 列表）。"""
-    metric_dir = os.path.join(data_dir, "op_metric")
+def _cluster_domain_groups(db_path: str) -> Dict[str, List[List[int]]]:
+    """cluster_analysis.db 的 CommunicationGroupMapping -> {域: [组rank列表]}。"""
     out: Dict[str, List[List[int]]] = {}
+    try:
+        import sqlite3
+        con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    except Exception:
+        return out
+    try:
+        cols = [r[1] for r in con.execute("PRAGMA table_info(CommunicationGroupMapping)")]
+        if not cols:
+            return out
+        name_col = "group_name" if "group_name" in cols else (
+            "pg_name" if "pg_name" in cols else cols[0])
+        rank_col = "rank_set" if "rank_set" in cols else cols[-1]
+        for name, ranks in con.execute(
+                "SELECT %s, %s FROM CommunicationGroupMapping" % (name_col, rank_col)):
+            ranks_list = sorted(int(x) for x in re.findall(r"\d+", str(ranks)))
+            if not ranks_list:
+                continue
+            bucket = out.setdefault(str(name), [])
+            if ranks_list not in bucket:
+                bucket.append(ranks_list)
+    except Exception:
+        pass
+    finally:
+        con.close()
+    return {k: sorted(v) for k, v in out.items()}
+
+def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
+    """通信域 -> 该域内的所有 Group。支持 op_metric 目录与 cluster 单文件 db。"""
+    if data_dir and os.path.isfile(data_dir):
+        return _cluster_domain_groups(data_dir)
+    metric_dir = os.path.join(data_dir, "op_metric") if data_dir else ""
+    out: Dict[str, List[List[int]]] = {}
+    if not metric_dir:
+        return out
     try:
         names = sorted(os.listdir(metric_dir))
     except OSError:
@@ -490,7 +523,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     return "\n".join(lines)
 
 
-def render_from_dir(out_dir: str, level: str, thresholds) -> str:
+def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "") -> str:
     """读检测结果 JSON，返回结论文本（只在控制台输出，不落盘）。"""
     det = {}
     src = os.path.join(out_dir, "straggler_detection_result.json")
@@ -500,4 +533,5 @@ def render_from_dir(out_dir: str, level: str, thresholds) -> str:
     except (OSError, ValueError):
         det = {}
     return render(det, level, thresholds,
-                  metric_dir=os.path.join(out_dir, "op_metric"), data_dir=out_dir)
+                  metric_dir=os.path.join(out_dir, "op_metric"),
+                  data_dir=source_path or out_dir)
