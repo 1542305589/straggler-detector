@@ -303,7 +303,7 @@ def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
 
 def _groups_text(domain: str, groups: List[List[int]], limit: int = 6) -> str:
     shown = groups[:limit]
-    text = "、".join(f"{domain} [{', '.join(str(r) for r in g)}]" for g in shown)
+    text = "、".join(f"{domain}[{','.join(str(r) for r in g)}]" for g in shown)
     if len(groups) > limit:
         text += f" 等 {len(groups)} 个组"
     return text
@@ -330,7 +330,7 @@ def _comm_line(items: List[Dict], data_dir: str = "") -> str:
             who = "域内无其它组可比"
         else:
             who = "域内组信息不可用"
-        label = f"{domain} [{', '.join(str(r) for r in target)}]" if domain and target else \
+        label = f"{domain}[{','.join(str(r) for r in target)}]" if domain and target else \
             _ranks_text(i.get("display_key"))
         head = f"{domain} 域的 " if domain else ""
         parts.append(f"{head}{label} 相对域内基线（{who}）约 "
