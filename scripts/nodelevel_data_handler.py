@@ -445,11 +445,13 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
     logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
 
-def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], List[Tuple[str, str, int, int, float]]]:
-    con = sqlite3.connect(db_path)
-    cur = con.cursor()
-    g2pg: Dict[str, str] = {}
-    parallels: Dict[str, List[List[int]]] = {}
+def cluster_group_map(cur):
+    """CommunicationGroupMapping -> (group_name->pg_name, pg_name->[ranks])。
+
+    检测层与结论层共用这一份实现，保证域名（pg_name）、过滤规则、rank 解析一致。
+    """
+    g2pg = {}
+    parallels = {}
     cur.execute(
         "SELECT group_name, pg_name, rank_set FROM CommunicationGroupMapping "
         "WHERE type='collective' AND pg_name IS NOT NULL AND pg_name != ''"
@@ -461,6 +463,21 @@ def load_cluster_comm(db_path: str) -> Tuple[Dict[str, List[List[int]]], List[Tu
         ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
         if len(ranks) >= 2:
             parallels.setdefault(pg, []).append(ranks)
+    return g2pg, parallels
+
+def load_cluster_parallels(db_path: str):
+    """只读 CommunicationGroupMapping，返回 {并行域: [组 rank 列表]}。"""
+    con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    try:
+        _g2pg, parallels = cluster_group_map(con.cursor())
+        return parallels
+    finally:
+        con.close()
+
+def load_cluster_comm(db_path: str):
+    con = sqlite3.connect(db_path)
+    cur = con.cursor()
+    g2pg, parallels = cluster_group_map(cur)
     comm: List[Tuple[str, str, int, int, float]] = []
     q = (
         "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "

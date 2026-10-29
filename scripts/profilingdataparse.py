@@ -109,6 +109,7 @@ def load_host_info_only(folder_path: str, db_files: List[str] = None) -> None:
         return
     config.reset_host_rank_map()
     config.reset_rank_device_map()
+    first = True
     for db_path in files:
         global_rank = extract_global_rank_from_filename(db_path)
         if global_rank is None:
@@ -117,6 +118,10 @@ def load_host_info_only(folder_path: str, db_files: List[str] = None) -> None:
         try:
             conn = sqlite3.connect(db_path)
             get_host_info(conn, global_rank)
+            if first:
+                # clean=no 复用 op_metric 时也要拿到 Job 类型（training / rollout）
+                config.set_job_type(detect_job_type(conn))
+                first = False
         except Exception as e:
             logger.warning(f"读取节点信息失败（{db_path}）：{e}")
         finally:
