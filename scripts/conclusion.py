@@ -9,10 +9,10 @@ _CATEGORY_CN = {
     "KERNEL_AICORE": "KERNEL_AICORE类算子",
     "kernel_aivec": "KERNEL_AIVEC类算子",
     "memcpy_async": "MEMCPY_ASYNC类算子",
-    "comm": "通信类",
-    "cpu": "主机侧（Host 下发）",
-    "npu_bubble": "NPU 气泡（算子间空转）",
-    "pp_comm": "PP 流水线等待",
+    "comm": "comm（通信域带宽）",
+    "cpu": "cpu（主机侧 ZP_Host）",
+    "npu_bubble": "npu_bubble（NPU 气泡 ZP_Bubble）",
+    "pp_comm": "pp_comm（PP 流水线等待）",
 }
 _ORDER = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
           "cpu", "npu_bubble", "pp_comm")
