@@ -28,14 +28,19 @@ _LEVEL_NOTE = {
     "levelnone": "本次数据只含 MsTx，没有计算 / 搬运算子，计算类与搬运类未参与检测。",
     "cluster": "cluster 单文件只评估通信，其他类别未参与。",
 }
-_MEMCPY_NOTE = (
-    "关于 memcpy_async 的说明：该指标统计的是「单次拷贝算子的平均耗时」，而 "
-    "MEMCPY_ASYNC 这一类任务里混了三种东西——外部拷贝（aclrtMemcpyAsync，跨设备 / 跨 Host）、"
-    "设备内拷贝、以及集合通信拷贝。当少数卡承担外部 H2D 广播时（例如 Megatron 首 / 末 PP stage "
-    "的 tp0、PP=1 时各 DP 组的 tp0），这些卡的平均耗时必然偏高，属于结构性负载不均而不是慢卡；"
-    "此外任务数偏少也会把均值抬高。当前数据既没有拷贝方向（H2D / D2H / D2D），也没有逐次数据量，"
-    "因此只看这个指标无法定论；如需确认是否真的存在搬运劣化，需要补充这两项数据。"
-)
+_MEMCPY_NOTE = """关于 memcpy_async 的说明：该指标统计的是「单次拷贝算子的平均耗时」，而这类任务里混了
+外部拷贝（aclrtMemcpyAsync）、设备内拷贝和集合通信拷贝。下面这些已知情况会让少数卡的均值
+结构性偏高，看着像慢卡、其实不是：
+
+1. **PP>1 且 TP>1**：只有首/末 stage 的 tp0 需要把 data/label 从主机搬到卡上、再广播给同 TP 组，
+   其余卡为 0。例：PP4TP4 时就是 rank0 和 rank12。
+2. **PP=1 且 TP>1**（如 TP4DP4）：各 DP 组的 tp0 承担同样的 H2D，例：rank0/4/8/12。
+3. **任务数不均**：任务少的卡缺少短任务，平均值容易贴线偏高。
+4. **采集窗口残缺**：某些卡 STEP_TIME 只覆盖少量 step 时，均值会假性偏移，还会把其它卡带成
+   镜像误报。
+
+当前数据既没有拷贝方向（H2D/D2H/D2D），也没有逐次数据量，所以只看这个指标无法定论；
+如需确认是否真的存在搬运劣化，需要补充这两项数据。"""
 
 
 def _first_rank(item: Dict) -> str:
@@ -234,7 +239,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
 
     if any(cat == "memcpy_async" for cat, _ in found):
         lines.append("")
-        lines.append(_MEMCPY_NOTE)
+        lines.extend(_MEMCPY_NOTE.splitlines())
 
     note = _LEVEL_NOTE.get(level or "")
     if note:
