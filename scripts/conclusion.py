@@ -393,6 +393,14 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         f"集合通信（comm）{thresholds[2]} 倍、"
         f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%。")
 
+    compute_hit = any(cat in ("KERNEL_AICORE", "kernel_aivec") for cat, _ in found)
+    if (level in ("level0", "levelnone") and compute_hit
+            and not (detection.get("pp_comm") or [])):
+        lines.append("")
+        lines.append("PP 点对点通信等待（pp_comm）未评估：本次已检出计算类故障"
+                     "（KERNEL_AICORE / kernel_aivec），PP 检测被跳过"
+                     "（其统计区间内必含计算算子，会被污染），不能据此判断 PP 是否正常。")
+
     if any(cat == "memcpy_async" for cat, _ in found):
         lines.append("")
         lines.extend(_MEMCPY_NOTE.splitlines())
