@@ -448,6 +448,20 @@ def _bubble_line(items: List[Dict]) -> str:
     keys = "、".join(_ranks_text(i.get("display_key")) for i in items)
     return f"{_CATEGORY_CN.get('npu_bubble')}：{keys} 的算子启动间隔低于固定阈值 5000 ns"
 
+def _threshold_text(level: str, thresholds) -> str:
+    """只列出该数据级别实际用到的阈值。"""
+    compute, io, comm = thresholds[0], thresholds[1], thresholds[2]
+    parts = []
+    if level == "cluster":
+        return f"集合通信（comm）{comm} 倍"
+    if level in ("level0", "level1"):
+        parts.append(f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{compute} 倍")
+    parts.append(f"IO/CPU（针对MEMCPY_ASYNC和Host）{io} 倍")
+    parts.append(f"集合通信（comm）{comm} 倍")
+    if level in ("level0", "levelnone"):
+        parts.append(f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%")
+    return "、".join(parts)
+
 def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
            data_dir: str = "") -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
@@ -487,10 +501,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     lines.append("")
     lines.append(
         "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。本次阈值："
-        f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{thresholds[0]} 倍、"
-        f"IO/CPU（针对MEMCPY_ASYNC和Host）{thresholds[1]} 倍、"
-        f"集合通信（comm）{thresholds[2]} 倍、"
-        f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%。")
+        + _threshold_text(level, thresholds) + "。")
 
     compute_hit = any(cat in ("KERNEL_AICORE", "kernel_aivec") for cat, _ in found)
     if (level in ("level0", "levelnone") and compute_hit
