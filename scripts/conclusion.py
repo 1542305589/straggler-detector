@@ -77,6 +77,11 @@ def _ranks_text(key) -> str:
     if m:
         ranks = [x.strip() for x in m.group(2).split(",") if x.strip()]
         return f"{m.group(1)} 组的 rank {'、'.join(ranks)}"
+    m = re.match(r"^\[(.*)\]$", s)
+    if m:
+        ranks = [x.strip() for x in m.group(1).split(",") if x.strip()]
+        ranks = sorted(ranks, key=lambda x: int(x) if x.isdigit() else 0)
+        return "rank " + "、".join(ranks)
     m = re.match(r"^rank(\d+)-(\d+)$", s)
     if m:
         return f"rank {m.group(1)}–{m.group(2)}"
@@ -265,6 +270,24 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
         sentence += "，其它节点基线无可用数据"
     return f"{label}：{sentence}"
 
+def _comm_line(items: List[Dict]) -> str:
+    ratios = "、".join(
+        f"{_ranks_text(i.get('display_key'))} 相对组内基线约 "
+        f"{float(i.get('metric_value') or 0):.2f} 倍" for i in items)
+    return (f"{_CATEGORY_CN.get('comm')}：{ratios}"
+            "（取该域内劣化最严重的［并行域, 算子, Count］组合）")
+
+def _pp_line(items: List[Dict]) -> str:
+    parts = []
+    for i in items:
+        pct = float(i.get("metric_value") or 0) * 100.0
+        parts.append(f"{_ranks_text(i.get('display_key'))} 的点对点等待时间占会话时长约 {pct:.2f}%")
+    return f"{_CATEGORY_CN.get('pp_comm')}：" + "、".join(parts) + f"，超过阈值 {_pp_percent()}%"
+
+def _bubble_line(items: List[Dict]) -> str:
+    keys = "、".join(_ranks_text(i.get("display_key")) for i in items)
+    return f"{_CATEGORY_CN.get('npu_bubble')}：{keys} 的算子启动间隔低于固定阈值 5000 ns"
+
 def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
            data_dir: str = "") -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
@@ -290,6 +313,12 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
             lines.append(f"- {_node_line(items, metric_dir)}")
         elif cat in _DETAIL_CATS:
             lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
+        elif cat == "comm":
+            lines.append(f"- {_comm_line(items)}")
+        elif cat == "pp_comm":
+            lines.append(f"- {_pp_line(items)}")
+        elif cat == "npu_bubble":
+            lines.append(f"- {_bubble_line(items)}")
         else:
             detail = "、".join(
                 f"{_ranks_text(i.get('display_key'))} 约 {float(i.get('metric_value') or 0):.2f} 倍"
