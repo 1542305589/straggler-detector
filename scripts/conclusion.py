@@ -336,7 +336,7 @@ def _comm_line(items: List[Dict], data_dir: str = "") -> str:
         parts.append(f"{head}{label} 相对域内基线（{who}）约 "
                      f"{float(i.get('metric_value') or 0):.2f} 倍")
     return (f"{_CATEGORY_CN.get('comm')}：" + "、".join(parts)
-            + "（取该域内劣化最严重的［并行域, 算子, Count］组合）")
+            + "（取该组内劣化最严重的［并行域, 算子, Count］组合）")
 
 def _pp_line(items: List[Dict]) -> str:
     parts = []
