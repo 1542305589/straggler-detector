@@ -185,7 +185,7 @@ def _detail_line(cat: str, items: List[Dict], metric_dir: str,
     for key, group_items in sorted(buckets.items()):
         group = list(key) if key else sorted(mapping) or []
         flagged = sorted({r for i in group_items for r in _ranks_from_key(i.get("display_key"))})
-        ratios = "，".join(
+        ratios = "、".join(
             f"rank{_first_rank(i)} 相对检测组内基线约 "
             f"{float(i.get('metric_value') or 0):.2f} 倍" for i in group_items)
         values = []
@@ -194,12 +194,12 @@ def _detail_line(cat: str, items: List[Dict], metric_dir: str,
             if v is not None:
                 values.append(f"rank{r} 为 {v:.3f} ms")
         base, base_ranks = _baseline(column, metric_dir, group, flagged)
+        who = ("rank " + "、".join(str(r) for r in base_ranks)) if base_ranks else "—"
         sentence = ratios
         if values:
-            sentence += "；" + "、".join(values)
+            sentence += "，" + "，".join(values)
         if base is not None:
-            who = _fmt_ranks(base_ranks) if base_ranks else "—"
-            sentence += f"；检测组内基线平均（{who}）为 {base:.3f} ms"
+            sentence += f"，检测组内基线平均（{who}）为 {base:.3f} ms"
         parts.append(sentence)
     return f"{label}：" + "。".join(parts)
 
