@@ -72,6 +72,18 @@ tp → exp → ep → tp_exp → cp → cp2 → cp_ulysses → cp_ring
 **单卡类（`KERNEL_AICORE` / `kernel_aivec` / `memcpy_async`）**
 在检测组内对每张卡的值做通用算法，**偏大**异常。
 
+`memcpy_async` 的检测量是**混合平均**（外部拷贝与设备内拷贝一起取均值），因此除 `MEMCPY_ASYNC`
+均值外，CSV 还落 3 个计数列，供结论层判断该异常是否由"拷贝组成不同"解释：
+
+| 列 | 含义 |
+| --- | --- |
+| `MEMCPY_ASYNC_Count` | 该 step 内 `MEMCPY_ASYNC` 任务总数 |
+| `MEMCPY_LINKED_Count` | `TASK.connectionId` 能关联到 `CANN_API` 的任务数 |
+| `MEMCPY_EXTERNAL_Count` | 关联到的 `CANN_API.name == 'aclrtMemcpyAsync'` 的任务数 |
+
+取数口径与检测一致：`n>1` 取倒数第二个 step，`n==1` 取第 0 个。`CANN_API` 表缺失时后两列写 `-1`
+表示**不可用**（不是 0）。内部拷贝 = 总数 − 外部，不单独枚举 API。
+
 **`cpu`（`ZP_Host`）**
 先按物理节点（`hostUid`）分组、组内**去首尾求均值拉齐**，再对整组做通用算法。同节点卡值被拉平，故异常落在**整个节点**上，异常项用节点显示名（`hostName`）而不是 rank。
 

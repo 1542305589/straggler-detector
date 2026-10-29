@@ -44,7 +44,7 @@
         "rule_id": {
           "type": "string",
           "minLength": 1,
-          "description": "必填。DET_<类别> 为检测层转写；其余为 A1–A4 / B1–B4 / C1–C4 / D1–D4 / E1–E4 / F1–F6"
+          "description": "必填。DET_<类别> 为检测层转写；其余为 A1–A4 / B1–B4 / C1–C4 / D1–D4 / E1–E4 / F1–F6 / G1（MEMCPY 结构性豁免）"
         },
         "category": { "$ref": "#/definitions/category" },
         "status": { "$ref": "#/definitions/status" },
@@ -60,6 +60,10 @@
           "description": "非有限值（Infinity/NaN）在写盘前会被统一替换为 null，保证产物是严格合法 JSON；出现时会在 validation.warnings 里记一笔"
         },
         "summary": { "type": "string" },
+        "exempted": {
+          "type": "boolean",
+          "description": "可选。true 表示该 DET_MEMCPY_ASYNC 命中已由 G1 判定为结构性负载不均，confidence 降为 low，且不计入 verdict=multiple 的类别计数"
+        },
         "evidence_refs": {
           "type": "array",
           "items": { "type": "string" },

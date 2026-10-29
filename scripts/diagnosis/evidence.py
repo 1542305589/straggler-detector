@@ -1,87 +1,21 @@
-# -------------------------------------------------------------------------
-# This file is part of the MindStudio project.
-# Copyright (c) 2026 Huawei Technologies Co.,Ltd.
-#
-# MindStudio is licensed under Mulan PSL v2.
-# You can use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of Mulan PSL v2 at:
-#
-#          http://license.coscl.org.cn/MulanPSL2
-#
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-# See the Mulan PSL v2 for more details.
-# -------------------------------------------------------------------------
-"""证据层：把数据目录归一化成 evidence.json。
-
-取数策略：analysis.db 优先，缺表/空表回退裸 profiler db；cluster db 单文件单独处理。
-所有时间统一为 ms，带宽统一为 GB/s，容量统一为 MB。
-"""
 from __future__ import annotations
-
+import csv
 import json
 import os
 import re
 from collections import Counter
 from typing import Dict, List, Optional
-
 from . import db
-
-# ---- 单位换算 ----
-_NS_PER_MS = 1_000_000.0
-_US_PER_MS = 1_000.0
-
-
-def _f(v, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
-
-
-def _i(v, default: int = 0) -> int:
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return default
-
-
-def _ns_to_ms(v) -> float:
-    return _f(v) / _NS_PER_MS
-
-
-def _us_to_ms(v) -> float:
-    return _f(v) / _US_PER_MS
-
-
-def _median(values: List[float]) -> float:
-    vals = sorted(v for v in values if v is not None)
-    if not vals:
-        return 0.0
-    n = len(vals)
-    mid = n // 2
-    if n % 2:
-        return vals[mid]
-    return (vals[mid - 1] + vals[mid]) / 2.0
-
-
-def _ratio(a: float, b: float) -> float:
-    if b > 0:
-        return a / b
-    return float("inf") if a > 0 else 1.0
-
+from .util import (_NS_PER_MS, _US_PER_MS, _f, _group_key, _i, _median,
+                   _ns_to_ms, _ratio, _us_to_ms)
 
 def _op_type(name: str) -> str:
-    """hcom_allReduce__503_0_1 → allreduce；非 hccl 记录返回原串。"""
     s = (name or "").strip()
     if "_" in s:
         return s.split("_")[1].lower()
     return s
 
-
 def _parse_parallels(raw: Optional[str]) -> Dict[str, List[List[int]]]:
-    """解析 META_DATA.parallel_group_info → {域: [[ranks], ...]}。"""
     if not raw:
         return {}
     try:
@@ -104,13 +38,7 @@ def _parse_parallels(raw: Optional[str]) -> Dict[str, List[List[int]]]:
             out.setdefault(pg, []).append(rs)
     return out
 
-
-def _group_key(ranks: List[int]) -> str:
-    return ",".join(str(r) for r in sorted(ranks))
-
-
 def _parse_group_ranks(raw: Optional[str]) -> Dict[str, List[int]]:
-    """解析 META_DATA.parallel_group_info → {group_name: [global_ranks]}。"""
     if not raw:
         return {}
     try:
@@ -130,12 +58,7 @@ def _parse_group_ranks(raw: Optional[str]) -> Dict[str, List[int]]:
             out[str(gname)] = rs
     return out
 
-
 def _op_group_map(profiler_db: str) -> Dict[str, str]:
-    """opName -> groupName（用于把 analysis.db 的 hash group 映射回 group_name）。
-
-    优先 COMMUNICATION_TASK_INFO（覆盖最全），再用 COMMUNICATION_OP 补。
-    """
     out: Dict[str, str] = {}
     try:
         con = db.open_ro(profiler_db)
@@ -149,7 +72,6 @@ def _op_group_map(profiler_db: str) -> Dict[str, str]:
         pass
     return out
 
-
 def _aggregate_calls(calls: List[Dict], keep_calls: bool = False) -> Dict:
     durs = [c["duration_ms"] for c in calls]
     out = {
@@ -161,7 +83,6 @@ def _aggregate_calls(calls: List[Dict], keep_calls: bool = False) -> Dict:
         out["calls"] = calls
     return out
 
-
 def _detect_level(profiler_dbs: List[tuple]) -> str:
     for _rank, profiler_db in profiler_dbs:
         analysis_db = db.analysis_db_for(profiler_db)
@@ -172,7 +93,6 @@ def _detect_level(profiler_dbs: List[tuple]) -> str:
             return "level0"
     return "levelnone"
 
-
 def _analysis_has_bandwidth(path: str) -> bool:
     try:
         con = db.open_ro(path)
@@ -181,7 +101,6 @@ def _analysis_has_bandwidth(path: str) -> bool:
         return ok
     except Exception:
         return False
-
 
 def _has_kernel_tasks(path: str) -> bool:
     try:
@@ -196,7 +115,6 @@ def _has_kernel_tasks(path: str) -> bool:
     except Exception:
         return False
 
-
 def _job_type(profiler_db: str, sid: Dict[int, str]) -> str:
     try:
         con = db.open_ro(profiler_db)
@@ -210,10 +128,6 @@ def _job_type(profiler_db: str, sid: Dict[int, str]) -> str:
         pass
     return "unknown"
 
-
-# ---------------------------------------------------------------------------
-# 每 rank：analysis.db 优先
-# ---------------------------------------------------------------------------
 def _step_trace_analysis(analysis_db: str) -> Dict:
     con = db.open_ro(analysis_db)
     rows = db.rows(
@@ -237,16 +151,13 @@ def _step_trace_analysis(analysis_db: str) -> Dict:
     return {"steps": steps, "totals": totals, "session_ms": max(
         (s["stage_ms"] for s in steps), default=0.0)}
 
-
 def _step_trace_raw(profiler_db: str) -> Dict:
-    """回退：用 TASK 间隙 + COMPUTE_TASK_INFO + COMMUNICATION_OP 估算。"""
     con = db.open_ro(profiler_db)
     sid = db.string_ids(con)
     session = db.one(con, "SELECT startTimeNs, endTimeNs FROM SESSION_TIME_INFO")
     session_ms = 0.0
     if session:
         session_ms = _ns_to_ms(_i(session[1]) - _i(session[0]))
-
     task_rows = db.rows(con, "SELECT startNs, endNs FROM TASK ORDER BY startNs")
     intervals = []
     for s, e in task_rows:
@@ -265,7 +176,6 @@ def _step_trace_raw(profiler_db: str) -> Dict:
         if g > 0:
             gaps.append((merged[i - 1][1], merged[i][0], g))
     free_ms = sum(g[2] for g in gaps)
-
     comp_ms = 0.0
     for _n, _cnt, ns in db.rows(
         con,
@@ -274,7 +184,6 @@ def _step_trace_raw(profiler_db: str) -> Dict:
         "GROUP BY c.name",
     ):
         comp_ms += _ns_to_ms(ns)
-
     comm_ms = 0.0
     for _g, _o, _cnt, ns in db.rows(
         con,
@@ -282,7 +191,6 @@ def _step_trace_raw(profiler_db: str) -> Dict:
         "FROM COMMUNICATION_OP o GROUP BY o.groupName, o.opName",
     ):
         comm_ms += _ns_to_ms(ns)
-
     span_ms = (merged[-1][1] - merged[0][0]) if merged else session_ms
     con.close()
     return {
@@ -301,7 +209,6 @@ def _step_trace_raw(profiler_db: str) -> Dict:
         ],
         "source": "raw_fallback",
     }
-
 
 def _comm_time_analysis(analysis_db: str, group_ranks: Optional[Dict[str, List[int]]] = None,
                         op_group: Optional[Dict[str, str]] = None) -> Dict:
@@ -344,7 +251,6 @@ def _comm_time_analysis(analysis_db: str, group_ranks: Optional[Dict[str, List[i
             a["last_end_ms"] = en
     return {"ops": list(agg.values()), "source": "analysis.db"}
 
-
 def _comm_bandwidth_analysis(analysis_db: str, group_ranks: Optional[Dict[str, List[int]]] = None,
                             op_group: Optional[Dict[str, str]] = None) -> Dict:
     con = db.open_ro(analysis_db)
@@ -376,7 +282,6 @@ def _comm_bandwidth_analysis(analysis_db: str, group_ranks: Optional[Dict[str, L
     for a in agg.values():
         a["bandwidth_gbps"] = _ratio(a["size_mb"], a["transit_ms"])
     return {"ops": list(agg.values()), "source": "analysis.db"}
-
 
 def _matrix_analysis(analysis_db: str, group_ranks: Optional[Dict[str, List[int]]] = None,
                      op_group: Optional[Dict[str, str]] = None) -> Dict:
@@ -413,14 +318,9 @@ def _matrix_analysis(analysis_db: str, group_ranks: Optional[Dict[str, List[int]
             a["max_bandwidth_gbps"] = b
     return {"pairs": list(agg.values()), "source": "analysis.db"}
 
-
-# ---------------------------------------------------------------------------
-# 每 rank：裸 profiler db
-# ---------------------------------------------------------------------------
 def _host_raw(profiler_db: str) -> Dict:
     con = db.open_ro(profiler_db)
     sid = db.string_ids(con)
-
     pytorch: Dict[str, List[Dict]] = {}
     for start, end, name in db.rows(con, "SELECT startNs, endNs, name FROM PYTORCH_API"):
         s = _i(start)
@@ -433,12 +333,10 @@ def _host_raw(profiler_db: str) -> Dict:
             "end_ms": e / _NS_PER_MS,
             "duration_ms": (e - s) / _NS_PER_MS,
         })
-
     pytorch_agg = {}
     for n, calls in pytorch.items():
         keep = "gloo" in n.lower()
         pytorch_agg[n] = _aggregate_calls(calls, keep_calls=keep)
-
     cann: Dict[str, List[Dict]] = {}
     for start, end, name in db.rows(con, "SELECT startNs, endNs, name FROM CANN_API"):
         s = _i(start)
@@ -452,11 +350,9 @@ def _host_raw(profiler_db: str) -> Dict:
             "duration_ms": (e - s) / _NS_PER_MS,
         })
     cann_agg = {n: _aggregate_calls(calls) for n, calls in cann.items()}
-
     session = db.one(con, "SELECT startTimeNs, endTimeNs FROM SESSION_TIME_INFO")
     session_ms = _ns_to_ms(_i(session[1]) - _i(session[0])) if session else 0.0
     session_start_ms = _ns_to_ms(_i(session[0])) if session else 0.0
-
     task_types = {}
     for task_type, cnt, ns in db.rows(
         con,
@@ -466,7 +362,6 @@ def _host_raw(profiler_db: str) -> Dict:
             "count": _i(cnt),
             "sum_ms": _ns_to_ms(ns),
         }
-
     con.close()
     return {
         "pytorch_api": pytorch_agg,
@@ -476,7 +371,6 @@ def _host_raw(profiler_db: str) -> Dict:
         "session_start_ms": session_start_ms,
         "source": "profiler.db",
     }
-
 
 def _task_gaps(profiler_db: str) -> Dict:
     con = db.open_ro(profiler_db)
@@ -504,7 +398,6 @@ def _task_gaps(profiler_db: str) -> Dict:
             })
     return {"gaps": sorted(gaps, key=lambda x: -x["duration_ms"]), "total_ms": sum(g["duration_ms"] for g in gaps)}
 
-
 def _compute_raw(profiler_db: str) -> Dict:
     con = db.open_ro(profiler_db)
     rows = db.rows(
@@ -524,7 +417,6 @@ def _compute_raw(profiler_db: str) -> Dict:
             "avg_ms": (total / c) if c else 0.0,
         }
     return {"ops": ops, "source": "profiler.db"}
-
 
 def _comm_raw(profiler_db: str, group_ranks: Optional[Dict[str, List[int]]] = None) -> Dict:
     con = db.open_ro(profiler_db)
@@ -555,7 +447,6 @@ def _comm_raw(profiler_db: str, group_ranks: Optional[Dict[str, List[int]]] = No
         a["bandwidth_gbps"] = _ratio(a["size_mb"], a["sum_ms"])
     return {"ops": list(agg.values()), "source": "profiler.db"}
 
-
 def _freq_raw(profiler_db: str) -> Dict:
     con = db.open_ro(profiler_db)
     rows = db.rows(con, "SELECT deviceId, timestampNs, freq FROM AICORE_FREQ")
@@ -578,7 +469,6 @@ def _freq_raw(profiler_db: str) -> Dict:
         }
     return {"by_device": out, "source": "profiler.db"}
 
-
 def _rank_device_raw(profiler_db: str) -> Dict:
     con = db.open_ro(profiler_db)
     sid = db.string_ids(con)
@@ -597,13 +487,8 @@ def _rank_device_raw(profiler_db: str) -> Dict:
         out["npu_name"] = str(npu[1])
     return out
 
-
-# ---------------------------------------------------------------------------
-# cluster db
-# ---------------------------------------------------------------------------
 def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
     con = db.open_ro(cluster_db)
-
     g2pg: Dict[str, str] = {}
     g2ranks: Dict[str, List[int]] = {}
     parallels: Dict[str, List[List[int]]] = {}
@@ -619,7 +504,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
         if len(ranks) >= 2:
             g2ranks[str(gname)] = ranks
             parallels.setdefault(str(pg), []).append(ranks)
-
     step_trace: Dict[str, Dict] = {}
     for step, typ, idx, comp, comm, free, stage, bubble, prep in db.rows(
         con,
@@ -644,7 +528,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
             {k: steps[-1][k] for k in keys} if steps else {k: 0.0 for k in keys})
         step_trace[r]["session_ms"] = max(
             (s["stage_ms"] for s in steps), default=0.0)
-
     comm_time: Dict[str, Dict] = {}
     if full_cluster:
         op_type_sql = (
@@ -700,7 +583,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
                 k: sum(o[k] for o in ops)
                 for k in ("elapse_ms", "transit_ms", "wait_ms", "sync_ms", "idle_ms")
             }
-
     comm_bandwidth: Dict[str, Dict[str, Dict[str, Dict]]] = {}
     op_type_sql = (
         "CASE WHEN instr(hccl_op_name,'_')>0 THEN "
@@ -735,7 +617,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
         for pg in comm_bandwidth[r]:
             for a in comm_bandwidth[r][pg].values():
                 a["bandwidth_gbps"] = _ratio(a["size_mb"], a["transit_ms"])
-
     matrix: Dict[str, List[Dict]] = {}
     mat_agg: Dict[tuple, Dict] = {}
     for step, op, group, src, dst, transport, size, transit, bw in db.rows(
@@ -768,7 +649,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
             a["max_bandwidth_gbps"] = b
     for (pg, op), a in mat_agg.items():
         matrix.setdefault(pg, []).append(a)
-
     last_steps = []
     for r in step_trace:
         steps = step_trace[r].get("steps") or []
@@ -782,7 +662,6 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
         if match:
             step_trace[r]["totals"] = {k: match[k] for k in step_keys}
         step_trace[r]["reference_step"] = ref_step
-
     rank_device = {}
     for rank, dev, host in db.rows(
         con, "SELECT rankId, deviceId, hostUid FROM RankDeviceMap"
@@ -791,11 +670,9 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
             "device_id": _i(dev),
             "host_uid": str(host or ""),
         }
-
     host_info = {}
     for uid, name in db.rows(con, "SELECT hostUid, hostName FROM HostInfo"):
         host_info[str(uid)] = str(name or "")
-
     con.close()
     return {
         "parallels": parallels,
@@ -810,16 +687,57 @@ def _build_cluster(cluster_db: str, full_cluster: bool = False) -> Dict:
         "source": "cluster_analysis.db",
     }
 
+_MEMCPY_CSV_COLS = ("MEMCPY_ASYNC", "MEMCPY_ASYNC_Count",
+                    "MEMCPY_LINKED_Count", "MEMCPY_EXTERNAL_Count")
 
-# ---------------------------------------------------------------------------
-# 主入口
-# ---------------------------------------------------------------------------
+def _pick_step_value(values: List[float]) -> Optional[float]:
+    """复刻检测口径：n>1 取倒数第二个 step，n==1 取第 0 个。"""
+    if not values:
+        return None
+    return values[-2] if len(values) > 1 else values[0]
+
+def _memcpy_counters(metric_dir: Optional[str], ranks: List[int]) -> tuple:
+    """读 op_metric CSV，返回 (by_rank, reason)。reason 非空表示计数不可用。"""
+    if not metric_dir or not os.path.isdir(metric_dir):
+        return {}, "op_metric 目录不存在，MEMCPY 计数不可用"
+    by_rank: Dict[str, Dict] = {}
+    problems: List[str] = []
+    for rank in ranks:
+        path = os.path.join(metric_dir, f"global_rank_{rank}.csv")
+        if not os.path.isfile(path):
+            problems.append(f"rank {rank}: CSV 缺失")
+            continue
+        cols: Dict[str, List[float]] = {k: [] for k in _MEMCPY_CSV_COLS}
+        with open(path, newline="") as f:
+            for row in csv.DictReader(f):
+                for key in _MEMCPY_CSV_COLS:
+                    raw = row.get(key)
+                    if raw in (None, ""):
+                        continue
+                    try:
+                        cols[key].append(float(raw))
+                    except (TypeError, ValueError):
+                        pass
+        if not cols[_MEMCPY_CSV_COLS[0]]:
+            continue
+        if any(not cols[key] for key in _MEMCPY_CSV_COLS[1:]):
+            problems.append(f"rank {rank}: 缺计数列")
+            continue
+        by_rank[str(rank)] = {
+            "avg": _pick_step_value(cols["MEMCPY_ASYNC"]),
+            "count": _i(_pick_step_value(cols["MEMCPY_ASYNC_Count"])),
+            "linked": _i(_pick_step_value(cols["MEMCPY_LINKED_Count"])),
+            "external": _i(_pick_step_value(cols["MEMCPY_EXTERNAL_Count"])),
+        }
+    if not by_rank:
+        return {}, "MEMCPY 计数不可用：" + ("；".join(sorted(set(problems))) or "无数据")
+    return by_rank, ""
+
 def build_evidence(data_dir: str, detection: Optional[Dict] = None,
                    full_cluster: bool = False) -> Dict:
     data_dir = os.path.abspath(data_dir)
     missing: List[str] = []
     notes: List[str] = []
-
     if os.path.isfile(data_dir) and db.is_cluster_db(data_dir):
         cluster = _build_cluster(data_dir, full_cluster=full_cluster)
         ranks = sorted(
@@ -857,6 +775,11 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             },
             "host": {"gloo": {}, "sync_device": {}, "sync_event": {}, "sync_stream": {}, "free_windows": {}, "source": "none"},
             "compute": {"by_rank": {}, "source": "none"},
+            "io": {
+                "memcpy": {},
+                "source": "none",
+                "memcpy_not_evaluated": "cluster 单文件无逐 rank op_metric，MEMCPY 计数不可用",
+            },
             "comm": {
                 "by_rank_group": cluster["comm_bandwidth"],
                 "matrix": cluster["matrix"],
@@ -865,7 +788,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             "freq": {"by_rank": {}, "source": "none"},
             "coverage": {"missing": missing, "notes": notes},
         }
-
     profiler_dbs = db.find_profiler_dbs(data_dir)
     if not profiler_dbs:
         return {
@@ -890,9 +812,7 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             "freq": {"by_rank": {}},
             "coverage": {"missing": ["no profiler db"], "notes": notes},
         }
-
     level = _detect_level(profiler_dbs)
-
     parallels: Dict[str, List[List[int]]] = {}
     group_ranks: Dict[str, List[int]] = {}
     rank_device: Dict[str, Dict] = {}
@@ -905,8 +825,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
     job_type = _job_type(profiler_dbs[0][1], first_sid)
     first_con.close()
     op_group: Dict[str, str] = {}
-
-    # 合并所有 rank 的 parallel_group_info（每个 rank 只记录自己所属的组）
     for _rank, pdb in profiler_dbs:
         con = db.open_ro(pdb)
         raw = db.meta(con).get("parallel_group_info")
@@ -917,7 +835,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
                 if g not in parallels.setdefault(pg, []):
                     parallels[pg].append(g)
         group_ranks.update(_parse_group_ranks(raw))
-
     step_trace: Dict[str, Dict] = {}
     comm_time: Dict[str, Dict] = {}
     comm_bandwidth: Dict[str, Dict[str, Dict[str, Dict]]] = {}
@@ -926,11 +843,9 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
     compute: Dict[str, Dict] = {}
     comm_raw: Dict[str, Dict[str, Dict[str, Dict]]] = {}
     freq: Dict[str, Dict] = {}
-
     for rank, profiler_db in profiler_dbs:
         r = str(rank)
         analysis_db = db.analysis_db_for(profiler_db)
-
         if analysis_db:
             st = _step_trace_analysis(analysis_db)
             step_trace[r] = st
@@ -949,7 +864,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             step_trace[r] = st
             comm_time[r] = {"ops": [], "totals": {}}
             missing.append(f"rank {rank}: analysis.db 缺失，StepTrace/CommTime 用裸 db 回退")
-
         raw_host = _host_raw(profiler_db)
         gaps = _task_gaps(profiler_db)
         host["gloo"][r] = raw_host["pytorch_api"].get("gloo:all_reduce", {"count": 0, "sum_ms": 0.0, "max_ms": 0.0})
@@ -964,7 +878,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
         host.setdefault("session_ms", {})[r] = raw_host["session_ms"]
         host.setdefault("session_start_ms", {})[r] = raw_host.get("session_start_ms", 0.0)
         session_ms = max(session_ms, raw_host["session_ms"])
-
         compute[r] = _compute_raw(profiler_db)
         if level != "level1":
             comm_raw[r] = _comm_raw(profiler_db, group_ranks)
@@ -974,8 +887,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             rank_device[r] = rd
             if rd.get("host_uid"):
                 host_info[rd["host_uid"]] = rd.get("host_name", "")
-
-    # 选一个跨 rank 的共同 step（各 rank 最后一个 step 的众数），避免 step 编号错位
     last_steps = []
     for r in step_trace:
         steps = step_trace[r].get("steps") or []
@@ -989,7 +900,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
         if match:
             step_trace[r]["totals"] = {k: match[k] for k in step_keys}
         step_trace[r]["reference_step"] = ref_step
-
     if level == "levelnone":
         missing.append("levelnone：无计算/搬运算子，compute 未评估")
     if level == "level0":
@@ -1003,7 +913,6 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
         missing.append("parallel_group_info 缺失或为空，无法做组间对比")
     if not rank_device:
         missing.append("RANK_DEVICE_MAP/HOST_INFO 缺失，无法做物理设备定位")
-
     meta = {
         "data_dir": data_dir,
         "level": level,
@@ -1018,7 +927,12 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
         "session_ms": session_ms,
         "reference_step": ref_step,
     }
-
+    memcpy_by_rank, memcpy_reason = _memcpy_counters(
+        os.path.join(data_dir, "op_metric"), meta["ranks"])
+    io: Dict = {"memcpy": memcpy_by_rank, "source": "op_metric"}
+    if memcpy_reason:
+        io["memcpy_not_evaluated"] = memcpy_reason
+        missing.append(memcpy_reason)
     return {
         "schema_version": "1.0",
         "meta": meta,
@@ -1035,9 +949,9 @@ def build_evidence(data_dir: str, detection: Optional[Dict] = None,
             "source": "analysis.db" if level == "level1" else "profiler.db",
         },
         "freq": {"by_rank": freq, "source": "profiler.db"},
+        "io": io,
         "coverage": {"missing": missing, "notes": notes},
     }
-
 
 def load_detection(data_dir: str, output_dir: Optional[str] = None) -> Dict:
     candidates = []

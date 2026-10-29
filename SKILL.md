@@ -31,7 +31,8 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 - **编排**：取证 → 规则 → 校验门 → 落盘只在 `scripts/diagnosis/pipeline.py` 一处；`scripts/main.py`（检测后自动诊断）与 `scripts/diagnose.py`（独立入口）共用，两条路径都会跑校验门。
 - **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`；检测层无异常时才兜底，且置信度最多 `medium`。控制台会打印「结论来源」和「辅助发现（不改变检测结论）」。
 - **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `scripts/diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻（标 `confidence=speculative`），校验门禁止其进入 `verdict/primary/actions`。
-- **规则库**：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）。
+- **规则库**：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）；G1 memcpy 单独异常降级（无同卡计算佐证 → `low` + `limitations`）。
+- **结论表述**：`MEMCPY_ASYNC` 单独异常（无同卡计算异常佐证）时，须向用户说明该指标不可靠、低置信（`G1`），并给出需补充的数据：拷贝方向（H2D/D2D/D2H）、逐次数据量、任务数。
 - **单独运行**（不重跑检测、不改检测代码）：
 
 ```bash
@@ -143,6 +144,16 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 - 省略其中几个、或用"产物：…等"概括。
 
 **原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，`scripts/diagnose.py` 由 `out=` 参数决定。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
+
+### MEMCPY 结构性豁免的表述
+
+`MEMCPY_ASYNC` 的检测量是混合平均，各组拷贝组成不同就会偏高。结论层用"外部拷贝占比"做结构性
+判定，命中时输出 `G1`（`auxiliary` / `low`）并把 `DET_MEMCPY_ASYNC` 降为 `low`。
+
+- 出现 `G1`：说明"组内仅这几张卡存在外部拷贝，属于结构性负载不均，不是慢卡"，并**同时**说明该指标
+  缺拷贝方向与数据量；
+- 只有 memcpy 异常、没有 `G1`：按检测层结论报，但要说明"无法证明是结构性，也不能排除，需谨慎"；
+- 禁止把 `G1` 表述成"已排除该卡的问题"——它只降低了该指标的置信度，其他类别（计算/通信）照旧。
 
 ### 清理范围
 

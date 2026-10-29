@@ -180,6 +180,44 @@
 | **F5** | 某卡通信占比 ≥ 10%、空闲 < 10%，且最大算子 `transit ≤ 5%×elapse`、`idle ≥ 90%×elapse` | 该卡**纯等待**（是等待者，不是慢卡） |
 | **F6** | 某卡平均频率 ≤ 0.9×中位 | **频率异常** |
 
+### 5.4 G1（MEMCPY 结构性负载不均豁免）
+
+MEMCPY_ASYNC 的检测量是**混合平均**：外部拷贝（`aclrtMemcpyAsync`）与设备内拷贝混在一起取均值，
+而 `level0`/`level1` 没有 memcpy 的 shape/size，拿不到拷贝方向与数据量。因此在少数 rank 承担
+外部 H2D 的场景（Megatron/MindSpeed 的数据加载广播），均值会结构性偏高而误报成慢卡。
+
+**判据**（全部满足才豁免，任一不满足即"无法验证"）：
+
+1. 取组：该 rank 检测时实际参与比较的组（`tp, exp, ep, tp_exp, cp, cp2, cp_ulysses, cp_ring,
+   dp, dp_cp, dp_modulo_exp_cp, default_group` 优先级；无并行域退化为整节点）；
+2. 取数：与检测同一个 step（`n>1` 取倒数第二个，`n==1` 取第 0 个）的
+   `MEMCPY_ASYNC`（均值）与 3 个计数列；`count == 0` 或 `external < 0`（`CANN_API` 缺失）的 rank 剔除。
+   未关联到 `CANN_API` 的任务按**设备内拷贝**计——只有 `aclrtMemcpyAsync` 是外部拷贝；
+3. **方向一致性**：组内 `external` 不同的卡对，`(ext_i − ext_j)` 与 `(avg_i − avg_j)` 必须同向；
+   `external` 相同的卡对**不参与**（模型预测其均值应相当，比较无意义）。
+   用**整数计数**而非 `external / count` 占比：`count` 的微小差异（如真实数据的
+   2069 vs 2061）会让占比产生 0.0x 个百分点的噪声，进而与均值噪声互相打架、误判"方向不一致"；
+4. 若组内 `external` 全相同 → 判「外拷数量相同，均值差异无法用外拷组成解释」，不豁免；
+5. 被报异常的 rank 必须**全部**属于 `external > 0` 的那部分。
+
+| 结果 | 输出 |
+|---|---|
+| 全部条件满足 | `G1`（`auxiliary` / `io` / `low`），`DET_MEMCPY_ASYNC` 置信度降 `low`，`verdict` 的 `multiple` 类别计数跳过 io；若 io 是唯一异常类别，`verdict` 不变而整体 `confidence` 降 `low` |
+| 存在反向卡对 | 不豁免，保持检测层置信，`limitations` 记"方向不一致" |
+| 无可用卡对 / 缺列 / 无 `analysis.db` / `CANN_API` 缺失 | 不豁免，`limitations` 记原因 |
+
+**不论是否豁免**，只要 MEMCPY_ASYNC 报异常，都追加案例参考与局限：
+
+- 已知结构性场景：PP>1 时首/末 stage 的 tp0 承担 data/label 的 H2D 再广播；PP=1 时各 DP 组的
+  tp0 同样承担 H2D；任务数偏少会抬高单任务均值；采集窗口残缺会造成均值偏移与镜像误报；
+  **其他框架可能存在同类隐性不均，本清单不完整**；
+- `aclrtMemcpyAsync` 分不出 H2D/D2H/D2D；`connectionId` 是归属关联而非物理证明；
+- 精确判定需要拷贝方向、逐次数据量与任务数，本 skill 当前未采集这些数据。
+
+**残留风险**：组内可比样本过少时会判"无法验证"，即**可能漏掉本应豁免的结构性误报**；
+反之，真实劣化若恰好落在外部拷贝占比高的 rank 上，且组内顺序一致，仍可能被豁免——这是
+"宁漏勿误"之外必须承认的代价。
+
 ---
 
 ## 6. 权威顺序与汇总

@@ -1,73 +1,93 @@
-# -------------------------------------------------------------------------
-# This file is part of the MindStudio project.
-# Copyright (c) 2026 Huawei Technologies Co.,Ltd.
-#
-# MindStudio is licensed under Mulan PSL v2.
-# You can use this software according to the terms and conditions of the Mulan PSL v2.
-# You may obtain a copy of Mulan PSL v2 at:
-#
-#          http://license.coscl.org.cn/MulanPSL2
-#
-# THIS SOFTWARE IS PROVIDED ON AN "AS IS" BASIS, WITHOUT WARRANTIES OF ANY KIND,
-# EITHER EXPRESS OR IMPLIED, INCLUDING BUT NOT LIMITED TO NON-INFRINGEMENT,
-# MERCHANTABILITY OR FIT FOR A PARTICULAR PURPOSE.
-# See the Mulan PSL v2 for more details.
-# -------------------------------------------------------------------------
-"""规则层：只读 evidence.json，输出确定性正式结论。
-
-A–E：覆盖/通信/计算/Host/元规则（由旧分析层迁移）。
-F1–F6：由裸 db 证据驱动的根因规则（Host 阻塞、纯计算、负载不均、慢链路、纯等待、频率）。
-"""
 from __future__ import annotations
-
 import re
 from typing import Dict, List, Optional
-
+from .util import _f, _group_key, _i, _median, _ratio
 COMPUTE = 1.3
 IO = 2.5
 COMM = 1.3
-
 CATEGORY_ORDER = (
     "host", "comm", "compute", "io", "pp_comm", "npu_bubble", "multiple",
 )
 
+MEMCPY_CASE_NOTES = (
+    "已知结构性场景：PP>1 时首/末 stage 的 tp0 承担 data/label 的 H2D 再广播；"
+    "PP=1 时各 DP 组的 tp0 同样承担 H2D；任务数偏少会抬高单任务均值；"
+    "采集窗口残缺会造成均值偏移与镜像误报；其他框架可能存在同类隐性不均",
+    "精确判定需要拷贝方向（H2D/D2H/D2D）与逐次数据量、任务数，本 skill 当前未采集这些数据",
+)
+_DETECTION_GROUP_PRIORITY = (
+    "tp", "exp", "ep", "tp_exp", "cp", "cp2", "cp_ulysses", "cp_ring",
+    "dp", "dp_cp", "dp_modulo_exp_cp", "default_group",
+)
 
-def _f(v, default: float = 0.0) -> float:
-    try:
-        return float(v)
-    except (TypeError, ValueError):
-        return default
+def _group_for_rank(ev: Dict, rank: int) -> List[int]:
+    meta = ev.get("meta") or {}
+    parallels = meta.get("parallels") or {}
+    for domain in _DETECTION_GROUP_PRIORITY:
+        for group in parallels.get(domain) or []:
+            if rank in group:
+                return sorted(_i(r) for r in group)
+    return sorted(_i(r) for r in (meta.get("ranks") or []))
 
-
-def _i(v, default: int = 0) -> int:
-    try:
-        return int(float(v))
-    except (TypeError, ValueError):
-        return default
-
-
-def _ratio(a: float, b: float) -> float:
-    if b > 0:
-        return a / b
-    return float("inf") if a > 0 else 1.0
-
-
-def _median(values: List[float]) -> float:
-    vals = sorted(v for v in values if v is not None)
-    if not vals:
-        return 0.0
-    n = len(vals)
-    mid = n // 2
-    return vals[mid] if n % 2 else (vals[mid - 1] + vals[mid]) / 2.0
-
+def _memcpy_exemption(ev: Dict) -> tuple:
+    """外部拷贝占比的方向一致性判据。返回 (G1 finding 或 None, 未豁免原因)。"""
+    flagged = _detection_slow(ev.get("detection") or {}, "memcpy_async")
+    if not flagged:
+        return None, ""
+    io = ev.get("io") or {}
+    data = io.get("memcpy") or {}
+    if not data:
+        return None, ("MEMCPY 计数不可用（%s），未做结构性验证"
+                      % (io.get("memcpy_not_evaluated") or "无数据"))
+    group = _group_for_rank(ev, flagged[0])
+    if len(group) < 2:
+        return None, "MEMCPY 组内无对照卡（少于 2 张），未做结构性验证"
+    rows = []
+    for rank in group:
+        item = data.get(str(rank))
+        if not item:
+            continue
+        count = _i(item.get("count"))
+        external = _i(item.get("external"))
+        if count <= 0 or external < 0:
+            continue
+        rows.append((rank, external, _f(item.get("avg")), count))
+    if len(rows) < 2:
+        return None, "MEMCPY 组内可用计数不足，未做结构性验证"
+    compared = 0
+    inverted = []
+    for i in range(len(rows)):
+        for j in range(i + 1, len(rows)):
+            ei, ej = rows[i][1], rows[j][1]
+            if ei == ej:
+                continue
+            compared += 1
+            if (ei - ej) * (rows[i][2] - rows[j][2]) <= 0:
+                inverted.append((rows[i][0], rows[j][0]))
+    if compared == 0:
+        exts = "/".join(str(x) for x in sorted({r[1] for r in rows}))
+        return None, ("MEMCPY 组内各 rank 外部拷贝数量相同（%s），均值差异无法用外拷组成解释"
+                      % exts)
+    if inverted:
+        return None, "MEMCPY 组内外部拷贝数量与均值方向不一致，不能归因为结构性负载不均"
+    with_external = sorted(r[0] for r in rows if r[1] > 0)
+    unexplained = [r for r in flagged if r not in with_external]
+    if not with_external or unexplained:
+        return None, f"rank {unexplained} 无外部拷贝，其 MEMCPY 异常不能归因为结构性"
+    share = "/".join(f"{100.0 * r[1] / r[3]:.0f}%" for r in rows if r[1] > 0)
+    return _finding(
+        "G1", "io", "auxiliary",
+        f"组内仅 rank {with_external} 存在外部拷贝（占比 {share}），且这些 rank 的"
+        " MEMCPY 均值同样偏高：结构性负载不均，非慢卡",
+        slow_side=with_external, confidence="low",
+        evidence_refs=[f"io.memcpy.{r}.external" for r in with_external],
+    ), ""
 
 def _ranks_from_key(key: str) -> List[int]:
-    # 先剥掉域名前缀再看数字：域名里可能含数字（如 mc2），直接对整串 findall 会把 2 当成 rank。
     inner = str(key)
     if "[" in inner and inner.endswith("]"):
         inner = inner[inner.index("[") + 1:-1]
     return sorted(int(x) for x in re.findall(r"\d+", inner))
-
 
 def _detection_map(detection: Dict) -> Dict[str, List[Dict]]:
     out: Dict[str, List[Dict]] = {}
@@ -75,7 +95,6 @@ def _detection_map(detection: Dict) -> Dict[str, List[Dict]]:
         if isinstance(items, list):
             out[cat] = [x for x in items if isinstance(x, dict)]
     return out
-
 
 def _detection_slow(detection: Dict, cat: str) -> List[int]:
     out: List[int] = []
@@ -85,11 +104,9 @@ def _detection_slow(detection: Dict, cat: str) -> List[int]:
         out.extend(_ranks_from_key(item.get("display_key", "")))
     return sorted(set(out))
 
-
 def _step_totals(ev: Dict, rank: int) -> Dict:
     by_rank = ev.get("macro", {}).get("step_trace", {}).get("by_rank", {})
     return by_rank.get(str(rank), {}).get("totals", {})
-
 
 def _rank_list(ev: Dict) -> List[int]:
     ranks = ev.get("meta", {}).get("ranks") or []
@@ -97,14 +114,11 @@ def _rank_list(ev: Dict) -> List[int]:
         return sorted(int(r) for r in ranks)
     return sorted(int(r) for r in (ev.get("macro", {}).get("step_trace", {}).get("by_rank", {}) or {}))
 
-
 def _group_of(ev: Dict, domain: str) -> List[List[int]]:
     return ev.get("meta", {}).get("parallels", {}).get(domain, []) or []
 
-
 def _domains(ev: Dict) -> List[str]:
     return sorted((ev.get("meta", {}).get("parallels", {}) or {}).keys())
-
 
 def _op_bandwidth(ev: Dict, rank: int, group: str, op: str) -> float:
     return _f(
@@ -112,12 +126,10 @@ def _op_bandwidth(ev: Dict, rank: int, group: str, op: str) -> float:
          .get(group, {}).get(op, {}) or {}).get("bandwidth_gbps", 0.0)
     )
 
-
 def _op_size_time(ev: Dict, rank: int, group: str, op: str):
     d = (ev.get("comm", {}).get("by_rank_group", {}).get(str(rank), {})
          .get(group, {}).get(op, {}) or {})
     return _f(d.get("size_mb", 0.0)), _f(d.get("transit_ms", 0.0))
-
 
 def _finding(rule_id: str, category: str, status: str, summary: str,
               slow_side=None, baseline_side=None, waiters=None,
@@ -140,7 +152,6 @@ def _finding(rule_id: str, category: str, status: str, summary: str,
         "derived": bool(derived),
     }
 
-
 def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
     th = {"compute": COMPUTE, "io": IO, "comm": COMM}
     th.update(thresholds or {})
@@ -149,11 +160,8 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
     findings: List[Dict] = []
     checked: List[str] = []
     limitations: List[str] = []
-
     coverage = ev.get("coverage", {}) or {}
     limitations.extend(coverage.get("missing", []) or [])
-
-    # ---------------- A 覆盖/一致性 ----------------
     for rule_id in ("A1", "A2", "A3", "A4"):
         checked.append(rule_id)
     for domain in ("ep", "mc2"):
@@ -172,8 +180,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
     for cat in ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm", "cpu", "npu_bubble", "pp_comm"):
         if cat not in (detection or {}) and cat in ("KERNEL_AICORE", "comm", "cpu", "npu_bubble"):
             limitations.append(f"检测结果缺少 {cat} 类别，对应结论未评估")
-
-    # ---------------- B 通信慢组 ----------------
     checked.append("B1")
     det_comm = _detection_map(detection).get("comm", [])
     if det_comm:
@@ -233,8 +239,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
             limitations.append("level0 无 CommAnalyzerBandwidth，组间带宽未评估（不能判正常）")
     for rule_id in ("B2", "B3", "B4"):
         checked.append(rule_id)
-
-    # ---------------- C 计算/搬运 ----------------
     compute_slow: List[int] = []
     compute_ratio = 0.0
     compute_base = 0.0
@@ -274,7 +278,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
             derived=True,
             evidence_refs=[f"compute.by_rank.{r}.ops" for r in compute_slow],
         ))
-    # F2 / F3：区分算子劣化 vs 负载不均
     if compute_slow:
         degraded, imbalanced = _classify_compute(ev, ranks, compute_slow, th["compute"])
         if degraded:
@@ -303,7 +306,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
             ))
     for rule_id in ("C1", "C2", "C3", "C4"):
         checked.append(rule_id)
-    # C3：单卡 vs 组间
     if compute_slow:
         groups = _group_of(ev, "tp") or _group_of(ev, "ep") or _group_of(ev, "dp")
         if groups:
@@ -316,7 +318,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                         confidence="high",
                     ))
                     break
-    # C4：搬运与计算同向
     if _detection_slow(detection, "memcpy_async") and (
         _detection_slow(detection, "KERNEL_AICORE") or _detection_slow(detection, "kernel_aivec")
     ):
@@ -328,8 +329,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                              set(_detection_slow(detection, "kernel_aivec"))),
             confidence="medium",
         ))
-
-    # ---------------- D Host/气泡/PP ----------------
     cpu_slow = _detection_slow(detection, "cpu")
     if cpu_slow:
         findings.append(_finding(
@@ -357,8 +356,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         limitations.append("只有 1 个节点，ZP_Host 不能做节点间对比（只能节点级描述）")
     for rule_id in ("D1", "D2", "D3", "D4"):
         checked.append(rule_id)
-
-    # ---------------- E 元规则 ----------------
     fired_cats = sorted({f["category"] for f in findings if f["status"] == "fired"})
     if len(fired_cats) >= 2:
         findings.append(_finding(
@@ -376,8 +373,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
             break
     for rule_id in ("E1", "E2", "E3", "E4"):
         checked.append(rule_id)
-
-    # ---------------- F 新证据族 ----------------
     f1 = _f1_host_block(ev, ranks, th)
     if f1:
         findings.append(f1)
@@ -392,25 +387,35 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         findings.append(f6)
     for rule_id in ("F1", "F2", "F3", "F4", "F5", "F6"):
         checked.append(rule_id)
-
-    # ---------------- 汇总 ----------------
-    # 检测结果（权威）优先；结论层只做辅助，不改变检测结论。
     det_findings = _detection_findings(detection)
+    g1, memcpy_note = _memcpy_exemption(ev)
+    if g1:
+        for f in det_findings:
+            if f["rule_id"] == "DET_MEMCPY_ASYNC":
+                f["confidence"] = "low"
+                f["exempted"] = True
+                f["summary"] += "；符合结构性负载不均（G1），低置信"
+        limitations.append("MEMCPY 命中符合结构性负载不均（G1），已降级为低置信；检测层结论不变")
+    if memcpy_note:
+        limitations.append(memcpy_note)
+    if g1 or memcpy_note:
+        limitations.extend(MEMCPY_CASE_NOTES)
     det_primary = _detection_primary(detection, det_findings, ev)
     analysis_fired = [f for f in findings if f["status"] in ("fired", "conflict")]
-
     if det_primary:
         conclusion_source = "detection"
         primary = det_primary
         verdict = _detection_verdict(detection, det_findings, ev)
         confidence = "high"
+        if g1 and all(f.get("exempted") for f in det_findings):
+            confidence = "low"
         skip_dup = {"B1", "E2"}
         findings = [f for f in findings if f["rule_id"] not in skip_dup]
         for f in findings:
             if f["status"] in ("fired", "conflict"):
                 f["status"] = "auxiliary"
         secondary = findings
-        result_findings = det_findings + findings
+        result_findings = det_findings + ([g1] if g1 else []) + findings
         rules_fired = [det_primary["rule_id"]] + [f["rule_id"] for f in analysis_fired]
     else:
         conclusion_source = "analysis_fallback"
@@ -458,7 +463,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                 else:
                     top = f1
                     cats = {"host"}
-
             verdict = "multiple" if len(cats) >= 2 else _verdict_from_finding(top, ev)
             primary = {
                 "category": top["category"] if len(cats) < 2 else "multiple",
@@ -474,7 +478,6 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         secondary = analysis_fired[1:] if analysis_fired else []
         result_findings = findings
         rules_fired = [f["rule_id"] for f in analysis_fired]
-
     return {
         "schema_version": "1.0",
         "verdict": verdict,
@@ -489,14 +492,12 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         "actions": _actions(primary, analysis_fired),
     }
 
-
 def _category_of_detection(cat: str) -> str:
     return {
         "comm": "comm", "KERNEL_AICORE": "compute", "kernel_aivec": "compute",
         "memcpy_async": "io", "cpu": "host", "npu_bubble": "npu_bubble",
         "pp_comm": "pp_comm",
     }.get(cat, "unknown")
-
 
 def _detection_findings(detection: Dict) -> List[Dict]:
     out: List[Dict] = []
@@ -524,14 +525,14 @@ def _detection_findings(detection: Dict) -> List[Dict]:
             ))
     return out
 
-
 def _detection_primary(detection: Dict, det_findings: List[Dict], ev: Dict) -> Optional[Dict]:
     if not det_findings:
         return None
-    cats = {f["category"] for f in det_findings}
+    live = [f for f in det_findings if not f.get("exempted")] or det_findings
+    cats = {f["category"] for f in live}
     if len(cats) > 1:
         groups: Dict[str, List[Dict]] = {}
-        for f in det_findings:
+        for f in live:
             groups.setdefault(f["category"], []).append(f)
         label_map = {
             "compute": "计算", "io": "内存搬运", "comm": "通信",
@@ -552,12 +553,12 @@ def _detection_primary(detection: Dict, det_findings: List[Dict], ev: Dict) -> O
         return {
             "category": "multiple",
             "rule_id": "DET_MULTIPLE",
-            "slow_side": sorted({r for f in det_findings for r in f["slow_side"]}),
+            "slow_side": sorted({r for f in live for r in f["slow_side"]}),
             "baseline_side": [],
             "degradation": None,
             "summary": "检测层判定：" + "；".join(parts) + "。",
         }
-    f = det_findings[0]
+    f = live[0]
     return {
         "category": f["category"],
         "rule_id": f["rule_id"],
@@ -566,7 +567,6 @@ def _detection_primary(detection: Dict, det_findings: List[Dict], ev: Dict) -> O
         "degradation": f["value"],
         "summary": f["summary"],
     }
-
 
 def _baseline_for(detection: Dict, ev: Dict, category: str,
                    slow: List[int]) -> List[int]:
@@ -581,13 +581,13 @@ def _baseline_for(detection: Dict, ev: Dict, category: str,
         return [r for r in ranks if r not in slow]
     return []
 
-
 def _detection_verdict(detection: Dict, det_findings: List[Dict], ev: Dict) -> str:
     if not det_findings:
         return "no_anomaly"
-    if len({f["category"] for f in det_findings}) > 1:
+    live = [f for f in det_findings if not f.get("exempted")] or det_findings
+    if len({f["category"] for f in live}) > 1:
         return "multiple"
-    f = det_findings[0]
+    f = live[0]
     if f["category"] == "comm":
         for domain in _domains(ev):
             for g in _group_of(ev, domain):
@@ -595,7 +595,6 @@ def _detection_verdict(detection: Dict, det_findings: List[Dict], ev: Dict) -> s
                     return "slow_group"
         return "slow_rank"
     return "slow_rank"
-
 
 def _verdict_from_finding(f: Dict, ev: Dict) -> str:
     slow = f.get("slow_side") or []
@@ -608,7 +607,6 @@ def _verdict_from_finding(f: Dict, ev: Dict) -> str:
                     return "slow_group"
         return "slow_rank"
     return "slow_rank"
-
 
 def _actions(primary: Dict, fired: List[Dict]) -> List[str]:
     cat = primary.get("category")
@@ -636,11 +634,9 @@ def _actions(primary: Dict, fired: List[Dict]) -> List[str]:
         return ["检查 PP 相邻 stage 的点对点传输与等待"]
     return ["补充 count / 频率 / Host API 数据后再判定"]
 
-
 def _ops_in_group(ev: Dict, rank: int, group: str) -> List[str]:
     d = ev.get("comm", {}).get("by_rank_group", {}).get(str(rank), {}).get(group, {}) or {}
     return list(d.keys())
-
 
 def _all_ops(ev: Dict, groups: List[List[int]]) -> List[str]:
     ops = set()
@@ -650,19 +646,12 @@ def _all_ops(ev: Dict, groups: List[List[int]]) -> List[str]:
                 ops.add(op)
     return sorted(ops)
 
-
-def _group_key(ranks: List[int]) -> str:
-    return ",".join(str(r) for r in sorted(ranks))
-
-
 def _compute_total(ev: Dict, rank: int) -> float:
     ops = (ev.get("compute", {}).get("by_rank", {}).get(str(rank), {}) or {}).get("ops", {}) or {}
     return sum(_f(v.get("sum_ms", 0.0)) for v in ops.values())
 
-
 def _compute_ops(ev: Dict, rank: int) -> Dict[str, Dict]:
     return (ev.get("compute", {}).get("by_rank", {}).get(str(rank), {}) or {}).get("ops", {}) or {}
-
 
 def _classify_compute(ev: Dict, ranks: List[int], slow: List[int], threshold: float):
     peers = [r for r in ranks if r not in slow]
@@ -691,14 +680,12 @@ def _classify_compute(ev: Dict, ranks: List[int], slow: List[int], threshold: fl
             }
     return degraded, imbalanced
 
-
 def _node_ranks(ev: Dict) -> Dict[str, List[int]]:
     nodes: Dict[str, List[int]] = {}
     for rank, info in (ev.get("meta", {}).get("rank_device", {}) or {}).items():
         host = str(info.get("host_uid") or info.get("host_name") or "unknown")
         nodes.setdefault(host, []).append(_i(rank))
     return {k: sorted(v) for k, v in nodes.items()}
-
 
 def _f1_host_block(ev: Dict, ranks: List[int], th: Dict) -> Optional[Dict]:
     session = _f(ev.get("meta", {}).get("session_ms", 0.0))
@@ -769,7 +756,6 @@ def _f1_host_block(ev: Dict, ranks: List[int], th: Dict) -> Optional[Dict]:
         confidence="high", evidence_refs=refs,
     )
 
-
 def _f5_waiter(ev: Dict, ranks: List[int], th: Dict) -> Optional[Dict]:
     session = _f(ev.get("meta", {}).get("session_ms", 0.0))
     if session <= 0:
@@ -820,7 +806,6 @@ def _f5_waiter(ev: Dict, ranks: List[int], th: Dict) -> Optional[Dict]:
         evidence_refs=[f"macro.comm_time.by_rank.{r}.ops" for r in waiters],
     )
 
-
 def _f4_slow_link(ev: Dict, ranks: List[int], th: Dict,
                    compute_dominant: bool = False) -> Optional[Dict]:
     if ev.get("meta", {}).get("level") == "level0":
@@ -831,8 +816,6 @@ def _f4_slow_link(ev: Dict, ranks: List[int], th: Dict,
     if session <= 0:
         session = max((_f(_step_totals(ev, r).get("stage_ms", 0.0)) for r in ranks), default=0.0)
     floor = max(0.01 * session, 1.0)
-
-    # 1) transit 占比高（level1/cluster 才有 transit 分解）
     for r in ranks:
         ops = (ev.get("macro", {}).get("comm_time", {}).get("by_rank", {})
                .get(str(r), {}).get("ops", []) or [])
@@ -850,8 +833,6 @@ def _f4_slow_link(ev: Dict, ranks: List[int], th: Dict,
                     confidence="medium", derived=True,
                     evidence_refs=[f"macro.comm_time.by_rank.{r}.ops"],
                 )
-
-    # 2) 组间带宽差（仅 level1/cluster 的带宽口径可信）
     for domain in _domains(ev):
         groups = _group_of(ev, domain)
         if len(groups) < 2:
@@ -879,8 +860,6 @@ def _f4_slow_link(ev: Dict, ranks: List[int], th: Dict,
                     evidence_refs=[f"comm.by_rank_group.{r}.{_group_key(sorted(lo[1]))}.{op}.bandwidth_gbps"
                                    for r in sorted(lo[1])],
                 )
-
-    # 3) Matrix 慢链路（同一 transport / 同一 opType 内比较）
     for group, pairs in (ev.get("comm", {}).get("matrix", {}) or {}).items():
         for p in pairs:
             if _f(p.get("max_transit_ms", 0.0)) < floor:
@@ -902,7 +881,6 @@ def _f4_slow_link(ev: Dict, ranks: List[int], th: Dict,
                     evidence_refs=[f"comm.matrix.{group}"],
                 )
     return None
-
 
 def _f6_freq(ev: Dict, ranks: List[int], th: Dict) -> Optional[Dict]:
     freq = ev.get("freq", {}).get("by_rank", {}) or {}
