@@ -308,52 +308,84 @@ def _groups_text(domain: str, groups: List[List[int]], limit: int = 6) -> str:
         text += f" 等 {len(groups)} 个组"
     return text
 
+def _parse_comm_key(key) -> tuple:
+    s = str(key or "")
+    m = re.match(r"^([A-Za-z0-9_]+)\s*\[(.*)\]$", s)
+    if not m:
+        return "", []
+    try:
+        ranks = sorted(int(x) for x in m.group(2).split(",") if x.strip())
+    except (TypeError, ValueError):
+        ranks = []
+    return m.group(1), ranks
+
 def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
-    """通信类描述。level1 / cluster 为两级口径，需分开写：
-    Level-1 = 组内逐卡（单卡键），Level-2 = 组间逐组（组键）。
+    """通信类描述。基线一律排除本类别已判为异常的卡 / 组。
+
+    level1 / cluster 为两级口径：Level-1 = 组内逐卡（单卡键），Level-2 = 组间逐组（组键）。
     """
     domains = _domain_groups_map(data_dir) if data_dir else {}
     two_level = level in ("level1", "cluster")
-    parts = []
+
+    parsed = [(i, ) + _parse_comm_key(i.get("display_key")) for i in items]
+    flagged_ranks: Dict[str, set] = {}
+    flagged_groups: Dict[str, List[List[int]]] = {}
+    for _i, domain, target in parsed:
+        if not domain or not target:
+            continue
+        flagged_ranks.setdefault(domain, set()).update(target)
+        if len(target) > 1:
+            flagged_groups.setdefault(domain, []).append(target)
+
+    def _clean_groups(domain: str, groups: List[List[int]], exclude) -> List[List[int]]:
+        bad = flagged_ranks.get(domain) or set()
+        out = []
+        for g in groups:
+            if exclude and g == exclude:
+                continue
+            if set(g) & bad:          # 含已判异常卡 -> 不能当基线
+                continue
+            out.append(g)
+        return out
+
+    parts: List[str] = []
     level1_parts: List[str] = []
     level2_parts: List[str] = []
-    for i in items:
-        key = str(i.get("display_key") or "")
-        m = re.match(r"^([A-Za-z0-9_]+)\s*\[(.*)\]$", key)
-        if m:
-            domain = m.group(1)
-            try:
-                target = sorted(int(x) for x in m.group(2).split(",") if x.strip())
-            except (TypeError, ValueError):
-                target = []
-        else:
-            domain, target = "", []
-        ratio = float(i.get("metric_value") or 0)
+    for item, domain, target in parsed:
+        ratio = float(item.get("metric_value") or 0)
         groups = domains.get(domain) or []
-        if not two_level:
-            others = [g for g in groups if g != target] if target in groups else list(groups)
-            who = _groups_text(domain, others) if others else (
-                "域内无其它组可比" if groups else "域内组信息不可用")
-            label = f"{domain}[{','.join(str(r) for r in target)}]" if domain and target \
-                else _ranks_text(i.get("display_key"))
-            head = f"{domain} 域的 " if domain else ""
-            parts.append(f"{head}{label} 相对域内基线（{who}）约 {ratio:.2f} 倍")
+
+        if not two_level or len(target) > 1:
+            others = _clean_groups(domain, groups, target)
+            if others:
+                who = _groups_text(domain, others)
+            elif groups:
+                who = "域内其它组均含异常卡，无可用基线"
+            else:
+                who = "域内组信息不可用"
+            label = (f"{domain}[{','.join(str(r) for r in target)}]"
+                     if domain and target else _ranks_text(item.get("display_key")))
+            head = f"{domain} 域的 " if not two_level and domain else ""
+            text = f"{head}{label} 相对域内基线（{who}）约 {ratio:.2f} 倍"
+            if two_level:
+                level2_parts.append(f"Level-2（组间逐组）" + text)
+            else:
+                parts.append(text)
             continue
 
-        if len(target) == 1:
-            rank = target[0]
-            group = next((g for g in groups if rank in g), [])
-            peers = [r for r in group if r != rank]
-            who = (f"{domain}[{','.join(str(r) for r in peers)}]" if peers
-                   else ("组内无其它卡" if group else "组信息不可用"))
-            level1_parts.append(f"Level-1（组内逐卡）{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
+        rank = target[0]
+        group = next((g for g in groups if rank in g), [])
+        bad = flagged_ranks.get(domain) or set()
+        peers = [r for r in group if r != rank and r not in bad]
+        if peers:
+            who = f"{domain}[{','.join(str(r) for r in peers)}]"
+        elif group:
+            who = "同组其它卡均为异常卡，无可用基线"
         else:
-            others = [g for g in groups if g != target] if target in groups else list(groups)
-            who = _groups_text(domain, others) if others else (
-                "域内无其它组可比" if groups else "域内组信息不可用")
-            label = f"{domain}[{','.join(str(r) for r in target)}]" if target \
-                else _ranks_text(i.get("display_key"))
-            level2_parts.append(f"Level-2（组间逐组）{label} 相对域内其它组（{who}）约 {ratio:.2f} 倍")
+            who = "组信息不可用"
+        level1_parts.append(
+            f"Level-1（组内逐卡）{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
+
     ordered = parts + level1_parts + level2_parts
     return (f"{_CATEGORY_CN.get('comm')}：" + "；".join(ordered)
             + "（取该组内劣化最严重的［并行域, 算子, Count］组合）")
