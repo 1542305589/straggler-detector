@@ -103,32 +103,27 @@ def _safe_print(text: str):
         except Exception:
             sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
 
-def _print_diagnosis(job_path: str, detection: dict, thresholds: tuple):
+def _print_conclusion(job_path: str, detection: dict, thresholds: tuple):
     try:
         import config
-        from diagnosis import pipeline, render
-        out = config.get_output_path() or job_path
-        ev, diag, paths, errors, warnings = pipeline.run_diagnosis(
-            job_path, out,
-            {"compute": thresholds[0], "io": thresholds[1], "comm": thresholds[2]},
-            detection=detection,
-        )
-        for w in warnings:
-            logger.warning(f"[SLOWNODE ALGO] 诊断校验警告：{w}")
-        for e in errors:
-            logger.warning(f"[SLOWNODE ALGO] 诊断校验错误：{e}")
+        import conclusion
+        out = config.get_output_path()
+        if not out:
+            out = os.path.dirname(job_path) if os.path.isfile(job_path) else job_path
+        level = "unknown"
+        try:
+            level = nodelevel_data_handler.detect_profiling_level(job_path)
+        except Exception:
+            pass
+        text, path = conclusion.write(out, level, thresholds)
         _safe_print("")
-        _safe_print(render.console_evidence(ev, diag))
-        for line in render.format_artifacts([
-            ("检测结果", os.path.join(out, "straggler_detection_result.json")),
-            ("检测报告", os.path.join(out, "detection_report.log")),
-            ("诊断报告", paths["report"]),
-            ("完整证据", paths["evidence"]),
-            ("诊断结论", paths["result"]),
-        ]):
+        _safe_print(text)
+        for line in (f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}",
+                     f"检测报告: {os.path.join(out, 'detection_report.log')}",
+                     f"检测结论: {path}"):
             _safe_print(line)
     except Exception as e:
-        logger.warning(f"[SLOWNODE ALGO] 结果分析失败：{e}")
+        logger.warning(f"[SLOWNODE ALGO] 结论文本生成失败：{e}")
 
 def _backfill_slow_domain(job_path: str, db_files: list = None):
     try:
@@ -237,7 +232,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             _safe_print(summary)
         except Exception as e:
             logger.warning(f"生成汇总表失败：{e}")
-        _print_diagnosis(job_path, result, thresholds)
+        _print_conclusion(job_path, result, thresholds)
         return result
     if clean_decision is None:
         if clean_mode == 'yes':
@@ -284,7 +279,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         _safe_print(summary)
     except Exception as e:
         logger.warning(f"生成汇总表失败：{e}")
-    _print_diagnosis(job_path, result, thresholds)
+    _print_conclusion(job_path, result, thresholds)
     return result
 
 def main():

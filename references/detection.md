@@ -120,8 +120,7 @@ tp → exp → ep → tp_exp → cp → cp2 → cp_ulysses → cp_ring
 |---|---|
 | `scripts/config.py` | 全局配置、阈值、劣化数据容器、节点/域名标志 |
 | `scripts/main.py` | 入口（skill 调用 `run_detection` / CLI） |
-| `scripts/diagnose.py` | 结果分析层独立入口（CLI） |
-| `scripts/diagnosis/` | 结果分析层：`pipeline`（编排）/ `evidence`（只读取证）/ `rules`（规则）/ `render`（渲染）/ `validate`（校验门） |
+| `scripts/conclusion.py` | 结论层：把检测结果表逐类别翻成自然语言（`conclusion.md`），不做任何额外判断 |
 | `scripts/profilingdataparse.py` | `.db`(SQLite) → `op_metric` CSV/JSON；带宽 / PP 等待回填 |
 | `scripts/nodelevel.py` | 各维度慢节点检测核心逻辑 |
 | `scripts/nodelevel_data_handler.py` | 读 CSV/拓扑，构建快照与检测组 |

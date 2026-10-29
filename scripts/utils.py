@@ -125,9 +125,7 @@ def confirm_clean(input_path: str) -> bool:
         "straggler_detection_result.json",
         "straggler_detection_result",
         "detection_report.log",
-        "evidence.json",
-        "formal_result.json",
-        "diagnosis_report.md",
+        "conclusion.md",
         "joint_failure_analysis.log"
     ]
     existing = []
@@ -198,9 +196,7 @@ def clean_detection_outputs(input_path: str):
         "straggler_detection_result.json",
         "straggler_detection_result",
         "detection_report.log",
-        "evidence.json",
-        "formal_result.json",
-        "diagnosis_report.md",
+        "conclusion.md",
         "joint_failure_analysis.log"
     ]
     cleaned_count = 0

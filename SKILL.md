@@ -24,29 +24,15 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 **走「结果分析层」**（不重跑检测，只解读已有结果）——用户说：
 - 分析检测结果 / 为什么慢 / 根因是什么 / 谁慢
 
-## 结果分析层（解读已有结果，不重跑检测）
+## 检测结论（自然语言）
 
-- **触发词**：「分析检测结果 / 为什么慢 / 根因是什么 / 谁慢」→ 走本层；「重新检测 / 跑检测」→ 走检测流程。
-- **输入**：只读 SQL 读取原始 `ascend_pytorch_profiler_*.db` / `analysis.db` / `cluster_analysis.db`（`scripts/diagnosis/evidence.py`），并复用检测产物 `straggler_detection_result.json`。
-- **编排**：取证 → 规则 → 校验门 → 落盘只在 `scripts/diagnosis/pipeline.py` 一处；`scripts/main.py`（检测后自动诊断）与 `scripts/diagnose.py`（独立入口）共用，两条路径都会跑校验门。
-- **权威顺序**：检测结果（`straggler_detection_result.json`，基于算子耗时 / 通信带宽）**优先**；分析层只做**辅助**，不改变 `verdict / primary / actions`；检测层无异常时才兜底，且置信度最多 `medium`。控制台会打印「结论来源」和「辅助发现（不改变检测结论）」。
-- **硬约束**：只读、不写库、不改检测数据；正式结论**只由** `scripts/diagnosis/rules.py` 的规则产出；LLM 只能在报告第 9 节「推测与待验证假设」里下钻（标 `confidence=speculative`），校验门禁止其进入 `verdict/primary/actions`。
-- **规则库**：A 覆盖/一致性、B 通信慢组、C 计算/搬运、D Host/气泡/PP、E 元规则（由旧分析层迁移，统一读 `evidence.json`）；F1 Host 阻塞（伪快卡）、F2 纯计算慢卡、F3 负载不均、F4 通信慢链路、F5 纯等待、F6 频率异常（新增，来自裸 db 证据）；G1 memcpy 单独异常降级（无同卡计算佐证 → `low` + `limitations`）。
-- **结论表述**：`MEMCPY_ASYNC` 单独异常（无同卡计算异常佐证）时，须向用户说明该指标不可靠、低置信（`G1`），并给出需补充的数据：拷贝方向（H2D/D2D/D2H）、逐次数据量、任务数。
-- **单独运行**（不重跑检测、不改检测代码）：
-
-```bash
-python scripts/diagnose.py path=<数据目录 | cluster_analysis.db> out=<输出目录>
-# 可选阈值：compute=1.3 io=2.5 comm=1.3
-# cluster 单文件默认跳过逐 op 等待分解；加 full-cluster 打开（较慢）
-```
-
-  `scripts/diagnose.py` 默认**逐项询问**阈值、是否清理已有数据、是否关闭 no-align（levelnone/level0）；非交互加 `no-ask`，并用 `clean=yes|no`、`no-align` 显式指定。
-- **产物**（输出到 `<out>/`，默认 `<数据目录>/`，全部同级）：
-  1. `evidence.json` — 确定性证据（`analysis.db` 优先 + 裸 profiler db 回退 + cluster db）
-  2. `formal_result.json` — 正式结论（每条带 `rule_id` + `evidence_refs`，并含校验门结果 `validation`）
-  3. `diagnosis_report.md` — 固定骨架报告（第 9 节为推测区）
-- **详细规格**（规则库全表、输出契约、置信度、校验门、回归样例）见 `references/analysis_layer.md`；JSON schema 见 `references/output_schema.json`。
+- 检测结束后自动生成 \conclusion.md\：把 \straggler_detection_result.json\ 的那张表，逐类别用
+  自然语言描述一遍（哪张卡 / 哪个组、劣化几倍、阈值多少、哪些部分没参与检测）。
+- **不做任何额外判断**：不猜根因、不排优先级、不产出置信度、不加规则编号。检测层报了什
+  么就写什么；检测层没报就写未检出异常。
+- 只在结尾补一句数据级别的限制（如 level0 无通信带宽 → 通信带宽未评估，不能当作正常）。
+- 向用户复述结论时，同样只用自然语言，不要提 \
+erdict\、ule_id\、置信度等内部概念。
 
 ## 检测的 7 类指标
 
@@ -137,27 +123,17 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 必须在最终回答中原样列出产物绝对路径
 
-检测/诊断结束后，程序会在 stdout 打印 5 行产物路径（**检测结果 / 检测报告 / 诊断报告 / 完整证据 / 诊断结论**），且**已经是绝对路径**。
+检测结束后，程序会在 stdout 打印 3 行产物路径（**检测结果 / 检测报告 / 检测结论**），且**已经是绝对路径**。
 
-**最终回答里必须原样带上这 5 行绝对路径**，禁止：
+**最终回答里必须原样带上这 3 行绝对路径**，禁止：
 - 只写文件名（如 `straggler_detection_result.json`）或省略目录；
 - 省略其中几个、或用"产物：…等"概括。
 
-**原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，`scripts/diagnose.py` 由 `out=` 参数决定。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
-
-### MEMCPY 结构性豁免的表述
-
-`MEMCPY_ASYNC` 的检测量是混合平均，各组拷贝组成不同就会偏高。结论层用"外部拷贝占比"做结构性
-判定，命中时输出 `G1`（`auxiliary` / `low`）并把 `DET_MEMCPY_ASYNC` 降为 `low`。
-
-- 出现 `G1`：说明"组内仅这几张卡存在外部拷贝，属于结构性负载不均，不是慢卡"，并**同时**说明该指标
-  缺拷贝方向与数据量；
-- 只有 memcpy 异常、没有 `G1`：按检测层结论报，但要说明"无法证明是结构性，也不能排除，需谨慎"；
-- 禁止把 `G1` 表述成"已排除该卡的问题"——它只降低了该指标的置信度，其他类别（计算/通信）照旧。
+**原因**：产物目录随数据级别变化——`levelnone`/`level0`/`level1` 落在数据目录（多 job 场景为 job 输出目录），`cluster` 单文件落在 `<db 所在目录>/detection_output/`，。**只有绝对路径才能让用户直接找到文件**；用户读的是最终回答，不是 stdout。
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`evidence.json`、`formal_result.json`、`diagnosis_report.md`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`、`conclusion.md`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
 
 ## 输入数据
 
@@ -204,7 +180,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 2. `op_metric/group_info_*.json` — 并行域信息
 3. `straggler_detection_result.json` — 检测结果（含全部类别）
 4. `detection_report.log` — 可视化详情报告
-5. `evidence.json` / `formal_result.json` / `diagnosis_report.md` — 结果分析层产物
+5. 结论只写 `conclusion.md`；不再生成 `evidence.json` / `formal_result.json` / `diagnosis_report.md`（结论层已移除）
 6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、**通信单卡（Level-1 组内）如 `ep[5]:2.5`**、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
