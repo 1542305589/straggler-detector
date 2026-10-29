@@ -308,9 +308,15 @@ def _groups_text(domain: str, groups: List[List[int]], limit: int = 6) -> str:
         text += f" 等 {len(groups)} 个组"
     return text
 
-def _comm_line(items: List[Dict], data_dir: str = "") -> str:
+def _comm_line(items: List[Dict], data_dir: str = "", level: str = "") -> str:
+    """通信类描述。level1 / cluster 为两级口径，需分开写：
+    Level-1 = 组内逐卡（单卡键），Level-2 = 组间逐组（组键）。
+    """
     domains = _domain_groups_map(data_dir) if data_dir else {}
+    two_level = level in ("level1", "cluster")
     parts = []
+    level1_parts: List[str] = []
+    level2_parts: List[str] = []
     for i in items:
         key = str(i.get("display_key") or "")
         m = re.match(r"^([A-Za-z0-9_]+)\s*\[(.*)\]$", key)
@@ -322,20 +328,34 @@ def _comm_line(items: List[Dict], data_dir: str = "") -> str:
                 target = []
         else:
             domain, target = "", []
+        ratio = float(i.get("metric_value") or 0)
         groups = domains.get(domain) or []
-        others = [g for g in groups if g != target] if target in groups else list(groups)
-        if others:
-            who = _groups_text(domain, others)
-        elif groups:
-            who = "域内无其它组可比"
+        if not two_level:
+            others = [g for g in groups if g != target] if target in groups else list(groups)
+            who = _groups_text(domain, others) if others else (
+                "域内无其它组可比" if groups else "域内组信息不可用")
+            label = f"{domain}[{','.join(str(r) for r in target)}]" if domain and target \
+                else _ranks_text(i.get("display_key"))
+            head = f"{domain} 域的 " if domain else ""
+            parts.append(f"{head}{label} 相对域内基线（{who}）约 {ratio:.2f} 倍")
+            continue
+
+        if len(target) == 1:
+            rank = target[0]
+            group = next((g for g in groups if rank in g), [])
+            peers = [r for r in group if r != rank]
+            who = (f"{domain}[{','.join(str(r) for r in peers)}]" if peers
+                   else ("组内无其它卡" if group else "组信息不可用"))
+            level1_parts.append(f"Level-1（组内逐卡）{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
         else:
-            who = "域内组信息不可用"
-        label = f"{domain}[{','.join(str(r) for r in target)}]" if domain and target else \
-            _ranks_text(i.get("display_key"))
-        head = f"{domain} 域的 " if domain else ""
-        parts.append(f"{head}{label} 相对域内基线（{who}）约 "
-                     f"{float(i.get('metric_value') or 0):.2f} 倍")
-    return (f"{_CATEGORY_CN.get('comm')}：" + "、".join(parts)
+            others = [g for g in groups if g != target] if target in groups else list(groups)
+            who = _groups_text(domain, others) if others else (
+                "域内无其它组可比" if groups else "域内组信息不可用")
+            label = f"{domain}[{','.join(str(r) for r in target)}]" if target \
+                else _ranks_text(i.get("display_key"))
+            level2_parts.append(f"Level-2（组间逐组）{label} 相对域内其它组（{who}）约 {ratio:.2f} 倍")
+    ordered = parts + level1_parts + level2_parts
+    return (f"{_CATEGORY_CN.get('comm')}：" + "；".join(ordered)
             + "（取该组内劣化最严重的［并行域, 算子, Count］组合）")
 
 def _pp_line(items: List[Dict]) -> str:
@@ -377,7 +397,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         elif cat in _DETAIL_CATS:
             lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
         elif cat == "comm":
-            lines.append(f"- {_comm_line(items, data_dir)}")
+            lines.append(f"- {_comm_line(items, data_dir, level)}")
         elif cat == "pp_comm":
             lines.append(f"- {_pp_line(items)}")
         elif cat == "npu_bubble":
