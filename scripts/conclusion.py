@@ -206,13 +206,25 @@ def _detail_line(cat: str, items: List[Dict], metric_dir: str,
             v = _read_metric(metric_dir, r, column)
             if v is not None:
                 values.append(f"rank{r} 为 {v:.3f} ms")
-        base, base_ranks = _baseline(column, metric_dir, group, flagged)
+        base_ranks = [r for r in group if r not in flagged] or list(group)
+        base = None
+        for item in group_items:
+            try:
+                v = _read_metric(metric_dir, int(_first_rank(item)), column)
+            except (TypeError, ValueError):
+                v = None
+            ratio = float(item.get("metric_value") or 0)
+            if v is not None and ratio > 0:
+                base = v / ratio      # 与检测层 kmeans 基线一致
+                break
+        if base is None:
+            base, base_ranks = _baseline(column, metric_dir, group, flagged)
         who = ("rank " + "、".join(str(r) for r in base_ranks)) if base_ranks else "—"
         sentence = ratios
         if values:
             sentence += "，" + "，".join(values)
         if base is not None:
-            sentence += f"，检测组内基线平均（{who}）为 {base:.3f} ms"
+            sentence += f"，检测组内基线（{who}）为 {base:.3f} ms"
         parts.append(sentence)
     return f"{label}：" + "。".join(parts)
 
@@ -262,10 +274,21 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
     if values:
         sentence += "，" + "，".join(values)
     base_nodes = [n for n in nodes if n not in names]
-    base_vals = [v for v in (_node_value(metric_dir, nodes, n) for n in base_nodes) if v is not None]
-    if base_vals:
-        who = "、".join(base_nodes)
-        sentence += (f"，其它节点基线平均（{who}）为 {sum(base_vals) / len(base_vals):.3f} ms")
+    base = None
+    for n, item in zip(names, items):
+        v = _node_value(metric_dir, nodes, n)
+        ratio = float(item.get("metric_value") or 0)
+        if v is not None and ratio > 0:
+            base = v / ratio          # 与检测层 kmeans 基线一致
+            break
+    if base is None:
+        base_vals = [v for v in (_node_value(metric_dir, nodes, n) for n in base_nodes)
+                     if v is not None]
+        if base_vals:
+            base = sum(base_vals) / len(base_vals)
+    if base is not None:
+        who = "、".join(base_nodes) if base_nodes else "—"
+        sentence += f"，其它节点基线（{who}）为 {base:.3f} ms"
     else:
         sentence += "，其它节点基线无可用数据"
     return f"{label}：{sentence}"
