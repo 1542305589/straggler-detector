@@ -164,7 +164,7 @@
 | C1 | 计算类检测非空 | 计算慢卡 |
 | C2 | 检测未报但计算组间平移 ≥ 阈值 | `conflict`，建议复核 |
 | C3 | 只有组内少数卡异常 | 倾向单卡故障而非整组 |
-| C4 | 搬运与计算同向异常 | 疑似整芯片内存带宽 / NUMA |
+| C4 | **同一张卡**上搬运与计算同向异常（已豁免的搬运卡不计入） | 疑似整芯片内存带宽 / NUMA |
 | D1 / D2 / D3 | `cpu` / `npu_bubble` / `pp_comm` 非空 | Host 下发 / 调度间隔 / PP 等待 |
 | D4 | ZP_Host 只有 1 个节点 | 无法节点间对比 |
 | E1–E4 | 多 device / 多类别同向 / 与检测矛盾 / 关键字段缺失 | 元规则；E4 → `insufficient_evidence` |
@@ -189,7 +189,9 @@ MEMCPY_ASYNC 的检测量是**混合平均**：外部拷贝（`aclrtMemcpyAsync`
 **判据**（全部满足才豁免，任一不满足即"无法验证"）：
 
 1. 取组：该 rank 检测时实际参与比较的组（`tp, exp, ep, tp_exp, cp, cp2, cp_ulysses, cp_ring,
-   dp, dp_cp, dp_modulo_exp_cp, default_group` 优先级；无并行域退化为整节点）；
+   dp, dp_cp, dp_modulo_exp_cp, default_group` 优先级；无并行域退化为整节点）。
+   被报异常的 rank 可能**分属不同组**（如 `PP4TP4` 的首/末 stage 落在不同的 tp 组），
+   因此按各自所在的组**分别**判定，全部通过才豁免；
 2. 取数：与检测同一个 step（`n>1` 取倒数第二个，`n==1` 取第 0 个）的
    `MEMCPY_ASYNC`（均值）与 3 个计数列；`count == 0` 或 `external < 0`（`CANN_API` 缺失）的 rank 剔除。
    未关联到 `CANN_API` 的任务按**设备内拷贝**计——只有 `aclrtMemcpyAsync` 是外部拷贝；
@@ -202,9 +204,13 @@ MEMCPY_ASYNC 的检测量是**混合平均**：外部拷贝（`aclrtMemcpyAsync`
 
 | 结果 | 输出 |
 |---|---|
-| 全部条件满足 | `G1`（`auxiliary` / `io` / `low`），`DET_MEMCPY_ASYNC` 置信度降 `low`，`verdict` 的 `multiple` 类别计数跳过 io；若 io 是唯一异常类别，`verdict` 不变而整体 `confidence` 降 `low` |
+| 全部条件满足 | `G1`（`auxiliary` / `io` / `low`），`DET_MEMCPY_ASYNC` 置信度降 `low`；该卡不再参与 `verdict=multiple` 的同卡交集判断；若 io 是唯一异常类别，`verdict` 不变而整体 `confidence` 降 `low`。**注意：命中只说明"与结构性负载不均一致"，若这些卡的外拷本身劣化，本判据无法区分** |
 | 存在反向卡对 | 不豁免，保持检测层置信，`limitations` 记"方向不一致" |
 | 无可用卡对 / 缺列 / 无 `analysis.db` / `CANN_API` 缺失 | 不豁免，`limitations` 记原因 |
+
+`verdict = multiple` 的条件：**至少两个未豁免类别，其慢卡集合有交集**（同一张卡上多类异常）。
+慢卡互不相交时按劣化指数取主因，其余作为辅助发现——不把"不同卡上的不同问题"合并成
+"多故障叠加/共同根因"。
 
 **不论是否豁免**，只要 MEMCPY_ASYNC 报异常，都追加案例参考与局限：
 

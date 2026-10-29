@@ -30,7 +30,11 @@ def _group_for_rank(ev: Dict, rank: int) -> List[int]:
     return sorted(_i(r) for r in (meta.get("ranks") or []))
 
 def _memcpy_exemption(ev: Dict) -> tuple:
-    """外部拷贝占比的方向一致性判据。返回 (G1 finding 或 None, 未豁免原因)。"""
+    """外部拷贝数量的方向一致性判据。返回 (G1 finding 或 None, 未豁免原因)。
+
+    被报异常的 rank 可能分属不同的检测组（如 PP4TP4 的首/末 stage 在不同的 tp 组），
+    因此按各自所在的组分别判定，全部通过才豁免。
+    """
     flagged = _detection_slow(ev.get("detection") or {}, "memcpy_async")
     if not flagged:
         return None, ""
@@ -39,48 +43,67 @@ def _memcpy_exemption(ev: Dict) -> tuple:
     if not data:
         return None, ("MEMCPY 计数不可用（%s），未做结构性验证"
                       % (io.get("memcpy_not_evaluated") or "无数据"))
-    group = _group_for_rank(ev, flagged[0])
-    if len(group) < 2:
-        return None, "MEMCPY 组内无对照卡（少于 2 张），未做结构性验证"
-    rows = []
-    for rank in group:
-        item = data.get(str(rank))
-        if not item:
+    by_group: Dict[tuple, List[int]] = {}
+    for rank in flagged:
+        by_group.setdefault(tuple(_group_for_rank(ev, rank)), []).append(rank)
+    exempted: List[int] = []
+    shares: List[str] = []
+    reasons: List[str] = []
+    for group, ranks in sorted(by_group.items(), key=lambda kv: kv[0]):
+        ranks = sorted(ranks)
+        if len(group) < 2:
+            reasons.append(f"rank {ranks} 所在组无对照卡（少于 2 张），未做结构性验证")
             continue
-        count = _i(item.get("count"))
-        external = _i(item.get("external"))
-        if count <= 0 or external < 0:
-            continue
-        rows.append((rank, external, _f(item.get("avg")), count))
-    if len(rows) < 2:
-        return None, "MEMCPY 组内可用计数不足，未做结构性验证"
-    compared = 0
-    inverted = []
-    for i in range(len(rows)):
-        for j in range(i + 1, len(rows)):
-            ei, ej = rows[i][1], rows[j][1]
-            if ei == ej:
+        rows = []
+        for rank in group:
+            item = data.get(str(rank))
+            if not item:
                 continue
-            compared += 1
-            if (ei - ej) * (rows[i][2] - rows[j][2]) <= 0:
-                inverted.append((rows[i][0], rows[j][0]))
-    if compared == 0:
-        exts = "/".join(str(x) for x in sorted({r[1] for r in rows}))
-        return None, ("MEMCPY 组内各 rank 外部拷贝数量相同（%s），均值差异无法用外拷组成解释"
-                      % exts)
-    if inverted:
-        return None, "MEMCPY 组内外部拷贝数量与均值方向不一致，不能归因为结构性负载不均"
-    with_external = sorted(r[0] for r in rows if r[1] > 0)
-    unexplained = [r for r in flagged if r not in with_external]
-    if not with_external or unexplained:
-        return None, f"rank {unexplained} 无外部拷贝，其 MEMCPY 异常不能归因为结构性"
-    share = "/".join(f"{100.0 * r[1] / r[3]:.0f}%" for r in rows if r[1] > 0)
+            count = _i(item.get("count"))
+            external = _i(item.get("external"))
+            if count <= 0 or external < 0:
+                continue
+            rows.append((rank, external, _f(item.get("avg")), count))
+        if len(rows) < 2:
+            reasons.append(f"rank {ranks} 所在组可用计数不足，未做结构性验证")
+            continue
+        compared = 0
+        inverted = []
+        for i in range(len(rows)):
+            for j in range(i + 1, len(rows)):
+                ei, ej = rows[i][1], rows[j][1]
+                if ei == ej:
+                    continue
+                compared += 1
+                if (ei - ej) * (rows[i][2] - rows[j][2]) <= 0:
+                    inverted.append((rows[i][0], rows[j][0]))
+        if compared == 0:
+            exts = "/".join(str(x) for x in sorted({r[1] for r in rows}))
+            reasons.append(f"rank {ranks} 所在组外拷数量相同（{exts}），"
+                           "均值差异无法用外拷组成解释")
+            continue
+        if inverted:
+            reasons.append(f"rank {ranks} 所在组外拷数量与均值方向不一致，"
+                           "不能归因为结构性")
+            continue
+        with_external = [r[0] for r in rows if r[1] > 0]
+        missing = [r for r in ranks if r not in with_external]
+        if missing:
+            reasons.append(f"rank {missing} 无外部拷贝，其 MEMCPY 异常不能归因为结构性")
+            continue
+        exempted.extend(ranks)
+        shares.extend(f"{r[0]}:{100.0 * r[1] / r[3]:.0f}%" for r in rows if r[1] > 0)
+    if reasons:
+        return None, "；".join(reasons)
+    if not exempted:
+        return None, ""
     return _finding(
         "G1", "io", "auxiliary",
-        f"组内仅 rank {with_external} 存在外部拷贝（占比 {share}），且这些 rank 的"
-        " MEMCPY 均值同样偏高：结构性负载不均，非慢卡",
-        slow_side=with_external, confidence="low",
-        evidence_refs=[f"io.memcpy.{r}.external" for r in with_external],
+        f"组内仅 {sorted(set(exempted))} 存在外部拷贝（{'、'.join(shares)}），"
+        "且这些 rank 的 MEMCPY 均值同样偏高：与结构性负载不均一致；"
+        "但本数据级别缺拷贝方向与逐次数据量，无法区分结构性不均与这些卡的外拷真实劣化",
+        slow_side=sorted(set(exempted)), confidence="low",
+        evidence_refs=[f"io.memcpy.{r}.external" for r in sorted(set(exempted))],
     ), ""
 
 def _ranks_from_key(key: str) -> List[int]:
@@ -95,6 +118,24 @@ def _detection_map(detection: Dict) -> Dict[str, List[Dict]]:
         if isinstance(items, list):
             out[cat] = [x for x in items if isinstance(x, dict)]
     return out
+
+def _node_label_ranks(ev: Dict) -> Dict[str, List[int]]:
+    """节点标签（host_uid / host_name）→ rank 列表。"""
+    out: Dict[str, List[int]] = {}
+    for rank, info in (ev.get("meta", {}).get("rank_device", {}) or {}).items():
+        r = _i(rank)
+        for key in (info.get("host_uid"), info.get("host_name")):
+            if key:
+                out.setdefault(str(key), []).append(r)
+    return {k: sorted(set(v)) for k, v in out.items()}
+
+def _ranks_for_key(ev: Dict, key) -> List[int]:
+    """display_key → rank。节点名（如 worker4）按节点映射展开，其余按数字解析。"""
+    label = str(key)
+    nodes = _node_label_ranks(ev)
+    if label in nodes:
+        return nodes[label]
+    return _ranks_from_key(label)
 
 def _detection_slow(detection: Dict, cat: str) -> List[int]:
     out: List[int] = []
@@ -162,6 +203,8 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
     limitations: List[str] = []
     coverage = ev.get("coverage", {}) or {}
     limitations.extend(coverage.get("missing", []) or [])
+    g1, memcpy_note = _memcpy_exemption(ev)
+    exempted_ranks = set(g1.get("slow_side") or []) if g1 else set()
     for rule_id in ("A1", "A2", "A3", "A4"):
         checked.append(rule_id)
     for domain in ("ep", "mc2"):
@@ -256,7 +299,7 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                 compute_base = med
     detection_compute = set(_detection_slow(detection, "KERNEL_AICORE")) | \
         set(_detection_slow(detection, "kernel_aivec")) | \
-        set(_detection_slow(detection, "memcpy_async"))
+        (set(_detection_slow(detection, "memcpy_async")) - exempted_ranks)
     compute_diff = compute_value - compute_base
     session_ms = _f(ev.get("meta", {}).get("session_ms", 0.0))
     compute_dominant_flag = compute_diff >= max(0.05 * session_ms, 50.0)
@@ -318,22 +361,26 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                         confidence="high",
                     ))
                     break
-    if _detection_slow(detection, "memcpy_async") and (
-        _detection_slow(detection, "KERNEL_AICORE") or _detection_slow(detection, "kernel_aivec")
-    ):
+    memcpy_slow = set(_detection_slow(detection, "memcpy_async")) - exempted_ranks
+    compute_all = (set(_detection_slow(detection, "KERNEL_AICORE")) |
+                   set(_detection_slow(detection, "kernel_aivec")))
+    same_card = sorted(memcpy_slow & compute_all)
+    if same_card:
         findings.append(_finding(
             "C4", "compute", "fired",
-            "内存搬运与计算类同时异常，可能是整芯片内存带宽或跨 NUMA 问题，而不是单一算子。",
-            slow_side=sorted(set(_detection_slow(detection, "memcpy_async")) |
-                             set(_detection_slow(detection, "KERNEL_AICORE")) |
-                             set(_detection_slow(detection, "kernel_aivec"))),
+            f"rank {same_card} 的内存搬运与计算类同时异常，可能是整芯片内存带宽或跨 NUMA 问题，"
+            "而不是单一算子。",
+            slow_side=same_card,
             confidence="medium",
         ))
-    cpu_slow = _detection_slow(detection, "cpu")
+    cpu_items = [str(item.get("display_key", ""))
+                 for item in _detection_map(detection).get("cpu", [])
+                 if item.get("is_abnormal") is not False]
+    cpu_slow = sorted({r for key in cpu_items for r in _ranks_for_key(ev, key)})
     if cpu_slow:
         findings.append(_finding(
             "D1", "host", "fired",
-            f"ZP_Host 异常卡 {cpu_slow}，Host/下发慢（报告节点级，以 JSON rank 为准）",
+            f"ZP_Host 异常节点 {cpu_items}（展开为 rank {cpu_slow}），Host/下发慢",
             slow_side=cpu_slow, confidence="high",
             evidence_refs=[f"host.free_windows.{r}.total_ms" for r in cpu_slow],
         ))
@@ -358,9 +405,17 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         checked.append(rule_id)
     fired_cats = sorted({f["category"] for f in findings if f["status"] == "fired"})
     if len(fired_cats) >= 2:
+        by_cat: Dict[str, List[int]] = {}
+        for f in findings:
+            if f["status"] != "fired":
+                continue
+            cat = f["category"]
+            by_cat[cat] = sorted(set(by_cat.get(cat) or []) | set(f.get("slow_side") or []))
+        detail = "；".join(f"{c}: {v}" for c, v in sorted(by_cat.items()) if v)
         findings.append(_finding(
             "E2", "multiple", "fired",
-            f"多个类别同向异常：{fired_cats}，考虑多故障叠加/共同根因",
+            f"多个类别同时命中（{detail}），可能是多故障叠加或共同根因；"
+            "各类别可以落在不同的卡上，需按类别分别排查",
             confidence="medium",
         ))
     for f in findings:
@@ -387,8 +442,7 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
         findings.append(f6)
     for rule_id in ("F1", "F2", "F3", "F4", "F5", "F6"):
         checked.append(rule_id)
-    det_findings = _detection_findings(detection)
-    g1, memcpy_note = _memcpy_exemption(ev)
+    det_findings = _detection_findings(detection, ev)
     if g1:
         for f in det_findings:
             if f["rule_id"] == "DET_MEMCPY_ASYNC":
@@ -396,6 +450,8 @@ def evaluate(ev: Dict, thresholds: Dict[str, float] = None) -> Dict:
                 f["exempted"] = True
                 f["summary"] += "；符合结构性负载不均（G1），低置信"
         limitations.append("MEMCPY 命中符合结构性负载不均（G1），已降级为低置信；检测层结论不变")
+        limitations.append("若 tp0 等结构位卡的外部拷贝本身劣化，本判据无法与结构性不均区分，"
+                           "需拷贝方向（H2D/D2H/D2D）与逐次数据量进一步确认")
     if memcpy_note:
         limitations.append(memcpy_note)
     if g1 or memcpy_note:
@@ -499,14 +555,16 @@ def _category_of_detection(cat: str) -> str:
         "pp_comm": "pp_comm",
     }.get(cat, "unknown")
 
-def _detection_findings(detection: Dict) -> List[Dict]:
+def _detection_findings(detection: Dict, ev: Dict = None) -> List[Dict]:
     out: List[Dict] = []
     for cat in ("comm", "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
                  "cpu", "npu_bubble", "pp_comm"):
         for item in _detection_map(detection).get(cat, []):
             if item.get("is_abnormal") is False:
                 continue
-            slow = _ranks_from_key(item.get("display_key", ""))
+            slow = (_ranks_for_key(ev, item.get("display_key", ""))
+                    if (ev is not None and cat == "cpu")
+                    else _ranks_from_key(item.get("display_key", "")))
             label = {
                 "comm": f"通信组 {item.get('display_key')}",
                 "KERNEL_AICORE": f"rank {item.get('display_key')} 计算",
@@ -525,12 +583,33 @@ def _detection_findings(detection: Dict) -> List[Dict]:
             ))
     return out
 
+def _ranks_overlap(findings: List[Dict]) -> bool:
+    """两类异常是否落在同一张卡上（multiple 的前提）。"""
+    by_cat: Dict[str, set] = {}
+    for f in findings:
+        by_cat.setdefault(f["category"], set()).update(f.get("slow_side") or [])
+    cats = list(by_cat)
+    for i in range(len(cats)):
+        for j in range(i + 1, len(cats)):
+            if by_cat[cats[i]] & by_cat[cats[j]]:
+                return True
+    return False
+
+def _pick_primary(findings: List[Dict]) -> Dict:
+    """按劣化指数取主因，同值按 CATEGORY_ORDER 优先级。"""
+    def key(f: Dict) -> tuple:
+        cat = f.get("category", "")
+        idx = CATEGORY_ORDER.index(cat) if cat in CATEGORY_ORDER else len(CATEGORY_ORDER)
+        return (-_f(f.get("value")), idx)
+    return sorted(findings, key=key)[0]
+
 def _detection_primary(detection: Dict, det_findings: List[Dict], ev: Dict) -> Optional[Dict]:
     if not det_findings:
         return None
-    live = [f for f in det_findings if not f.get("exempted")] or det_findings
+    live = [f for f in det_findings if not f.get("exempted")]
+    pool = live or det_findings
     cats = {f["category"] for f in live}
-    if len(cats) > 1:
+    if len(cats) > 1 and _ranks_overlap(live):
         groups: Dict[str, List[Dict]] = {}
         for f in live:
             groups.setdefault(f["category"], []).append(f)
@@ -558,7 +637,7 @@ def _detection_primary(detection: Dict, det_findings: List[Dict], ev: Dict) -> O
             "degradation": None,
             "summary": "检测层判定：" + "；".join(parts) + "。",
         }
-    f = live[0]
+    f = _pick_primary(pool)
     return {
         "category": f["category"],
         "rule_id": f["rule_id"],
@@ -584,10 +663,11 @@ def _baseline_for(detection: Dict, ev: Dict, category: str,
 def _detection_verdict(detection: Dict, det_findings: List[Dict], ev: Dict) -> str:
     if not det_findings:
         return "no_anomaly"
-    live = [f for f in det_findings if not f.get("exempted")] or det_findings
-    if len({f["category"] for f in live}) > 1:
+    live = [f for f in det_findings if not f.get("exempted")]
+    pool = live or det_findings
+    if len({f["category"] for f in live}) > 1 and _ranks_overlap(live):
         return "multiple"
-    f = live[0]
+    f = _pick_primary(pool)
     if f["category"] == "comm":
         for domain in _domains(ev):
             for g in _group_of(ev, domain):
