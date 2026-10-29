@@ -9,7 +9,7 @@ _CATEGORY_CN = {
     "KERNEL_AICORE": "KERNEL_AICORE类算子",
     "kernel_aivec": "KERNEL_AIVEC类算子",
     "memcpy_async": "MEMCPY_ASYNC类算子",
-    "comm": "comm（通信域带宽）",
+    "comm": "comm（通信组带宽）",
     "cpu": "cpu（主机侧 ZP_Host）",
     "npu_bubble": "npu_bubble（NPU 气泡 ZP_Bubble）",
     "pp_comm": "pp_comm（PP 流水线等待）",
@@ -270,12 +270,73 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
         sentence += "，其它节点基线无可用数据"
     return f"{label}：{sentence}"
 
-def _comm_line(items: List[Dict]) -> str:
-    ratios = "、".join(
-        f"{_ranks_text(i.get('display_key'))} 相对组内基线约 "
-        f"{float(i.get('metric_value') or 0):.2f} 倍" for i in items)
-    return (f"{_CATEGORY_CN.get('comm')}：{ratios}"
-            "（取该域内劣化最严重的［并行域, 算子, Count］组合）")
+def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
+    """通信域 -> 该域内的所有 Group（rank 列表）。"""
+    metric_dir = os.path.join(data_dir, "op_metric")
+    out: Dict[str, List[List[int]]] = {}
+    try:
+        names = sorted(os.listdir(metric_dir))
+    except OSError:
+        return out
+    for name in names:
+        if not (name.startswith("group_info_") and name.endswith(".json")):
+            continue
+        try:
+            with open(os.path.join(metric_dir, name), encoding="utf-8") as f:
+                info = json.load(f) or {}
+        except (OSError, ValueError):
+            continue
+        for entry in info.values():
+            if not isinstance(entry, dict):
+                continue
+            pg = str(entry.get("group_name") or "")
+            try:
+                ranks = sorted(int(r) for r in (entry.get("global_ranks") or []))
+            except (TypeError, ValueError):
+                continue
+            if not pg or not ranks:
+                continue
+            bucket = out.setdefault(pg, [])
+            if ranks not in bucket:
+                bucket.append(ranks)
+    return {k: sorted(v) for k, v in out.items()}
+
+def _groups_text(domain: str, groups: List[List[int]], limit: int = 6) -> str:
+    shown = groups[:limit]
+    text = "、".join(f"{domain} [{', '.join(str(r) for r in g)}]" for g in shown)
+    if len(groups) > limit:
+        text += f" 等 {len(groups)} 个组"
+    return text
+
+def _comm_line(items: List[Dict], data_dir: str = "") -> str:
+    domains = _domain_groups_map(data_dir) if data_dir else {}
+    parts = []
+    for i in items:
+        key = str(i.get("display_key") or "")
+        m = re.match(r"^([A-Za-z0-9_]+)\s*\[(.*)\]$", key)
+        if m:
+            domain = m.group(1)
+            try:
+                target = sorted(int(x) for x in m.group(2).split(",") if x.strip())
+            except (TypeError, ValueError):
+                target = []
+        else:
+            domain, target = "", []
+        groups = domains.get(domain) or []
+        others = [g for g in groups if g != target] if target in groups else list(groups)
+        if others:
+            who = _groups_text(domain, others)
+        elif groups:
+            who = "域内无其它组可比"
+        else:
+            who = "域内组信息不可用"
+        label = f"{domain} [{', '.join(str(r) for r in target)}]" if domain and target else \
+            _ranks_text(i.get("display_key"))
+        head = f"{domain} 域的 " if domain else ""
+        parts.append(f"{head}{label} 相对域内基线（{who}）约 "
+                     f"{float(i.get('metric_value') or 0):.2f} 倍")
+    return (f"{_CATEGORY_CN.get('comm')}：" + "、".join(parts)
+            + "（取该域内劣化最严重的［并行域, 算子, Count］组合）")
 
 def _pp_line(items: List[Dict]) -> str:
     parts = []
@@ -314,7 +375,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         elif cat in _DETAIL_CATS:
             lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
         elif cat == "comm":
-            lines.append(f"- {_comm_line(items)}")
+            lines.append(f"- {_comm_line(items, data_dir)}")
         elif cat == "pp_comm":
             lines.append(f"- {_pp_line(items)}")
         elif cat == "npu_bubble":
