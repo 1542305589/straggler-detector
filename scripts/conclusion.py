@@ -342,9 +342,14 @@ def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
                 bucket.append(ranks)
     return {k: sorted(v) for k, v in out.items()}
 
+def _brk(domain: str, ranks) -> str:
+    """组标签统一用全角方括号（半角 [x] 会被 Markdown 当引用链接吞掉）。"""
+    inner = ",".join(str(r) for r in ranks)
+    return f"{domain}［{inner}］" if domain else f"［{inner}］"
+
 def _groups_text(domain: str, groups: List[List[int]], limit: int = 6) -> str:
     shown = groups[:limit]
-    text = "、".join(f"{domain}[{','.join(str(r) for r in g)}]" for g in shown)
+    text = "、".join(_brk(domain, g) for g in shown)
     if len(groups) > limit:
         text += f" 等 {len(groups)} 个组"
     return text
@@ -406,7 +411,7 @@ def _comm_lines(items: List[Dict], data_dir: str = "", level: str = "") -> List[
                 who = "域内其它组均含异常卡，无可用基线"
             else:
                 who = "域内组信息不可用"
-            label = (f"{domain}[{','.join(str(r) for r in target)}]"
+            label = (_brk(domain, target)
                      if domain and target else _ranks_text(item.get("display_key")))
             head = f"{domain} 域的 " if not two_level and domain else ""
             text = f"{head}{label} 相对域内基线（{who}）约 {ratio:.2f} 倍"
@@ -418,12 +423,12 @@ def _comm_lines(items: List[Dict], data_dir: str = "", level: str = "") -> List[
         bad = flagged_ranks.get(domain) or set()
         peers = [r for r in group if r != rank and r not in bad]
         if peers:
-            who = f"{domain}[{','.join(str(r) for r in peers)}]"
+            who = _brk(domain, peers)
         elif group:
             who = "同组其它卡均为异常卡，无可用基线"
         else:
             who = "组信息不可用"
-        within.append(f"{domain}[{rank}] 相对同组基线（{who}）约 {ratio:.2f} 倍")
+        within.append(f"{_brk(domain, [rank])} 相对同组基线（{who}）约 {ratio:.2f} 倍")
 
     label = _CATEGORY_CN.get("comm")
     out: List[str] = []
@@ -440,7 +445,7 @@ def _pp_line(items: List[Dict]) -> str:
     for i in items:
         pct = float(i.get("metric_value") or 0) * 100.0
         ranks = sorted({int(r) for r in _ranks_from_key(i.get("display_key"))})
-        label = f"pp[{','.join(str(r) for r in ranks)}]" if ranks else _ranks_text(i.get("display_key"))
+        label = _brk("pp", ranks) if ranks else _ranks_text(i.get("display_key"))
         parts.append(f"{label} 的点对点等待时间占会话时长约 {pct:.2f}%")
     return f"{_CATEGORY_CN.get('pp_comm')}：" + "、".join(parts) + f"，超过阈值 {_pp_percent()}%"
 
