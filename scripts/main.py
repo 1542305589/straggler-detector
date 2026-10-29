@@ -118,7 +118,9 @@ def _print_conclusion(job_path: str, detection: dict, thresholds: tuple):
             pass
         text = conclusion.render_from_dir(out, level, thresholds, source_path=job_path)
         _safe_print("")
-        _safe_print(text)
+        _safe_print("```text")
+        _safe_print(text.rstrip())
+        _safe_print("```")
         for line in (f"检测结果: {os.path.join(out, 'straggler_detection_result.json')}",
                      f"检测报告: {os.path.join(out, 'detection_report.log')}"):
             _safe_print(line)

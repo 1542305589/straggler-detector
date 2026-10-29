@@ -1,5 +1,6 @@
 from __future__ import annotations
 import csv
+import logging
 import json
 import os
 import re
@@ -294,7 +295,11 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
     return f"{label}：{sentence}"
 
 def _cluster_domain_groups(db_path: str) -> Dict[str, List[List[int]]]:
-    """cluster_analysis.db 的 CommunicationGroupMapping -> {域: [组rank列表]}。"""
+    """cluster_analysis.db 的 CommunicationGroupMapping -> {域: [组rank列表]}。
+
+    列名不写死：优先取含 rank 的列作 rank 列表，含 group/pg/name 的列作域名；
+    取不到时退化为"逐列探测哪一列能解析出 rank 列表"。
+    """
     out: Dict[str, List[List[int]]] = {}
     try:
         import sqlite3
@@ -305,21 +310,45 @@ def _cluster_domain_groups(db_path: str) -> Dict[str, List[List[int]]]:
         cols = [r[1] for r in con.execute("PRAGMA table_info(CommunicationGroupMapping)")]
         if not cols:
             return out
-        name_col = "group_name" if "group_name" in cols else (
-            "pg_name" if "pg_name" in cols else cols[0])
-        rank_col = "rank_set" if "rank_set" in cols else cols[-1]
-        for name, ranks in con.execute(
-                "SELECT %s, %s FROM CommunicationGroupMapping" % (name_col, rank_col)):
-            ranks_list = sorted(int(x) for x in re.findall(r"\d+", str(ranks)))
-            if not ranks_list:
+        lower = {c: c.lower() for c in cols}
+        name_col = next((c for c in cols
+                         if any(k in lower[c] for k in ("group", "pg", "name"))), None)
+        rank_col = next((c for c in cols if "rank" in lower[c]), None)
+        if rank_col is None:
+            # 逐列探测：能解析出 rank 列表的那一列
+            for c in cols:
+                try:
+                    sample = con.execute(
+                        "SELECT %s FROM CommunicationGroupMapping LIMIT 5" % c).fetchall()
+                except Exception:
+                    continue
+                if any(re.search(r"\d", str(v[0])) for v in sample if v and v[0] is not None):
+                    rank_col = c
+                    break
+        if rank_col is None:
+            return out
+        select_cols = [rank_col] + ([name_col] if name_col else [])
+        for row in con.execute("SELECT %s FROM CommunicationGroupMapping"
+                               % ", ".join(select_cols)):
+            ranks_txt = row[0]
+            name = str(row[1]) if len(row) > 1 and row[1] else ""
+            ranks_list = sorted(int(x) for x in re.findall(r"\d+", str(ranks_txt)))
+            if not ranks_list or not name:
                 continue
-            bucket = out.setdefault(str(name), [])
+            bucket = out.setdefault(name, [])
             if ranks_list not in bucket:
                 bucket.append(ranks_list)
-    except Exception:
-        pass
+    except Exception as e:
+        logging.getLogger(__name__).warning(f"[CONCLUSION] 解析 CommunicationGroupMapping 失败：{e}")
     finally:
         con.close()
+    if not out:
+        try:
+            cols = [r[1] for r in con.execute("PRAGMA table_info(CommunicationGroupMapping)")]
+        except Exception:
+            cols = []
+        logging.getLogger(__name__).warning(
+            f"[CONCLUSION] CommunicationGroupMapping 未解析出组信息（列：{cols}）")
     return {k: sorted(v) for k, v in out.items()}
 
 def _domain_groups_map(data_dir: str) -> Dict[str, List[List[int]]]:
