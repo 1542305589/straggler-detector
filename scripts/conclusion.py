@@ -373,9 +373,21 @@ def _parse_comm_key(key) -> tuple:
         ranks = []
     return m.group(1), ranks
 
+_CATEGORY_GROUPS = (
+    ("计算类异常", ("KERNEL_AICORE", "kernel_aivec")),
+    ("IO类异常", ("memcpy_async",)),
+    ("通信类异常", ("comm", "pp_comm")),
+    ("Host异常", ("cpu",)),
+    ("NPU空泡异常", ("npu_bubble",)),
+)
+
+def _body(text: str) -> str:
+    """去掉「标签：」前缀，只留描述。"""
+    return text.split("：", 1)[1] if "：" in text else text
+
 _COMM_NOTE = "（取该组内劣化最严重的［并行域, 算子, Count］组合）"
 
-def _comm_lines(items: List[Dict], data_dir: str = "", level: str = "") -> List[str]:
+def _comm_rows(items: List[Dict], data_dir: str = "", level: str = ""):
     """通信类描述。基线一律排除本类别已判为异常的卡 / 组。
 
     level1 / cluster 为两级口径，分两段输出：组内逐卡检测、组间逐组检测。
@@ -438,14 +450,13 @@ def _comm_lines(items: List[Dict], data_dir: str = "", level: str = "") -> List[
             who = "组信息不可用"
         within.append(f"{_brk(domain, [rank])} 相对同组基线（{who}）约 {ratio:.2f} 倍")
 
-    label = _CATEGORY_CN.get("comm")
-    out: List[str] = []
+    out = []
     if plain:
-        out.append(f"{label}：" + "；".join(plain) + _COMM_NOTE)
+        out.append(("集合通信带宽", "；".join(plain) + _COMM_NOTE))
     if within:
-        out.append(f"{label} · 组内逐卡检测：" + "；".join(within) + _COMM_NOTE)
+        out.append(("集合通信带宽（组内逐卡检测）", "；".join(within) + _COMM_NOTE))
     if between:
-        out.append(f"{label} · 组间逐组检测：" + "；".join(between) + _COMM_NOTE)
+        out.append(("集合通信带宽（组间逐组检测）", "；".join(between) + _COMM_NOTE))
     return out
 
 def _pp_line(items: List[Dict]) -> str:
@@ -495,23 +506,34 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     lines.append(f"数据级别 {level_text}。共检出 **{len(found)} 类异常**：")
     lines.append("")
     mapping, _groups = _detection_groups(data_dir) if data_dir else ({}, [])
-    for cat, items in found:
-        if cat == "cpu":
-            lines.append(f"- {_node_line(items, metric_dir)}")
-        elif cat in _DETAIL_CATS:
-            lines.append(f"- {_detail_line(cat, items, metric_dir, mapping)}")
-        elif cat == "comm":
-            lines.extend(f"- {ln}" for ln in _comm_lines(items, data_dir, level))
-        elif cat == "pp_comm":
-            lines.append(f"- {_pp_line(items)}")
-        elif cat == "npu_bubble":
-            lines.append(f"- {_bubble_line(items)}")
-        else:
-            detail = "、".join(
-                f"{_ranks_text(i.get('display_key'))} 约 {float(i.get('metric_value') or 0):.2f} 倍"
-                for i in items)
-            lines.append(f"- {_CATEGORY_CN.get(cat, cat)}：{detail}")
-    lines.append("")
+    by_cat = dict(found)
+    for title, cats in _CATEGORY_GROUPS:
+        rows: List[Tuple[str, str]] = []
+        for cat in cats:
+            items = by_cat.get(cat)
+            if not items:
+                continue
+            if cat == "cpu":
+                rows.append(("cpu", _body(_node_line(items, metric_dir))))
+            elif cat in _DETAIL_CATS:
+                rows.append((_CATEGORY_CN.get(cat, cat),
+                             _body(_detail_line(cat, items, metric_dir, mapping))))
+            elif cat == "comm":
+                rows.extend(_comm_rows(items, data_dir, level))
+            elif cat == "pp_comm":
+                rows.append(("PP点对点通信等待占比", _body(_pp_line(items))))
+            elif cat == "npu_bubble":
+                rows.append(("npu_bubble", _body(_bubble_line(items))))
+            else:
+                detail = "、".join(
+                    f"{_ranks_text(i.get('display_key'))} 约 {float(i.get('metric_value') or 0):.2f} 倍"
+                    for i in items)
+                rows.append((_CATEGORY_CN.get(cat, cat), detail))
+        if rows:
+            lines.append(f"{title}：")
+            for sub, content in rows:
+                lines.append(f"  - {sub}：{content}")
+            lines.append("")
     lines.append(
         "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。本次阈值："
         + _threshold_text(level, thresholds) + "。")
