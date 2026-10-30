@@ -386,6 +386,7 @@ def _body(text: str) -> str:
     return text.split("：", 1)[1] if "：" in text else text
 
 _COMM_NOTE = "（取该组内劣化最严重的［并行域, 算子, Count］组合）"
+_COMM_NOTE_LEVEL = "（各［算子, Count］组合的带宽与中位数之比取平均）"
 
 def _comm_rows(items: List[Dict], data_dir: str = "", level: str = ""):
     """通信类描述。基线一律排除本类别已判为异常的卡 / 组。
@@ -452,11 +453,15 @@ def _comm_rows(items: List[Dict], data_dir: str = "", level: str = ""):
 
     out = []
     if plain:
+        # 旧口径（levelnone / level0）：劣化指数取各 opType 的最大值
         out.append(("集合通信带宽", "；".join(plain) + _COMM_NOTE))
     if within:
-        out.append(("集合通信带宽（组内逐卡检测）", "；".join(within) + _COMM_NOTE))
+        # 两级口径：指标 = 各（算子, Count）组合的带宽/中位数 的平均值
+        out.append(("集合通信带宽（组内逐卡检测）",
+                    "；".join(within) + _COMM_NOTE_LEVEL))
     if between:
-        out.append(("集合通信带宽（组间逐组检测）", "；".join(between) + _COMM_NOTE))
+        out.append(("集合通信带宽（组间逐组检测）",
+                    "；".join(between) + _COMM_NOTE_LEVEL))
     return out
 
 def _pp_line(items: List[Dict]) -> str:
