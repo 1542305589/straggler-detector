@@ -29,20 +29,28 @@ _LEVEL_NOTE = {
     "levelnone": "本次数据只含 MsTx，没有计算 / 搬运算子，计算类与搬运类未参与检测。",
     "cluster": "cluster 单文件只评估通信，其他类别未参与。",
 }
-_MEMCPY_NOTE = """关于 memcpy_async 的说明：该指标统计的是「单次拷贝算子的平均耗时」，而这类任务里混了
-主机-设备拷贝（H2D/D2H）、设备内拷贝、设备间拷贝（D2D）。下面这些已知情况会让少数卡的均值
-结构性偏高，进而导致误报：
+_MEMCPY_NOTE_HEAD = """关于 memcpy_async 的说明：该指标统计的是「拷贝算子的平均耗时」，包括：设备拷贝（H2D/D2H）、
+设备内拷贝、设备间拷贝（D2D）。部分情况下会让少数卡的均值结构性偏高，进而导致误报：
 
 1. **PP>1 且 TP>1（Megatron 框架特有）**：只有首/末 stage 的 tp0 需要把 data/label 从主机搬到
    卡上、再广播给同 TP 组，其余卡为 0。例：PP4TP4 时就是 rank0 和 rank12。
 2. **PP=1 且 TP>1（Megatron 框架特有，如 TP4DP4）**：各 DP 组的 tp0 承担同样的 H2D，
    例：rank0/4/8/12。
-3. **任务数不均**：任务少的卡缺少短任务，平均值容易贴线偏高。
-4. **采集窗口残缺**：某些卡 STEP_TIME 只覆盖少量 step 时，均值会假性偏移，还会把其它卡带成
-   镜像误报。
+3. **任务数不均**：任务少的卡缺少短任务，平均值容易贴线偏高。"""
 
-当前数据既没有拷贝方向（H2D/D2H/D2D），也没有逐次数据量，所以只看这个指标无法定论；
-如需确认是否真的存在搬运劣化，需要补充这两项数据。"""
+def _memcpy_note(ranks) -> List[str]:
+    rs = sorted({int(r) for r in ranks})
+    if not rs:
+        return _MEMCPY_NOTE_HEAD.splitlines()
+    if len(rs) == 1:
+        who = f"rank{rs[0]}"
+    elif len(rs) == 2:
+        who = f"rank{rs[0]} 和 rank{rs[1]}"
+    else:
+        who = "、".join(f"rank{r}" for r in rs)
+    tail = (f"单从「拷贝算子的平均耗时」来看，{who} 确实存在内存拷贝耗时长的问题，"
+            "如需确定是否真实存在 IO 劣化，需进一步排查。")
+    return _MEMCPY_NOTE_HEAD.splitlines() + ["", tail]
 
 
 def _first_rank(item: Dict) -> str:
@@ -516,9 +524,11 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
                      "（KERNEL_AICORE / kernel_aivec），PP 检测被跳过"
                      "（其统计区间内必含计算算子，会被污染），不能据此判断 PP 是否正常。")
 
-    if any(cat == "memcpy_async" for cat, _ in found):
+    memcpy_ranks = sorted({r for cat, items in found if cat == "memcpy_async"
+                           for i in items for r in _ranks_from_key(i.get("display_key"))})
+    if memcpy_ranks:
         lines.append("")
-        lines.extend(_MEMCPY_NOTE.splitlines())
+        lines.extend(_memcpy_note(memcpy_ranks))
 
     note = _LEVEL_NOTE.get(level or "")
     if note:
