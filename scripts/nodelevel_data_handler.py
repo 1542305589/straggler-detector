@@ -309,7 +309,24 @@ def get_detection_job_parallel_info(
     logger.info(f"[SLOWNODE ALGO] {target} parallel info: {groups}")
     return groups
 _BAND_TYPE = "HCCS"
+_BAND_PRIORITY = ("HCCS", "SIO", "SDMA")
 _AGG_OP_NAME = "Total Op Info"
+
+def _primary_band_type(con, table: str, column: str) -> str:
+    """同一份数据只取一种主通道：HCCS > SIO > SDMA。
+
+    同一个算子会同时出现在多个 band_type 下（大小/耗时相同），
+    混用会重复计数；按优先级选一个主通道即可。
+    """
+    try:
+        present = {str(r[0]) for r in con.execute(
+            f"SELECT DISTINCT {column} FROM {table}") if r[0]}
+    except Exception:
+        return _BAND_TYPE
+    for band in _BAND_PRIORITY:
+        if band in present:
+            return band
+    return _BAND_TYPE
 
 def detect_profiling_level(input_path: str) -> str:
     if os.path.isfile(input_path):
@@ -406,6 +423,7 @@ def _read_bandwidth_rows(analysis_db: str):
     out = []
     con = sqlite3.connect(analysis_db)
     cur = con.cursor()
+    band = _primary_band_type(con, "CommAnalyzerBandwidth", "transport_type")
     row = cur.execute("SELECT MAX(step) FROM CommAnalyzerBandwidth").fetchone()
     step = row[0] if row else None
     q = (
@@ -413,21 +431,21 @@ def _read_bandwidth_rows(analysis_db: str):
         "FROM CommAnalyzerBandwidth WHERE transport_type=? AND hccl_op_name<>? "
         "AND step=?"
     )
-    for op, cnt, size, time in cur.execute(q, (_BAND_TYPE, _AGG_OP_NAME, step)):
+    for op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME, step)):
         s = float(size or 0.0)
         t = float(time or 0.0)
         if s > 0 and t > 0:
-            out.append((_op_type(op), int(cnt or 0), s, t))
+            out.append((op, int(cnt or 0), s, t))
     con.close()
     return out
 
-def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float]]:
+def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float, float]]:
     rank_domains: Dict[int, set] = {}
     for domain, groups in (parallels or {}).items():
         for g in groups:
             for r in g:
                 rank_domains.setdefault(int(r), set()).add(domain)
-    comm: List[Tuple[str, str, int, int, float]] = []
+    comm: List[Tuple[str, str, int, int, float, float]] = []
     for root, _dirs, files in os.walk(input_path):
         for fn in files:
             if not (fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db")):
@@ -439,9 +457,9 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
             if not os.path.exists(analysis_db):
                 continue
             domains = rank_domains.get(rank) or {"default_group"}
-            for op_type, count, size, time in _read_bandwidth_rows(analysis_db):
+            for op_name, count, size, time in _read_bandwidth_rows(analysis_db):
                 for domain in domains:
-                    comm.append((domain, op_type, count, rank, size / time))
+                    comm.append((domain, op_name, count, rank, size / time, time))
     logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
 
@@ -449,20 +467,32 @@ def cluster_group_map(cur):
     """CommunicationGroupMapping -> (group_name->pg_name, pg_name->[ranks])。
 
     检测层与结论层共用这一份实现，保证域名（pg_name）、过滤规则、rank 解析一致。
+    `default_group` 是兜底组：有命名域时忽略（避免与命名域重叠重复计数）；
+    完全没有命名域时退化为唯一检测组，只做 Level-1 组内逐卡，Level-2 因组数不足自动跳过。
     """
     g2pg = {}
     parallels = {}
+    fallback_g2pg = {}
+    fallback_parallels = {}
     cur.execute(
         "SELECT group_name, pg_name, rank_set FROM CommunicationGroupMapping "
         "WHERE type='collective' AND pg_name IS NOT NULL AND pg_name != ''"
     )
     for gname, pg, rank_set in cur.fetchall():
-        if pg in ("pp", "embd", "intra_dist_opt_instance", "default_group"):
+        ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
+        if pg == "default_group":
+            fallback_g2pg[gname] = pg
+            if len(ranks) >= 2:
+                fallback_parallels.setdefault(pg, []).append(ranks)
+            continue
+        if pg in ("pp", "embd", "intra_dist_opt_instance"):
             continue
         g2pg[gname] = pg
-        ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
         if len(ranks) >= 2:
             parallels.setdefault(pg, []).append(ranks)
+    if not parallels and fallback_parallels:
+        g2pg.update(fallback_g2pg)
+        parallels.update(fallback_parallels)
     return g2pg, parallels
 
 def load_cluster_parallels(db_path: str):
@@ -478,12 +508,13 @@ def load_cluster_comm(db_path: str):
     con = sqlite3.connect(db_path)
     cur = con.cursor()
     g2pg, parallels = cluster_group_map(cur)
-    comm: List[Tuple[str, str, int, int, float]] = []
+    comm: List[Tuple[str, str, int, int, float, float]] = []
+    band = _primary_band_type(con, "ClusterCommunicationBandwidth", "band_type")
     q = (
         "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
         "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
     )
-    for gname, rank, op, cnt, size, time in cur.execute(q, (_BAND_TYPE, _AGG_OP_NAME)):
+    for gname, rank, op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME)):
         pg = g2pg.get(gname)
         if not pg:
             continue
@@ -491,7 +522,7 @@ def load_cluster_comm(db_path: str):
         t = float(time or 0.0)
         if s <= 0 or t <= 0:
             continue
-        comm.append((pg, _op_type(op), int(cnt or 0), int(rank), s / t))
+        comm.append((pg, op, int(cnt or 0), int(rank), s / t, t))
     con.close()
     logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 条 per-op 记录")
     return parallels, comm
