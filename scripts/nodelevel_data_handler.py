@@ -309,8 +309,34 @@ def get_detection_job_parallel_info(
     logger.info(f"[SLOWNODE ALGO] {target} parallel info: {groups}")
     return groups
 _BAND_TYPE = "HCCS"
-_BAND_PRIORITY = ("HCCS", "SIO", "SDMA")
+_BAND_PRIORITY = ("HCCS", "SIO", "SDMA", "RDMA", "PCIE")
 _AGG_OP_NAME = "Total Op Info"
+
+def _cursor_has_table(cur, table: str) -> bool:
+    try:
+        return cur.execute(
+            "SELECT name FROM sqlite_master WHERE type='table' AND name=?",
+            (table,),
+        ).fetchone() is not None
+    except Exception:
+        return False
+
+def _count_from_size_distribution(raw: str) -> int:
+    """新版 cluster 的 communication_bandwidth_info 没有 count 列，
+    count 在 size_distribution JSON 里，形如 {"0.002304":[5,0.09482]}，
+    每个 value 的第一个元素是该消息大小的出现次数，求和即 count。"""
+    try:
+        data = json.loads(raw or "{}")
+    except Exception:
+        return 0
+    total = 0
+    for value in data.values():
+        if isinstance(value, (list, tuple)) and value:
+            try:
+                total += int(value[0])
+            except (TypeError, ValueError):
+                pass
+    return total
 
 def _primary_band_type(con, table: str, column: str) -> str:
     """同一份数据只取一种主通道：HCCS > SIO > SDMA。
@@ -382,7 +408,10 @@ def _sqlite_has_tables(db_path: str, tables: Tuple[str, ...]) -> bool:
         return False
 
 def is_cluster_db(db_path: str) -> bool:
-    return _sqlite_has_tables(db_path, ("CommunicationGroupMapping", "ClusterCommunicationBandwidth"))
+    return (
+        _sqlite_has_tables(db_path, ("CommunicationGroupMapping", "ClusterCommunicationBandwidth"))
+        or _sqlite_has_tables(db_path, ("communication_bandwidth_info",))
+    )
 
 def _analysis_db_has_bandwidth(analysis_db: str) -> bool:
     if not os.path.exists(analysis_db):
@@ -463,8 +492,13 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
     logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
 
-def cluster_group_map(cur):
+def cluster_group_map(cur, db_path: Optional[str] = None):
     """CommunicationGroupMapping -> (group_name->pg_name, pg_name->[ranks])。
+
+    兼容两种 cluster 格式：
+    - 旧版：CommunicationGroupMapping + ClusterCommunicationBandwidth；
+    - 新版：communication_group.json + communication_bandwidth_info。
+      新版没有命名并行域（pg_name），统一映射到 default_group，只做 Level-1。
 
     检测层与结论层共用这一份实现，保证域名（pg_name）、过滤规则、rank 解析一致。
     `default_group` 是兜底组：有命名域时忽略（避免与命名域重叠重复计数）；
@@ -472,57 +506,233 @@ def cluster_group_map(cur):
     """
     g2pg = {}
     parallels = {}
-    fallback_g2pg = {}
-    fallback_parallels = {}
-    cur.execute(
-        "SELECT group_name, pg_name, rank_set FROM CommunicationGroupMapping "
-        "WHERE type='collective' AND pg_name IS NOT NULL AND pg_name != ''"
-    )
-    for gname, pg, rank_set in cur.fetchall():
-        ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
-        if pg == "default_group":
-            fallback_g2pg[gname] = pg
+
+    if _cursor_has_table(cur, "CommunicationGroupMapping"):
+        fallback_g2pg = {}
+        fallback_parallels = {}
+        cur.execute(
+            "SELECT group_name, pg_name, rank_set FROM CommunicationGroupMapping "
+            "WHERE type='collective' AND pg_name IS NOT NULL AND pg_name != ''"
+        )
+        for gname, pg, rank_set in cur.fetchall():
+            ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
+            if pg == "default_group":
+                fallback_g2pg[gname] = pg
+                if len(ranks) >= 2:
+                    fallback_parallels.setdefault(pg, []).append(ranks)
+                continue
+            if pg in ("pp", "embd", "intra_dist_opt_instance"):
+                continue
+            g2pg[gname] = pg
             if len(ranks) >= 2:
-                fallback_parallels.setdefault(pg, []).append(ranks)
-            continue
-        if pg in ("pp", "embd", "intra_dist_opt_instance"):
-            continue
-        g2pg[gname] = pg
-        if len(ranks) >= 2:
-            parallels.setdefault(pg, []).append(ranks)
-    if not parallels and fallback_parallels:
-        g2pg.update(fallback_g2pg)
-        parallels.update(fallback_parallels)
+                parallels.setdefault(pg, []).append(ranks)
+        if not parallels and fallback_parallels:
+            g2pg.update(fallback_g2pg)
+            parallels.update(fallback_parallels)
+        return g2pg, parallels
+
+    # 新版 cluster 格式：communication_group.json 优先，缺失时回退 group_id / communication_matrix
+    json_path = ""
+    if db_path:
+        json_path = os.path.join(
+            os.path.dirname(os.path.abspath(db_path)), "communication_group.json")
+    if json_path and os.path.exists(json_path):
+        try:
+            with open(json_path, encoding="utf-8") as f:
+                data = json.load(f)
+            for item in data.get("comm_group_parallel_info") or []:
+                if item.get("type") != "collective":
+                    continue
+                gname = str(item.get("group_name") or "")
+                ranks = sorted(int(r) for r in item.get("rank_set") or [])
+                if not gname or len(ranks) < 2:
+                    continue
+                g2pg[gname] = "default_group"
+                parallels.setdefault("default_group", []).append(ranks)
+        except Exception as e:
+            logger.warning(f"[SLOWNODE ALGO] 读取 {json_path} 失败：{e}")
+
+    if not parallels:
+        try:
+            for gid, rank_set in cur.execute("SELECT id, group_id FROM group_id"):
+                ranks = sorted(int(x) for x in re.findall(r"\d+", rank_set or ""))
+                if len(ranks) < 2:
+                    continue
+                g2pg[str(gid)] = "default_group"
+                parallels.setdefault("default_group", []).append(ranks)
+        except Exception:
+            pass
+        try:
+            for gid, gname in cur.execute(
+                "SELECT DISTINCT group_id, group_name FROM communication_matrix "
+                "WHERE group_name IS NOT NULL AND group_name != ''"
+            ):
+                g2pg[str(gname)] = "default_group"
+        except Exception:
+            pass
+
+    if parallels:
+        logger.info(
+            "[SLOWNODE ALGO] 检测到新版 cluster 格式（communication_bandwidth_info），"
+            "无命名并行域，使用 default_group 做组内逐卡检测")
     return g2pg, parallels
 
 def load_cluster_parallels(db_path: str):
     """只读 CommunicationGroupMapping，返回 {并行域: [组 rank 列表]}。"""
     con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
     try:
-        _g2pg, parallels = cluster_group_map(con.cursor())
+        _g2pg, parallels = cluster_group_map(con.cursor(), db_path)
         return parallels
     finally:
         con.close()
 
+_CLUSTER_STEP_METRICS = ("computing", "communication", "free", "stage", "preparing")
+
+def _parse_step_value(raw) -> Optional[int]:
+    if raw is None:
+        return None
+    nums = re.findall(r"\d+", str(raw))
+    if not nums:
+        return None
+    try:
+        return int(nums[-1])
+    except ValueError:
+        return None
+
+def load_cluster_step_data(db_path: str) -> Dict[str, Any]:
+    """读取 cluster_analysis.db 的 ClusterStepTraceTime（type='rank'）。
+
+    cluster 单文件没有 level0/level1 的逐算子明细，但 step trace 里保留了
+    每个 rank 每个 step 的 computing / communication / free / stage / preparing。
+    这里把逐 step 明细原样带出，供检测层做：
+    - 计算异常：同组内 rank 的 computing 相对中位数；
+    - Host（CPU）异常：按物理节点汇总 free（NPU 空闲等待）时间。
+    """
+    out: Dict[str, Any] = {
+        "rows": [], "rank_host": {}, "host_ranks": {}, "steps": [],
+    }
+    if not os.path.isfile(db_path):
+        return out
+    con = sqlite3.connect(db_path)
+    try:
+        cur = con.cursor()
+        if not _cursor_has_table(cur, "ClusterStepTraceTime"):
+            return out
+        cols = [r[1] for r in cur.execute("PRAGMA table_info(ClusterStepTraceTime)")]
+        rank_col = "index" if "index" in cols else ("rank_id" if "rank_id" in cols else None)
+        if rank_col is None:
+            return out
+        metric_cols = [m for m in _CLUSTER_STEP_METRICS if m in cols]
+        if not metric_cols:
+            return out
+        select = ", ".join(
+            ["step", '"%s"' % rank_col] + ['"%s"' % m for m in metric_cols])
+        q = f"SELECT {select} FROM ClusterStepTraceTime WHERE type='rank'"
+        steps = set()
+        for row in cur.execute(q):
+            step = _parse_step_value(row[0])
+            if step is None:
+                continue
+            try:
+                rank = int(row[1])
+            except (TypeError, ValueError):
+                continue
+            metrics: Dict[str, float] = {}
+            for name, raw in zip(metric_cols, row[2:]):
+                try:
+                    val = float(raw)
+                except (TypeError, ValueError):
+                    continue
+                if val == -99999:
+                    continue
+                metrics[name] = val
+            if not metrics:
+                continue
+            out["rows"].append((step, rank, metrics))
+            steps.add(step)
+        out["steps"] = sorted(steps)
+
+        config.reset_host_rank_map()
+        config.reset_rank_device_map()
+        host_name: Dict[str, str] = {}
+        try:
+            for uid, name in cur.execute("SELECT hostUid, hostName FROM HostInfo"):
+                if uid is None:
+                    continue
+                host_name[str(uid)] = str(name) if name else str(uid)
+        except Exception:
+            pass
+        try:
+            for rank, dev, uid in cur.execute(
+                    "SELECT rankId, deviceId, hostUid FROM RankDeviceMap"):
+                try:
+                    rank = int(rank)
+                except (TypeError, ValueError):
+                    continue
+                uid = str(uid)
+                label = host_name.get(uid, uid)
+                out["rank_host"][rank] = label
+                out["host_ranks"].setdefault(label, []).append(rank)
+                config.set_rank_device_map(rank, label, dev)
+                config.set_host_rank_map(rank, label)
+        except Exception as e:
+            logger.warning(f"[SLOWNODE ALGO] 读取 cluster RankDeviceMap 失败：{e}")
+        for label in list(out["host_ranks"]):
+            out["host_ranks"][label] = sorted(out["host_ranks"][label])
+    except Exception as e:
+        logger.warning(f"[SLOWNODE ALGO] 读取 cluster step trace 失败：{e}")
+    finally:
+        con.close()
+    logger.info(
+        f"[SLOWNODE ALGO] cluster step trace 数据：{len(out['rows'])} 条，"
+        f"{len(out['steps'])} 个 step，{len(out['host_ranks'])} 个 host")
+    return out
+
 def load_cluster_comm(db_path: str):
     con = sqlite3.connect(db_path)
     cur = con.cursor()
-    g2pg, parallels = cluster_group_map(cur)
+    g2pg, parallels = cluster_group_map(cur, db_path)
     comm: List[Tuple[str, str, int, int, float, float]] = []
-    band = _primary_band_type(con, "ClusterCommunicationBandwidth", "band_type")
-    q = (
-        "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
-        "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
-    )
-    for gname, rank, op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME)):
-        pg = g2pg.get(gname)
-        if not pg:
-            continue
-        s = float(size or 0.0)
-        t = float(time or 0.0)
-        if s <= 0 or t <= 0:
-            continue
-        comm.append((pg, op, int(cnt or 0), int(rank), s / t, t))
+
+    if _cursor_has_table(cur, "ClusterCommunicationBandwidth"):
+        band = _primary_band_type(con, "ClusterCommunicationBandwidth", "band_type")
+        q = (
+            "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
+            "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
+        )
+        for gname, rank, op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME)):
+            pg = g2pg.get(gname)
+            if not pg:
+                continue
+            s = float(size or 0.0)
+            t = float(time or 0.0)
+            if s <= 0 or t <= 0:
+                continue
+            comm.append((pg, op, int(cnt or 0), int(rank), s / t, t))
+        logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 条 per-op 记录")
+    elif _cursor_has_table(cur, "communication_bandwidth_info"):
+        band = _primary_band_type(con, "communication_bandwidth_info", "transport_type")
+        q = (
+            "SELECT iteration_id, rank_id, op_name, op_suffix, transport_type, "
+            "transit_size, transit_time, size_distribution "
+            "FROM communication_bandwidth_info WHERE transport_type=? AND op_name<>?"
+        )
+        for _it, rank, op, suffix, _typ, size, time, dist in cur.execute(
+                q, (band, _AGG_OP_NAME)):
+            pg = g2pg.get(suffix)
+            if not pg:
+                continue
+            s = float(size or 0.0)
+            t = float(time or 0.0)
+            if s <= 0 or t <= 0:
+                continue
+            count = _count_from_size_distribution(dist)
+            comm.append((pg, op, int(count), int(rank), s / t, t))
+        logger.info(
+            f"[SLOWNODE ALGO] 新版 cluster 带宽数据（{band}）："
+            f"{len(parallels)} 域，{len(comm)} 条 per-op 记录")
+    else:
+        logger.warning("[SLOWNODE ALGO] 未找到 cluster 带宽表")
+
     con.close()
-    logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 条 per-op 记录")
     return parallels, comm

@@ -401,9 +401,10 @@ CATEGORY_DESC = {
     "KERNEL_AICORE": "所有 KERNEL_AICORE 算子的平均时间",
     "kernel_aivec": "所有 KERNEL_AIVEC 算子的平均时间",
     "memcpy_async": "所有 MEMCPY_ASYNC 算子的平均时间",
+    "computing_load": "cluster 单文件：ClusterStepTraceTime 中 rank 的 computing 聚合值（含 MIX/AICPU 等），仅作混合负载粗筛",
     "comm": "各通信域 {domain}_{opType}_{count} 带宽聚类",
     "pp_comm": "PP 点对点结束→下一次集合通信结束的间隔，按比较域逐 rank 比较（占会话比例），按 PP 通信组上报",
-    "cpu": "ZP_Host：通信算子与 KERNEL_AICORE 的 Host 耗时均值",
+    "cpu": "Host 级 stall 粗筛：level0/level1 用 ZP_Host；cluster 单文件用 ClusterStepTraceTime.free（按物理节点汇总，仅作粗筛）",
 }
 
 def _detection_summary(

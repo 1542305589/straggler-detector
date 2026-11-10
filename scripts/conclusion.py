@@ -10,12 +10,13 @@ _CATEGORY_CN = {
     "KERNEL_AICORE": "KERNEL_AICORE类算子",
     "kernel_aivec": "KERNEL_AIVEC类算子",
     "memcpy_async": "MEMCPY_ASYNC类算子",
+    "computing_load": "computing_load（混合负载粗筛）",
     "comm": "comm（通信组带宽）",
-    "cpu": "cpu（主机侧 ZP_Host）",
+    "cpu": "Host（CPU）粗筛",
     "pp_comm": "pp_comm（PP 流水线等待）",
 }
-_ORDER = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "comm",
-          "cpu", "pp_comm")
+_ORDER = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async", "computing_load",
+          "comm", "cpu", "pp_comm")
 _COLUMN = {
     "KERNEL_AICORE": "KERNEL_AICORE",
     "kernel_aivec": "KERNEL_AIVEC",
@@ -25,7 +26,7 @@ _COLUMN = {
 _DETAIL_CATS = ("KERNEL_AICORE", "kernel_aivec", "memcpy_async")
 _LEVEL_NOTE = {
     "levelnone": "本次数据只含 MsTx，没有计算 / 搬运算子，计算类与搬运类未参与检测。",
-    "cluster": "cluster 单文件只评估通信，其他类别未参与。",
+    "cluster": "cluster 单文件评估通信、Host 级 stall 粗筛（ClusterStepTraceTime.free）和混合负载粗筛（ClusterStepTraceTime.computing）；慢计算需原始 KERNEL_AICORE/AIVEC 复核。",
 }
 _MEMCPY_NOTE_HEAD = """关于 memcpy_async 的说明：该指标统计的是「拷贝算子的平均耗时」，包括：设备拷贝（H2D/D2H）、
 设备内拷贝、设备间拷贝（D2D）。部分情况下会让少数卡的均值结构性偏高，进而导致误报：
@@ -272,6 +273,8 @@ def _node_line(items: List[Dict], metric_dir: str) -> str:
     ratios = "、".join(
         f"{n} 相对其它节点基线约 {float(i.get('metric_value') or 0):.2f} 倍"
         for n, i in zip(names, items))
+    if not os.path.isdir(metric_dir):
+        return f"{label}：{ratios}"
     sentence = ratios
     values = []
     for n in names:
@@ -373,9 +376,10 @@ def _parse_comm_key(key) -> tuple:
 
 _CATEGORY_GROUPS = (
     ("计算类异常", ("KERNEL_AICORE", "kernel_aivec")),
+    ("混合负载粗筛", ("computing_load",)),
     ("IO类异常", ("memcpy_async",)),
     ("通信类异常", ("comm", "pp_comm")),
-    ("Host异常", ("cpu",)),
+    ("Host粗筛", ("cpu",)),
 )
 
 def _body(text: str) -> str:
@@ -475,7 +479,8 @@ def _threshold_text(level: str, thresholds) -> str:
     compute, io, comm = thresholds[0], thresholds[1], thresholds[2]
     parts = []
     if level == "cluster":
-        return f"集合通信（comm）{comm} 倍"
+        return (f"计算类（KERNEL_AICORE / KERNEL_AIVEC / computing）{compute} 倍、"
+                f"IO/CPU（MEMCPY_ASYNC / Host）{io} 倍、集合通信（comm）{comm} 倍")
     if level in ("level0", "level1"):
         parts.append(f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{compute} 倍")
     parts.append(f"IO/CPU（针对MEMCPY_ASYNC和Host）{io} 倍")
@@ -484,74 +489,175 @@ def _threshold_text(level: str, thresholds) -> str:
         parts.append(f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%")
     return "、".join(parts)
 
+_METRIC_NOTES = {
+    "computing_load": "cluster 单文件聚合值（cluster数据独有），含 MIX/AICPU 等，仅作混合负载粗筛。",
+    "ZP_Host": "通信算子 + KERNEL_AICORE 的 Host 侧耗时均值",
+    "free": "cluster 单文件 NPU 空闲时间（cluster数据独有），仅作 Host 粗筛",
+    "pp_comm": "pp点对点通信，劣化数值为pp通信的等待占整个会话的占比",
+}
+
+
+def _abnormal_items(detection: Dict, cat: str) -> List[Dict]:
+    items = [i for i in (detection.get(cat) or [])
+             if i.get("is_abnormal") is not False]
+    items.sort(key=lambda i: float(i.get("metric_value") or 0), reverse=True)
+    return items
+
+
+def _pct(degradation) -> str:
+    """劣化倍数 → 百分数：倍数 1.68 表示比基线慢 68%。"""
+    try:
+        value = (float(degradation) - 1.0) * 100.0
+    except (TypeError, ValueError):
+        return "?"
+    return f"{max(value, 0.0):.0f}%"
+
+
+def _ratio_pct(ratio) -> str:
+    """占比（0~1）→ 百分数，用于 pp_comm 的等待占比。"""
+    try:
+        value = float(ratio) * 100.0
+    except (TypeError, ValueError):
+        return "?"
+    return f"{max(value, 0.0):.0f}%"
+
+
+def _rank_label(item: Dict) -> str:
+    key = str(item.get("display_key") or "")
+    if key.startswith("Rank"):
+        return key
+    if key.isdigit():
+        return f"Rank{key}"
+    return key
+
+
+def _comm_label(item: Dict, is_pp: bool = False) -> Tuple[str, str]:
+    key = str(item.get("display_key") or "")
+    if is_pp:
+        inner = key.strip("[]")
+        return f"pp[{inner}]", "group"
+    m = re.match(r"^([A-Za-z0-9_]+)\[(.*)\]$", key)
+    if m:
+        domain, inner = m.group(1), m.group(2)
+        parts = [x.strip() for x in inner.split(",") if x.strip()]
+        if len(parts) == 1:
+            return f"{domain} Rank{parts[0]}", "card"
+        return f"{domain}[{inner}]", "group"
+    if key.isdigit():
+        return f"Rank{key}", "card"
+    return key, "group"
+
+
+def _fmt_items(items: List[Dict], label_fn) -> str:
+    return "、".join(f"{label_fn(i)}({_pct(i.get('metric_value'))})" for i in items)
+
+
+def _top3_line(labels: List[str], prefix: str = "") -> str:
+    top = labels[:3]
+    if not top:
+        return ""
+    return f"{prefix}其中 {'、'.join(top)} 为TOP{len(top)}点故障点，建议优先排查"
+
+
+def _metric_line(name: str, items: List[Dict], label_fn, note: str = "",
+                  top: bool = False) -> List[str]:
+    if not items:
+        return []
+    out = [f"{name}：{_fmt_items(items, label_fn)}"]
+    if top and len(items) > 3:
+        top_line = _top3_line([label_fn(i) for i in items])
+        if top_line:
+            out.append(top_line)
+    if note:
+        out.append(f"说明：{note}")
+    return out
+
+
 def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
            data_dir: str = "") -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
-    lines: List[str] = ["# 检测结论", ""]
-    found = []
-    for cat in _ORDER:
-        items = [i for i in (detection.get(cat) or [])
-                 if i.get("is_abnormal") is not False]
-        if items:
-            items.sort(key=lambda i: float(i.get("metric_value") or 0), reverse=True)
-            found.append((cat, items))
+    lines: List[str] = [f"检测结果（数据级别：{level or '未知'}）："]
 
-    level_text = f"`{level}`" if level else "未知"
-    if not found:
-        lines.append(f"数据级别 {level_text}。**本次未检出异常。**")
-        return "\n".join(lines) + "\n"
+    # 1、计算类
+    compute_lines: List[str] = []
+    aicore = _abnormal_items(detection, "KERNEL_AICORE")
+    aivec = _abnormal_items(detection, "kernel_aivec")
+    computing = _abnormal_items(detection, "computing_load")
+    compute_lines += _metric_line("KERNEL_AICORE", aicore, _rank_label, top=True)
+    compute_lines += _metric_line("KERNEL_AIVEC", aivec, _rank_label, top=True)
+    compute_lines += _metric_line(
+        "computing（cluster数据独有）", computing, _rank_label,
+        _METRIC_NOTES["computing_load"], top=True)
+    lines.append("1、计算类故障检测结果：")
+    lines.extend(compute_lines or ["无"])
 
-    lines.append(f"数据级别 {level_text}。共检出 **{len(found)} 类异常**：")
+    # 2、通信类
+    cards: List[Tuple[str, Dict]] = []
+    groups: List[Tuple[str, Dict]] = []
+    for item in _abnormal_items(detection, "comm"):
+        label, kind = _comm_label(item)
+        (cards if kind == "card" else groups).append((label, item))
+    pp_items: List[Tuple[str, Dict]] = []
+    for item in _abnormal_items(detection, "pp_comm"):
+        label, _kind = _comm_label(item, is_pp=True)
+        pp_items.append((label, item))
+
+    lines.append("2、通信类故障检测结果：")
+    if not cards and not groups and not pp_items:
+        lines.append("无")
+    else:
+        card_text = "、".join(f"{label}({_pct(item.get('metric_value'))})"
+                             for label, item in cards)
+        group_text = "、".join(f"{label}({_pct(item.get('metric_value'))})"
+                              for label, item in groups)
+        lines.append(f"慢通信卡：{card_text or '无'}")
+        top = _top3_line([label for label, _ in cards])
+        if top:
+            lines.append(top)
+        lines.append(f"慢通信域：{group_text or '无'}")
+        top = _top3_line([label for label, _ in groups])
+        if top:
+            lines.append(top)
+        if pp_items:
+            pp_text = "、".join(f"{label}({_ratio_pct(item.get('metric_value'))})"
+                               for label, item in pp_items)
+            lines.append(f"PP点对点通信等待：{pp_text}")
+            top = _top3_line([label for label, _ in pp_items])
+            if top:
+                lines.append(top)
+            lines.append(f"说明：{_METRIC_NOTES['pp_comm']}")
+
+    # 3、Host 侧
+    host_items = _abnormal_items(detection, "cpu")
+    host_name = "free（空闲时间，cluster数据独有）" if level == "cluster" else "ZP_Host（算子Host耗时）"
+    host_note = _METRIC_NOTES["free"] if level == "cluster" else _METRIC_NOTES["ZP_Host"]
+    host_lines = _metric_line(host_name, host_items, lambda i: str(i.get("display_key")), host_note)
+    lines.append("3、Host侧故障检测结果：")
+    lines.extend(host_lines or ["无"])
+
+    # 4、内存搬运类
+    memcpy_items = _abnormal_items(detection, "memcpy_async")
+    memcpy_lines = _metric_line("MEMCPY_ASYNC", memcpy_items, _rank_label, top=True)
+    lines.append("4、内存搬运类故障检测结果：")
+    lines.extend(memcpy_lines or ["无"])
+    if memcpy_items:
+        ranks = sorted({r for i in memcpy_items for r in _ranks_from_key(i.get("display_key"))})
+        lines.append("")
+        lines.extend(_memcpy_note(ranks))
+
     lines.append("")
-    mapping, _groups = _detection_groups(data_dir) if data_dir else ({}, [])
-    by_cat = dict(found)
-    for title, cats in _CATEGORY_GROUPS:
-        rows: List[Tuple[str, str]] = []
-        for cat in cats:
-            items = by_cat.get(cat)
-            if not items:
-                continue
-            if cat == "cpu":
-                rows.append(("cpu", _body(_node_line(items, metric_dir))))
-            elif cat in _DETAIL_CATS:
-                rows.append((_CATEGORY_CN.get(cat, cat),
-                             _body(_detail_line(cat, items, metric_dir, mapping))))
-            elif cat == "comm":
-                rows.extend(_comm_rows(items, data_dir, level))
-            elif cat == "pp_comm":
-                rows.append(("PP点对点通信等待占比", _body(_pp_line(items))))
-            else:
-                detail = "、".join(
-                    f"{_ranks_text(i.get('display_key'))} 约 {float(i.get('metric_value') or 0):.2f} 倍"
-                    for i in items)
-                rows.append((_CATEGORY_CN.get(cat, cat), detail))
-        if rows:
-            lines.append(f"{title}：")
-            for sub, content in rows:
-                lines.append(f"  - {sub}：{content}")
-            lines.append("")
-    lines.append(
-        "> 倍数 = 该卡相对检测组内基线的劣化倍数，越大越异常。本次阈值："
-        + _threshold_text(level, thresholds) + "。")
+    lines.append("（阈值：" + _threshold_text(level, thresholds) + "）")
 
-    compute_hit = any(cat in ("KERNEL_AICORE", "kernel_aivec") for cat, _ in found)
-    if (level in ("level0", "levelnone") and compute_hit
-            and not (detection.get("pp_comm") or [])):
-        lines.append("")
-        lines.append("PP 点对点通信等待（pp_comm）未评估：本次已检出计算类故障"
-                     "（KERNEL_AICORE / kernel_aivec），PP 检测被跳过"
-                     "（其统计区间内必含计算算子，会被污染），不能据此判断 PP 是否正常。")
+    unevaluated = []
+    if level == "cluster":
+        unevaluated.append("KERNEL_AICORE/KERNEL_AIVEC、内存搬运类")
+    elif level == "level1":
+        unevaluated.append("PP点对点通信")
+    elif level == "levelnone":
+        unevaluated.append("计算类、内存搬运类、Host侧")
+    if unevaluated:
+        lines.append("未评估：" + "；".join(unevaluated) + "。")
 
-    memcpy_ranks = sorted({r for cat, items in found if cat == "memcpy_async"
-                           for i in items for r in _ranks_from_key(i.get("display_key"))})
-    if memcpy_ranks:
-        lines.append("")
-        lines.extend(_memcpy_note(memcpy_ranks))
-
-    note = _LEVEL_NOTE.get(level or "")
-    if note:
-        lines.append("")
-        lines.append(note)
     lines.append("")
     return "\n".join(lines)
 
@@ -559,7 +665,9 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
 def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "") -> str:
     """读检测结果 JSON，返回结论文本（只在控制台输出，不落盘）。"""
     det = {}
-    src = os.path.join(out_dir, "straggler_detection_result.json")
+    src = os.path.join(out_dir, "straggler_detection_result_flat.json")
+    if not os.path.exists(src):
+        src = os.path.join(out_dir, "straggler_detection_result.json")
     try:
         with open(src, "r", encoding="utf-8") as f:
             det = json.load(f) or {}

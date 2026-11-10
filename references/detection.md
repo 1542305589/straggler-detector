@@ -14,7 +14,8 @@
 | `KERNEL_AICORE` | KERNEL_AICORE 算子平均耗时 | 检测组内通用算法（**偏大**异常） |
 | `kernel_aivec` | KERNEL_AIVEC 算子平均耗时 | 检测组内通用算法（**偏大**异常） |
 | `memcpy_async` | MEMCPY_ASYNC 算子平均耗时 | 检测组内通用算法（**偏大**异常） |
-| `cpu` | `ZP_Host`（通信 + Kernel 的 Host 耗时均值） | 按物理节点拉齐后通用算法（异常项 = 节点 `hostName`） |
+| `cpu` | `ZP_Host`（通信 + Kernel 的 Host 耗时均值）；cluster 单文件用 `ClusterStepTraceTime.free` | 按物理节点拉齐后通用算法（异常项 = 节点 `hostName`） |
+| `computing_load` | cluster 单文件 `ClusterStepTraceTime.computing`（逐 rank 聚合值） | 同检测组内按 step 取中位数，rank 的 `computing / 中位数` 取各 step 中位数（**偏大**粗筛，不能替代慢计算） |
 | `comm` | 集合通信带宽 | 带宽聚类（**min 方向**），两套口径见 §4 |
 | `pp_comm` | `PP_WaitGap`（点对点结束 → 下一次集合通信结束的间隔） | 比较域内逐 rank 比较，按 PP 通信组上报 |
 
@@ -22,9 +23,11 @@
 
 | 分组 | 常量 | 默认 |
 |---|---|---|
-| 计算类（`KERNEL_AICORE` / `kernel_aivec`） | `COMPUTE_THRESHOLD` | 1.3 |
+| 计算类（`KERNEL_AICORE` / `kernel_aivec` / `computing_load`） | `COMPUTE_THRESHOLD` | 1.3 |
 | IO/CPU 类（`cpu` / `memcpy_async`） | `IO_THRESHOLD` | 2.5 |
 | 通信类（`comm` / `pp_comm`） | `COMM_THRESHOLD` / `PP_WAIT_RATIO_THRESHOLD` | 1.3 / 5% |
+
+> 指标性质：`comm` 带宽、`KERNEL_AICORE`、`KERNEL_AIVEC` 是直接指标，可直接做组内中位数比较；`free`、`computing`、`KERNEL_MIX_AIV` 是聚合/代理指标，只能做相对粗筛，不能单独对某个 host/rank 下绝对结论。
 
 ---
 
@@ -86,6 +89,13 @@ tp → exp → ep → tp_exp → cp → cp2 → cp_ulysses → cp_ring
 先按物理节点（`hostUid`）分组、组内**去首尾求均值拉齐**，再对整组做通用算法。同节点卡值被拉平，故异常落在**整个节点**上，异常项用节点显示名（`hostName`）而不是 rank。
 
 通信算子启动间隔 `< 5000ns` 记为异常（**小值**异常），固定阈值、不询问。
+
+**cluster 单文件的 `computing_load` / `cpu`**
+
+cluster 单文件没有 `op_metric/global_rank_*.csv`，但 `ClusterStepTraceTime`（`type='rank'`）保留了每个 rank 每个 step 的 `computing` / `communication` / `free` / `stage` / `preparing`。
+
+- **`computing_load`（混合负载粗筛）**：每个 step 在检测组内取 rank 的 `computing` 中位数，rank 指标 = 各 step `computing / 中位数` 的中位数；按 `COMPUTE_THRESHOLD` 判**偏大**。`computing` 是计算类任务的聚合值，可能包含 `KERNEL_MIX_AIC` / `KERNEL_MIX_AIV` / `KERNEL_AICPU` 等，不能替代 `KERNEL_AICORE` / `KERNEL_AIVEC` 的慢计算检测；低值 rank 不会成为基线（避免 CPU 空闲导致的低 `computing` 把正常卡误判为异常）。
+- **`cpu`（Host 级 stall 粗筛）**：按 `RankDeviceMap.hostUid` 汇总到物理节点，每个 step 对节点内 rank 的 `free` 求和，节点指标 = 各 step 求和值的中位数；与其它节点中位数比较，按 `IO_THRESHOLD` 判**偏大**，异常项用 `HostInfo.hostName`。`free` 低表示活多、`free` 高表示 stall；单个 host 的 `free` 没有绝对高低，只能和其它 host 相对比较。仅当 host 数在 2~8 且各 host rank 数一致时评估；大集群不同构 host 的 `free` 不可比，直接跳过。
 
 **`comm`（慢通信域）——两套口径**
 

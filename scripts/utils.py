@@ -55,6 +55,167 @@ def group_representative_bandwidth(
             by_op[op_type] = (count, v)
     return [(op_type, cnt, bw) for op_type, (cnt, bw) in sorted(by_op.items())]
 
+def _rank_items(items: Dict[str, float]) -> List[Dict[str, Any]]:
+    out = []
+    for key, value in sorted(items.items(), key=lambda x: -x[1]):
+        raw = str(key)
+        if ":" in raw:
+            raw = raw.split(":")[-1]
+        try:
+            rank = int(raw)
+        except (TypeError, ValueError):
+            continue
+        out.append({"rank": rank, "degradation": value})
+    return out
+
+
+def _host_items(items: Dict[str, float]) -> List[Dict[str, Any]]:
+    return [{"host": str(key), "degradation": value}
+            for key, value in sorted(items.items(), key=lambda x: -x[1])]
+
+
+def _comm_groups(items: Dict[str, float], parallels: Dict[str, List[List[int]]] = None) -> Dict[str, List[Dict[str, Any]]]:
+    groups: Dict[str, List[Dict[str, Any]]] = {"tp": [], "ep": []}
+    for domain in (parallels or {}):
+        if domain and domain not in groups:
+            groups[domain] = []
+    for key, value in sorted(items.items(), key=lambda x: -x[1]):
+        domain, ranks_key = summary_table._split_domain_key(key)
+        if not domain:
+            domain = summary_table._domain_of_group(parallels or {}, ranks_key)
+        domain = domain or "default_group"
+        groups.setdefault(domain, [])
+        try:
+            ranks = [int(r) for r in ranks_key.split(",")]
+        except (TypeError, ValueError):
+            continue
+        if len(ranks) == 1:
+            target = f"rank{ranks[0]}"
+        else:
+            target = f"{domain}[{','.join(str(r) for r in ranks)}]"
+        groups[domain].append({"target": target, "degradation": value})
+    return groups
+
+
+def _pp_items(items: Dict[str, float]) -> List[Dict[str, Any]]:
+    """PP 点对点通信的数值是「等待占整个会话的占比」（0~1），不是劣化倍数。"""
+    return [{"target": f"pp[{key}]", "degradation": value}
+            for key, value in sorted(items.items(), key=lambda x: -x[1])]
+
+
+_GROUP_NOTES = {
+    "compute": "计算类异常",
+    "comm": "通信类异常",
+    "host": "Host类故障",
+    "memcpy": "内存搬运类异常",
+}
+_METRIC_NOTES = {
+    "collective": "集合通信",
+    "computing": "cluster 单文件聚合值（cluster数据独有），含 MIX/AICPU 等，仅作混合负载粗筛。",
+    "pp_comm": "pp点对点通信，劣化数值为pp通信的等待占整个会话的占比",
+    "ZP_Host": "通信算子 + KERNEL_AICORE 的 Host 侧耗时均值",
+    "free": "cluster 单文件 NPU 空闲时间（cluster数据独有），仅作 Host 粗筛",
+}
+# 各数据等级实际参与检测的指标：不参与该等级的指标键直接不出现。
+_LEVEL_METRICS = {
+    "level0": {
+        "compute": ("KERNEL_AICORE", "KERNEL_AIVEC"),
+        "comm": ("collective", "pp_comm"),
+        "host": ("ZP_Host",),
+        "memcpy": ("MEMCPY_ASYNC",),
+    },
+    "level1": {
+        "compute": ("KERNEL_AICORE", "KERNEL_AIVEC"),
+        "comm": ("collective",),
+        "host": ("ZP_Host",),
+        "memcpy": ("MEMCPY_ASYNC",),
+    },
+    "levelnone": {
+        "comm": ("collective", "pp_comm"),
+    },
+    "cluster": {
+        "compute": ("computing",),
+        "comm": ("collective",),
+        "host": ("free",),
+    },
+}
+
+
+def _metric_entry(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
+    entry: Dict[str, Any] = {}
+    note = _METRIC_NOTES.get(name)
+    if note:
+        entry["note"] = note
+    entry.update(body)
+    return entry
+
+
+def build_report_payload(final_result: Dict[str, Dict[str, float]],
+                         parallels: Dict[str, List[List[int]]] = None,
+                         level: str = "",
+                         thresholds: Dict[str, float] = None) -> Dict[str, Any]:
+    fr = final_result or {}
+    spec = _LEVEL_METRICS.get(level)
+    th = dict(thresholds or {})
+
+    def allowed(group: str, name: str) -> bool:
+        return spec is None or name in spec.get(group, ())
+
+    faults: Dict[str, Any] = {}
+
+    compute_metrics: Dict[str, Any] = {}
+    for out_name, src in (("KERNEL_AICORE", "KERNEL_AICORE"),
+                          ("KERNEL_AIVEC", "kernel_aivec"),
+                          ("computing", "computing_load")):
+        if allowed("compute", out_name):
+            compute_metrics[out_name] = _metric_entry(
+                out_name, {"items": _rank_items(fr.get(src) or {})})
+    if compute_metrics:
+        faults["compute"] = {"note": _GROUP_NOTES["compute"], "metrics": compute_metrics}
+
+    comm_metrics: Dict[str, Any] = {}
+    if allowed("comm", "collective"):
+        comm_metrics["collective"] = _metric_entry(
+            "collective", {"groups": _comm_groups(fr.get("comm") or {}, parallels)})
+    if allowed("comm", "pp_comm"):
+        comm_metrics["pp_comm"] = _metric_entry(
+            "pp_comm", {"items": _pp_items(fr.get("pp_comm") or {})})
+    if comm_metrics:
+        faults["comm"] = {"note": _GROUP_NOTES["comm"], "metrics": comm_metrics}
+
+    host_metrics: Dict[str, Any] = {}
+    for out_name in ("ZP_Host", "free"):
+        if allowed("host", out_name):
+            host_metrics[out_name] = _metric_entry(
+                out_name, {"items": _host_items(fr.get("cpu") or {})})
+    if host_metrics:
+        faults["host"] = {"note": _GROUP_NOTES["host"], "metrics": host_metrics}
+
+    if allowed("memcpy", "MEMCPY_ASYNC"):
+        faults["memcpy"] = {
+            "note": _GROUP_NOTES["memcpy"],
+            "metrics": {"MEMCPY_ASYNC": _metric_entry(
+                "MEMCPY_ASYNC", {"items": _rank_items(fr.get("memcpy_async") or {})})},
+        }
+
+    out_th: Dict[str, Any] = {}
+    if "compute" in faults and "compute" in th:
+        out_th["compute"] = th["compute"]
+    if ("host" in faults or "memcpy" in faults) and "io" in th:
+        out_th["io/host"] = th["io"]
+    if "comm" in faults and "comm" in th:
+        out_th["comm"] = th["comm"]
+    if "pp_comm" in (faults.get("comm", {}).get("metrics") or {}) and "pp_comm" in th:
+        out_th["pp_comm"] = th["pp_comm"]
+
+    return {
+        "schema_version": "2.0",
+        "data_level": level,
+        "thresholds": out_th,
+        "faults": faults,
+    }
+
+
 def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None):
     output_data = {}
     known_cats = ["KERNEL_AICORE", "comm", "pp_comm", "cpu", "memcpy_async", "kernel_aivec"]
@@ -100,11 +261,28 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                 "is_abnormal": True
             })
         output_data[category] = json_items
+    flat_path = os.path.join(config.get_output_path(), "straggler_detection_result_flat.json")
+    try:
+        with open(flat_path, "w", encoding="utf-8") as f:
+            json.dump(output_data, f, indent=2, ensure_ascii=False)
+    except Exception as e:
+        print(f"[ERROR] 无法创建扁平兼容结果文件 {flat_path}: {e}")
+
+    report = build_report_payload(
+        final_result, parallels, config.get_profiling_level(),
+        {
+            "compute": config.get_compute_threshold(),
+            "io": config.get_io_threshold(),
+            "comm": config.get_comm_threshold(),
+            "pp_comm": config.PP_WAIT_RATIO_THRESHOLD * 100.0,
+        },
+    )
     output_path = os.path.join(config.get_output_path(), "straggler_detection_result.json")
     try:
-        with open(output_path, "w") as f:
-            json.dump(output_data, f, indent=2)
+        with open(output_path, "w", encoding="utf-8") as f:
+            json.dump(report, f, indent=2, ensure_ascii=False)
         print(f"\n检测结果已保存至：{output_path}")
+        print(f"扁平兼容结果已保存至：{flat_path}")
     except Exception as e:
         print(f"[ERROR] 无法创建结果文件 {output_path}: {e}")
 
@@ -119,6 +297,7 @@ def confirm_clean(input_path: str) -> bool:
         "op_metric",
         "straggler_analysis_output",
         "straggler_detection_result.json",
+        "straggler_detection_result_flat.json",
         "straggler_detection_result",
         "detection_report.log",
         "conclusion.md",
@@ -190,6 +369,7 @@ def clean_detection_outputs(input_path: str):
         "op_metric",
         "straggler_analysis_output",
         "straggler_detection_result.json",
+        "straggler_detection_result_flat.json",
         "straggler_detection_result",
         "detection_report.log",
         "conclusion.md",

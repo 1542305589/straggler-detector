@@ -26,8 +26,9 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 
 ## 检测结论（自然语言）
 
-- 检测结束后**直接在控制台输出**结论文本（不落盘）：把 `straggler_detection_result.json` 那张表
-  逐类别翻成自然语言（哪张卡 / 哪个组、相对组内基线几倍、该卡实测耗时与组内基线均值、哪些类别未命中）。
+- 检测结束后**直接在控制台输出**结论文本（不落盘）：按 `1、计算类 / 2、通信类 / 3、Host侧 / 4、内存搬运类`
+  输出，括号内为 `劣化程度 - 1` 的百分数（`pp_comm` 例外，直接是等待占比百分数）；计算类每个指标超过 3 张卡时也取 TOP3；通信类分“慢通信卡 / 慢通信域 / PP点对点通信等待”，慢通信卡带通信域名（如 `tp Rank6`），各取 TOP3 故障点；
+  若异常来自 JSON 中带 `note` 的指标，同时打印该 `note`。
 - **最终回答里必须原样引用控制台输出的结论**，逐字照抄（含括号里的基线 rank 列表），
   **禁止改写、精简、换说法，禁止补充结论里没有的解释或推断**。
 - **禁止**提 `verdict`、`rule_id`、置信度、检测组判定逻辑等内部概念。
@@ -48,7 +49,7 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 | `memcpy_async` | `MEMCPY_ASYNC` | 检测组内 + 通用算法 |
 | `cpu` | `ZP_Host` | 节点对齐 + 通用算法 |
 
-> 数据级别影响检测范围：`level0`/`level1` 做全部 6 类；`levelnone`（TASK 仅 `MsTx`，无计算/搬运算子）跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；`cluster` 单文件仅 `comm`。
+> 数据级别影响检测范围：`level0`/`level1` 做全部 6 类；`levelnone`（TASK 仅 `MsTx`，无计算/搬运算子）跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；`cluster` 单文件评估 `comm` + `computing_load`（ClusterStepTraceTime.computing 聚合值，仅混合负载粗筛）+ `cpu`（ClusterStepTraceTime.free，Host 级 stall 粗筛）。慢计算需原始 `KERNEL_AICORE`/`KERNEL_AIVEC` 复核。
 
 **数据级别**（自动识别，决定 `comm` 的口径与检测范围）：
 
@@ -57,7 +58,7 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 | `level0` | 目录；`ascend_pytorch_profiler_*.db` 的 `TASK.taskType` 含 `KERNEL_AICORE`/`KERNEL_AIVEC`/`MEMCPY_ASYNC` | 全部 6 类 |
 | `levelnone` | 目录；`TASK.taskType` 仅 `MsTx`（无计算/搬运算子） | 跳过 `KERNEL_AICORE`/`kernel_aivec`/`memcpy_async`；其余照跑 |
 | `level1` | profiler db 同目录有 `analysis.db` 且含 `CommAnalyzerBandwidth` 带宽 | 6 类，但 `comm` 用新两级带宽口径，且跳过 `pp_comm` |
-| `cluster` | `path` 是单文件 db，含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` | 仅 `comm`（新两级带宽口径） |
+| `cluster` | `path` 是单文件 db，含 `CommunicationGroupMapping` 与 `ClusterCommunicationBandwidth` | `comm`（新两级带宽口径）+ `computing_load`（混合负载粗筛）+ `cpu`（Host 级 stall 粗筛） |
 
 ## 使用方法
 
@@ -127,14 +128,14 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
    - **不要自行添加「其他」选项**：询问工具自带「输入其他内容」，自定义值走它即可。
    - 用户给出数值后，命令中加 `compute=<值> io=<值> comm=<值> pp_comm=<百分比>`。
    - **按数据级别决定问哪几组**：
-     - `cluster`（单文件 db）只问 `comm`（不做 pp_comm 检测，**不要问**）；
+     - `cluster`（单文件 db）问 `compute` + `io` + `comm`（不做 pp_comm 检测，**不要问**）；
      - `levelnone`（TASK 仅 MsTx）问 `io` + `comm` + `pp_comm`（计算类已跳过）；
      - `level0` 问 `compute` + `io` + `comm` + `pp_comm`；
      - `level1` 问 `compute` + `io` + `comm`（level1 不做 pp_comm 检测，**不要问**）。
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
-   - **cluster db 单文件无需询问**：无解析步骤、无中间产物，输出文件（`straggler_detection_result.json` / `detection_report.log`）每次直接覆盖写，`clean` 对它无意义。
+   - **cluster db 单文件无需询问**：无解析步骤、无中间产物，输出文件（`straggler_detection_result.json` / `straggler_detection_result_flat.json` / `detection_report.log`）每次直接覆盖写，`clean` 对它无意义。
 3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**按数据级别决定**：
    - **`levelnone` / `level0`（旧带宽口径）→ 需要问**：
      - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
@@ -161,7 +162,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result_flat.json`、`straggler_detection_result/`、`detection_report.log`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
 
 ## 输入数据
 
@@ -206,12 +207,17 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 1. `op_metric/global_rank_*.csv` — 解析后的性能指标
 2. `op_metric/group_info_*.json` — 并行域信息
-3. `straggler_detection_result.json` — 检测结果（含全部类别）
+3. `straggler_detection_result.json` — 检测结果（schema_version 2.0，按 `faults.compute/comm/host/memcpy` 分组）
+   - 只用 `note` 承载说明文字，没有 `display_name`；
+   - 数值键统一叫 `degradation`（`pp_comm` 的是等待占会话的比例，其 `note` 会说明）；
+   - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 只有 `comm`；`level1` 无 `pp_comm`；
+   - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
+4. `straggler_detection_result_flat.json` — 扁平兼容结果（旧格式，按 category 平铺）
 4. `detection_report.log` — 可视化详情报告
 6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，一行一个"有异常的类别"，列：`类别 | 异常卡 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；劣化指数为 `项:值`，通信组如 `tp[0,1]:2.5`、**通信单卡（Level-1 组内）如 `ep[5]:2.5`**、PP 链路如 `0->4:2.5`）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
 
-检测核心为 `scripts/kmeans_detector.py` 的 `general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇递归细分）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）；。
+检测核心为 `scripts/kmeans_detector.py` 的 `general_anomaly_detection`（KMeans + Z-score + 肘部法 + 异常簇细分）。阈值分组：计算类（KERNEL_AICORE / kernel_aivec / computing_load）= `compute`（默认 1.3），IO/CPU 类（cpu / memcpy_async）= `io`（默认 2.5），通信类（comm / pp_comm）= `comm`（默认 1.3）。
 
 **需要解释「为什么这么判」时，按需加载 `references/detection.md`**：七类指标总览、通用异常算法逐步流程、检测组优先级、`comm` 两套口径的完整公式、`cpu` 节点拉齐机制、`pp_comm` 的 `PP_WaitGap` 定义与比较域、实现文件一览。

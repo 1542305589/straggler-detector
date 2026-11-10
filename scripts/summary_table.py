@@ -7,6 +7,7 @@ CATEGORY_DISPLAY = {
     "KERNEL_AICORE": "KERNEL_AICORE",
     "kernel_aivec": "KERNEL_AIVEC",
     "memcpy_async": "MEMCPY_ASYNC",
+    "computing_load": "computing",
     "comm": "comm",
     "pp_comm": "pp_comm",
     "cpu": "cpu",
@@ -148,7 +149,7 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
 def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None) -> str:
     headers = ["类别", "异常卡", "劣化指数", "劣化阈值"]
     ordered_categories = [
-        "KERNEL_AICORE", "kernel_aivec", "memcpy_async",
+        "KERNEL_AICORE", "kernel_aivec", "memcpy_async", "computing_load",
         "comm", "pp_comm", "cpu",
     ]
     known = set(ordered_categories)

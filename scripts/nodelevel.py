@@ -31,16 +31,129 @@ def _op_type_name(op_name: str) -> str:
     s = (op_name or "").strip()
     return s.split("_")[1].lower() if "_" in s else ""
 
+CLUSTER_COMPUTE_CATEGORY = "computing_load"
+CLUSTER_HOST_CATEGORY = "cpu"
+_CLUSTER_HOST_METRIC = "free"
+_CLUSTER_HOST_MAX = 8
+
+def _median_or_zero(values: List[float]) -> float:
+    vals = [v for v in values if v is not None and v > 0]
+    return statistics.median(vals) if vals else 0.0
+
+def _detect_cluster_compute(
+    by_step: Dict[int, Dict[int, Dict[str, float]]],
+    parallels: Dict[str, List[List[int]]],
+    valid_ranks: List[int],
+    local_result: config.DegradationData,
+    threshold: float,
+) -> None:
+    _domain, groups = get_cal_detection_group(parallels, valid_ranks)
+    if not groups:
+        logger.info("[SKIP] cluster 混合负载粗筛：没有可用检测组")
+        return
+    for group in groups:
+        ranks = [int(r) for r in group if int(r) in set(valid_ranks)]
+        if len(ranks) < minRanksInGroup:
+            continue
+        ratios: Dict[int, List[float]] = {r: [] for r in ranks}
+        for _step, vals in by_step.items():
+            present = [r for r in ranks
+                       if r in vals and vals[r].get("computing", 0.0) > 0]
+            if len(present) < minRanksInGroup:
+                continue
+            base = statistics.median(vals[r]["computing"] for r in present)
+            if base <= 0:
+                continue
+            for r in present:
+                ratios[r].append(vals[r]["computing"] / base)
+        for r in ranks:
+            if not ratios[r]:
+                continue
+            metric = statistics.median(ratios[r])
+            if metric > threshold:
+                local_result.add_single(CLUSTER_COMPUTE_CATEGORY, r, metric)
+                logger.info(
+                    f"[SLOWNODE ALGO] cluster 混合负载粗筛：rank {r} 相对同组中位数 "
+                    f"{metric:.3f} 倍")
+
+def _detect_cluster_host(
+    step_info: Dict[str, Any],
+    by_step: Dict[int, Dict[int, Dict[str, float]]],
+    local_result: config.DegradationData,
+    threshold: float,
+) -> None:
+    host_ranks: Dict[str, List[int]] = (step_info or {}).get("host_ranks") or {}
+    if len(host_ranks) < 2:
+        return
+    if len(host_ranks) > _CLUSTER_HOST_MAX:
+        logger.info(
+            f"[SKIP] cluster Host 级 stall 粗筛：host 数={len(host_ranks)}，"
+            f"超过 {_CLUSTER_HOST_MAX} 个不同构 host，跳过")
+        return
+    sizes = {len(ranks) for ranks in host_ranks.values()}
+    if len(sizes) > 1:
+        logger.info("[SKIP] cluster Host 级 stall 粗筛：各 host 的 rank 数不一致，跳过")
+        return
+    host_metric: Dict[str, float] = {}
+    for host, ranks in host_ranks.items():
+        per_step = []
+        for _step, vals in by_step.items():
+            values = [vals[r].get(_CLUSTER_HOST_METRIC, 0.0)
+                      for r in ranks if r in vals]
+            if values:
+                per_step.append(sum(values))
+        if per_step:
+            host_metric[host] = statistics.median(per_step)
+    if len(host_metric) < 2:
+        return
+    for host, value in host_metric.items():
+        others = [v for h, v in host_metric.items() if h != host]
+        base = _median_or_zero(others)
+        if base <= 0:
+            continue
+        ratio = value / base
+        if ratio > threshold:
+            local_result.add_single(CLUSTER_HOST_CATEGORY, host, ratio)
+            logger.info(
+                f"[SLOWNODE ALGO] cluster Host 级 stall 粗筛：{host} 的 free 时间"
+                f"相对其它节点 {ratio:.3f} 倍")
+
+def detect_cluster_step_metrics(
+    step_info: Dict[str, Any],
+    parallels: Dict[str, List[List[int]]],
+    valid_ranks: List[int],
+    local_result: config.DegradationData,
+    compute_threshold: Optional[float] = None,
+    io_threshold: Optional[float] = None,
+) -> None:
+    rows = (step_info or {}).get("rows") or []
+    if not rows:
+        return
+    if compute_threshold is None:
+        compute_threshold = config.get_compute_threshold()
+    if io_threshold is None:
+        io_threshold = config.get_io_threshold()
+    by_step: Dict[int, Dict[int, Dict[str, float]]] = {}
+    for step, rank, metrics in rows:
+        by_step.setdefault(int(step), {})[int(rank)] = metrics
+    _detect_cluster_compute(by_step, parallels, valid_ranks, local_result, compute_threshold)
+    _detect_cluster_host(step_info, by_step, local_result, io_threshold)
+
 def delimit_detection(
     step_data: Dict[str, Dict[int, float]],
     parallels: Dict[str, List[List[int]]],
     valid_ranks: List[int],
     comm: Optional[List[Tuple[str, str, int, int, float, float]]] = None,
     comm_threshold: Optional[float] = None,
+    cluster_step_info: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, float]]:
     local_result = config.DegradationData()
+    if cluster_step_info:
+        logger.info("\ncluster 混合负载 / Host 级 stall 粗筛（ClusterStepTraceTime）:")
+        detect_cluster_step_metrics(
+            cluster_step_info, parallels, valid_ranks, local_result)
     if not step_data:
-        logger.info("[INFO] 无单卡快照数据（cluster 单文件）：仅检测通信域")
+        logger.info("[INFO] 无单卡快照数据（cluster 单文件）：仅检测通信域与 cluster step trace")
         if comm:
             logger.info("\n慢通信域检测（新两级带宽口径，cluster）:")
             detect_slow_comm_two_level(parallels, comm, local_result, comm_threshold)

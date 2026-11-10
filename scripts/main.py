@@ -191,7 +191,7 @@ def _process_colocate_root(input_path: str, worlds: List[dict], thresholds: tupl
 
 def _threshold_ask_keys(level: str) -> tuple:
     if level == "cluster":
-        return ("comm",)
+        return ("compute", "io", "comm")
     if level == "levelnone":
         return ("io", "comm")
     return ("compute", "io", "comm")
@@ -217,11 +217,15 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     out_path = config.get_output_path()
     if is_cluster_input:
         parallels, comm = nodelevel_data_handler.load_cluster_comm(job_path)
-        if not parallels or not comm:
+        step_info = nodelevel_data_handler.load_cluster_step_data(job_path)
+        if not parallels or (not comm and not step_info.get("rows")):
             logger.error("cluster 数据为空，无法检测")
             return {}
         valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
-        result = nodelevel.delimit_detection({}, parallels, valid_ranks, comm=comm)
+        if not valid_ranks:
+            valid_ranks = sorted({int(r) for _s, r, _m in step_info.get("rows", [])})
+        result = nodelevel.delimit_detection(
+            {}, parallels, valid_ranks, comm=comm, cluster_step_info=step_info)
         utils.write_result(result, parallels)
         try:
             visualizer.run_visualization(
