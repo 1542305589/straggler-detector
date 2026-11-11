@@ -142,8 +142,6 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
      - 用户选"不关闭"（默认，跨 rank 对齐后取组内最短时长）→ 不加
    - **`level1` / `cluster`（新两级带宽口径）→ 无需问**（`no-align` 对它们无意义，直接跳过、不展示此项）。
 
-### 必须在最终回答中原样列出产物绝对路径
-
 ### 必须在最终回答中原样给出逐类别汇总表
 
 检测结束后，stdout 会先打印一张 ASCII 汇总表（`类别 | 异常点位 | 劣化指数 | 劣化阈值`，一行一个
@@ -213,7 +211,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
    - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 只有 `comm`；`level1` 无 `pp_comm`；
    - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
 4. `straggler_detection_result_flat.json` — 扁平兼容结果（旧格式，按 category 平铺）
-4. `detection_report.log` — 可视化详情报告
+5. `detection_report.log` — 可视化详情报告
 6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
