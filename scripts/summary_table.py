@@ -33,13 +33,12 @@ def _render_box_table(headers: List[str], rows: List[List[str]]) -> str:
     top = _line("+", "+", "+")
     mid = _line("+", "+", "+")
     bot = _line("+", "+", "+")
-    last_idx = len(all_rows) - 1
     lines = [top]
     for idx, row in enumerate(all_rows):
         cells = "|" + "|".join(" " + _disp_ljust(cell, widths[i]) + " "
                                for i, cell in enumerate(row)) + "|"
         lines.append(cells)
-        if idx < last_idx:
+        if idx == 0:
             lines.append(mid)
     lines.append(bot)
     return "\n".join(lines)
@@ -146,8 +145,23 @@ def _summary_cells(category: str, items: dict, parallels: dict = None):
     dev_str = _truncate_display("; ".join(dev_parts))
     return cards_str, deg_str, dev_str
 
+def _item_label(category: str, key, parallels: dict = None) -> str:
+    if category == "comm":
+        key_domain, ranks_key = _split_domain_key(key)
+        ranks = _parse_ranks_from_key(key)
+        domain_name = key_domain or _domain_of_group(parallels, ranks_key)
+        inner = ", ".join(str(r) for r in ranks)
+        return f"{domain_name}[{inner}]" if domain_name else f"[{inner}]"
+    if category == "pp_comm":
+        ranks = _parse_ranks_from_key(key)
+        return f"pp[{', '.join(str(r) for r in ranks)}]"
+    if category == "cpu":
+        return str(key)
+    return f"rank {key}"
+
+
 def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None) -> str:
-    headers = ["类别", "异常卡", "劣化指数", "劣化阈值"]
+    headers = ["类别", "异常点位", "劣化指数", "劣化阈值"]
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async", "computing_load",
         "comm", "pp_comm", "cpu",
@@ -165,7 +179,6 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         items = result.get(category) or {}
         if not items:
             continue
-        cards_str, deg_str, _devices = _summary_cells(category, items, parallels)
         if category == "pp_comm":
             th_str = f">{config.PP_WAIT_RATIO_THRESHOLD * 100:g}%"
         elif category == "comm":
@@ -175,7 +188,10 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
         else:
             th_str = f"{threshold['compute']:g}x"
         category_str = CATEGORY_DISPLAY.get(category, category)
-        rows.append([category_str, cards_str, deg_str, th_str])
+        for key, val in sorted(items.items(), key=lambda x: -x[1]):
+            label = _item_label(category, key, parallels)
+            deg_str = f"{val * 100:g}%" if category == "pp_comm" else f"{val:g}"
+            rows.append([category_str, label, deg_str, th_str])
     if not rows:
         return _render_box_table(headers, [["无异常", "-", "-", "-"]])
     return _render_box_table(headers, rows)
