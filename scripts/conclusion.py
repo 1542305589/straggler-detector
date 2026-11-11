@@ -662,15 +662,81 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     return "\n".join(lines)
 
 
+def _detection_from_report(data: Dict) -> Dict[str, List[Dict]]:
+    """把 straggler_detection_result.json 的 faults 分组结果翻成 render() 需要的扁平结构。"""
+    faults = (data or {}).get("faults") or {}
+    det: Dict[str, List[Dict]] = {}
+
+    def _metric_items(metrics: Dict, name: str, key_field: str = "rank") -> List[Dict]:
+        items = ((metrics or {}).get(name) or {}).get("items") or []
+        return [{"display_key": str(it.get(key_field)), "metric_value": it.get("degradation")}
+                for it in items if it.get("degradation") is not None]
+
+    compute = (faults.get("compute") or {}).get("metrics") or {}
+    for src_name, dst_name in (("KERNEL_AICORE", "KERNEL_AICORE"),
+                               ("KERNEL_AIVEC", "kernel_aivec"),
+                               ("computing", "computing_load")):
+        items = _metric_items(compute, src_name)
+        if items:
+            det[dst_name] = items
+
+    comm = (faults.get("comm") or {}).get("metrics") or {}
+    comm_items: List[Dict] = []
+
+    def _group_label(domain: str, inner: str) -> str:
+        ranks = [r.strip() for r in str(inner).split(",") if r.strip()]
+        return f"{domain}[{', '.join(ranks)}]" if domain else f"[{', '.join(ranks)}]"
+
+    for domain, entries in ((comm.get("collective") or {}).get("groups") or {}).items():
+        for entry in entries or []:
+            if entry.get("degradation") is None:
+                continue
+            target = str(entry.get("target") or "")
+            single = re.match(r"^rank(\d+)$", target)
+            grouped = re.match(r"^([A-Za-z0-9_]+)\[(.*)\]$", target)
+            if single:
+                key = _group_label(domain, single.group(1))
+            elif grouped:
+                key = _group_label(grouped.group(1), grouped.group(2))
+            else:
+                key = target
+            comm_items.append({"display_key": key, "metric_value": entry.get("degradation")})
+    if comm_items:
+        det["comm"] = comm_items
+
+    pp_items = (comm.get("pp_comm") or {}).get("items") or []
+    if pp_items:
+        det["pp_comm"] = [
+            {"display_key": _group_label("", str(it.get("target") or "")[3:-1]),
+             "metric_value": it.get("degradation")}
+            for it in pp_items if it.get("degradation") is not None
+        ]
+
+    host = (faults.get("host") or {}).get("metrics") or {}
+    for name in ("ZP_Host", "free"):
+        items = _metric_items(host, name, key_field="host")
+        if items:
+            det["cpu"] = items
+            break
+
+    memcpy_items = _metric_items((faults.get("memcpy") or {}).get("metrics") or {}, "MEMCPY_ASYNC")
+    if memcpy_items:
+        det["memcpy_async"] = memcpy_items
+    return det
+
+
 def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "") -> str:
     """读检测结果 JSON，返回结论文本（只在控制台输出，不落盘）。"""
-    det = {}
-    src = os.path.join(out_dir, "straggler_detection_result_flat.json")
-    if not os.path.exists(src):
-        src = os.path.join(out_dir, "straggler_detection_result.json")
+    det: Dict[str, List[Dict]] = {}
+    report_path = os.path.join(out_dir, "straggler_detection_result.json")
+    flat_path = os.path.join(out_dir, "straggler_detection_result_flat.json")
     try:
-        with open(src, "r", encoding="utf-8") as f:
-            det = json.load(f) or {}
+        if os.path.exists(report_path):
+            with open(report_path, "r", encoding="utf-8") as f:
+                det = _detection_from_report(json.load(f) or {})
+        elif os.path.exists(flat_path):  # 兼容早期版本留下的扁平结果
+            with open(flat_path, "r", encoding="utf-8") as f:
+                det = json.load(f) or {}
     except (OSError, ValueError):
         det = {}
     return render(det, level, thresholds,

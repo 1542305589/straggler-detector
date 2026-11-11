@@ -217,17 +217,11 @@ def build_report_payload(final_result: Dict[str, Dict[str, float]],
 
 
 def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None):
-    output_data = {}
-    known_cats = ["KERNEL_AICORE", "comm", "pp_comm", "cpu", "memcpy_async", "kernel_aivec"]
-    all_cats = known_cats + [c for c in final_result.keys() if c not in known_cats]
-    for default_cat in all_cats:
-        output_data[default_cat] = []
     for category, items in final_result.items():
         if not items:
             continue
-        kvs = [(k, v) for k, v in items.items()]
+        kvs = sorted(((k, v) for k, v in items.items()), key=lambda x: x[1], reverse=True)
         is_group_category = category in ("comm", "pp_comm")
-        kvs.sort(key=lambda x: x[1], reverse=True)
         rank_set_to_domain = {}
         if is_group_category and parallels:
             for domain_name, domain_groups in parallels.items():
@@ -235,7 +229,6 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                     sorted_group = tuple(sorted(group))
                     rank_set_to_domain[sorted_group] = domain_name
         print(f"\n【{category}】全部异常项（共 {len(kvs)} 项）:")
-        json_items = []
         for i, (key, value) in enumerate(kvs):
             if category == "pp_comm":
                 display_key = "[" + ", ".join(key.split(",")) + "]"
@@ -243,8 +236,10 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                 key_domain, ranks_key = summary_table._split_domain_key(key)
                 ranks = ranks_key.split(",")
                 if not key_domain:
-                    rank_tuple = tuple(int(r) for r in ranks)
-                    key_domain = rank_set_to_domain.get(rank_tuple, "")
+                    try:
+                        key_domain = rank_set_to_domain.get(tuple(int(r) for r in ranks), "")
+                    except ValueError:
+                        key_domain = ""
                 if key_domain:
                     display_key = f"{key_domain}[{', '.join(ranks)}]"
                 else:
@@ -255,18 +250,6 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
                 print(f"  {i+1}. {display_key} → 等待占比 = {value * 100:.2f}%")
             else:
                 print(f"  {i+1}. {display_key} → 劣化指数 = {value:.3f}")
-            json_items.append({
-                "display_key": display_key,
-                "metric_value": value,
-                "is_abnormal": True
-            })
-        output_data[category] = json_items
-    flat_path = os.path.join(config.get_output_path(), "straggler_detection_result_flat.json")
-    try:
-        with open(flat_path, "w", encoding="utf-8") as f:
-            json.dump(output_data, f, indent=2, ensure_ascii=False)
-    except Exception as e:
-        print(f"[ERROR] 无法创建扁平兼容结果文件 {flat_path}: {e}")
 
     report = build_report_payload(
         final_result, parallels, config.get_profiling_level(),
@@ -282,7 +265,6 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
         with open(output_path, "w", encoding="utf-8") as f:
             json.dump(report, f, indent=2, ensure_ascii=False)
         print(f"\n检测结果已保存至：{output_path}")
-        print(f"扁平兼容结果已保存至：{flat_path}")
     except Exception as e:
         print(f"[ERROR] 无法创建结果文件 {output_path}: {e}")
 

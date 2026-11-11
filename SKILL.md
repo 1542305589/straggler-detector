@@ -135,7 +135,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 2. **是否删除已有数据**（op_metric 等中间文件）：
    - 用户选"删除" → 加 `clean=yes`
    - 用户选"保留" → 加 `clean=no`
-   - **cluster db 单文件无需询问**：无解析步骤、无中间产物，输出文件（`straggler_detection_result.json` / `straggler_detection_result_flat.json` / `detection_report.log`）每次直接覆盖写，`clean` 对它无意义。
+   - **cluster db 单文件无需询问**：无解析步骤、无中间产物，输出文件（`straggler_detection_result.json` / `detection_report.log`）每次直接覆盖写，`clean` 对它无意义。
 3. **是否关闭慢通信带宽的跨 rank 对齐**（`no-align`，默认**否**）——**按数据级别决定**：
    - **`levelnone` / `level0`（旧带宽口径）→ 需要问**：
      - 用户选"关闭"（用全体 rank 算子时长的扁平池算带宽，适用于跨 rank 对齐失败的数据）→ 加 `no-align`
@@ -160,7 +160,7 @@ result = main.run_detection("/path/to/data", compute=1.3, io=2.5, comm=1.3, clea
 
 ### 清理范围
 
-若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result_flat.json`、`straggler_detection_result/`、`detection_report.log`，然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
+若用户选删除，会清理：`op_metric/`、`straggler_analysis_output/`、`straggler_detection_result.json`、`straggler_detection_result/`、`detection_report.log`（早期版本留下的 `straggler_detection_result_flat.json` 也会一并清掉），然后从 `.db` 重新解析。**只删本 skill 自己的产物**，不动其他目录。
 
 ## 输入数据
 
@@ -212,9 +212,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
    - 数值键统一叫 `degradation`（`pp_comm` 的是等待占会话的比例，其 `note` 会说明）；
    - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 只有 `comm`；`level1` 无 `pp_comm`；
    - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
-4. `straggler_detection_result_flat.json` — 扁平兼容结果（旧格式，按 category 平铺）
-5. `detection_report.log` — 可视化详情报告
-6. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。
+4. `detection_report.log` — 可视化详情报告
+5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。
 
 ## 算法说明
 
