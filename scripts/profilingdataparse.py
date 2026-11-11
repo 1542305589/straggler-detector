@@ -9,7 +9,6 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 import config
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("[DATA PROCESS]")
 
 @dataclass

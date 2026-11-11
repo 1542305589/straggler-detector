@@ -292,6 +292,14 @@ def _is_interactive() -> bool:
     except Exception:
         return False
 
+def _read_input(prompt: str) -> str:
+    """读一行输入。stdin 不可读（/dev/null、nul、管道已关闭）时返回空串，让调用方走默认值。"""
+    try:
+        return input(prompt).strip()
+    except EOFError:
+        print()
+        return ""
+
 def confirm_clean(input_path: str) -> bool:
     items_to_clean = [
         "op_metric",
@@ -315,7 +323,7 @@ def confirm_clean(input_path: str) -> bool:
         return False
     print(f"\n发现以下已有数据：{', '.join(existing)}")
     while True:
-        ans = input("是否删除已有数据并重新解析？(y/N): ").strip().lower()
+        ans = _read_input("是否删除已有数据并重新解析？(y/N): ").lower()
         if ans in ('y', 'yes'):
             return True
         elif ans in ('n', 'no', ''):
@@ -324,7 +332,7 @@ def confirm_clean(input_path: str) -> bool:
 
 def _ask_threshold(name: str, default: float) -> float:
     while True:
-        ans = input(f"请输入{name}（默认 {default}，回车使用默认）: ").strip()
+        ans = _read_input(f"请输入{name}（默认 {default}，回车使用默认）: ")
         if ans == "":
             return default
         try:
@@ -353,9 +361,9 @@ def confirm_no_align(default: bool = False) -> bool:
         return default
     hint = "Y/n" if default else "y/N"
     while True:
-        ans = input(
+        ans = _read_input(
             f"慢通信带宽是否关闭跨 rank 对齐（--no-align：用全体 rank 扁平池；{hint}）："
-        ).strip().lower()
+        ).lower()
         if ans == "":
             return default
         if ans in ("y", "yes"):

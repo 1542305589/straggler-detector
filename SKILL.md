@@ -203,6 +203,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 ## 输出
 
+> 过程日志（INFO/WARNING）默认不打印到终端，只把 ERROR 输出到 stderr；排查问题时设环境变量 `SLOWNODE_DEBUG=1` 可打开完整日志。
+
 1. `op_metric/global_rank_*.csv` — 解析后的性能指标
 2. `op_metric/group_info_*.json` — 并行域信息
 3. `straggler_detection_result.json` — 检测结果（schema_version 2.0，按 `faults.compute/comm/host/memcpy` 分组）

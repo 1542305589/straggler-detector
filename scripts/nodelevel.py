@@ -10,7 +10,6 @@ import config
 import kmeans_detector
 import utils
 import nodelevel_data_handler
-logging.basicConfig(level=logging.INFO)
 logger = logging.getLogger("[SLOWNODE ALGO]")
 minRanksInGroup = 2
 zpDeviceColumn = "ZP_Device"

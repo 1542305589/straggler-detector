@@ -12,7 +12,9 @@ import utils
 import visualizer
 import summary_table
 logging.basicConfig(
-    level=logging.INFO,
+    # 默认只把 ERROR 打到 stderr：过程日志（INFO/WARNING）不进用户可见输出，
+    # 排查问题时可设环境变量 SLOWNODE_DEBUG=1 打开完整日志。
+    level=logging.DEBUG if os.environ.get("SLOWNODE_DEBUG") else logging.ERROR,
     format='%(asctime)s - %(name)s - %(message)s'
 )
 logger = logging.getLogger("[SLOWNODE ALGO]")
@@ -161,9 +163,11 @@ def _find_colocate_worlds(input_path: str) -> List[dict]:
     return worlds
 
 def _process_colocate_root(input_path: str, worlds: List[dict], thresholds: tuple,
-                           clean_mode: str, skip_parsing: bool) -> Dict[str, Any]:
+                           clean_mode: str, skip_parsing: bool,
+                           skip_confirm: bool = False) -> Dict[str, Any]:
     config.set_file_path(input_path)
-    thresholds = utils.confirm_thresholds(thresholds)
+    if not skip_confirm:
+        thresholds = utils.confirm_thresholds(thresholds)
     config.set_thresholds(*thresholds)
     if skip_parsing:
         clean_decision = False
@@ -294,6 +298,9 @@ def main():
         logger.error("[SLOWNODE ALGO] Usage: python main.py path=<dir | cluster.db> [compute=1.3] [io=2.5] [comm=1.3] [no-align] [clean=ask]")
         sys.exit(1)
     parsed = parse_args(args)
+    # 调用方（agent / 脚本）已显式给出全部阈值时，不再交互式追问
+    explicit = {a.split("=", 1)[0] for a in args if "=" in a}
+    skip_confirm = {"compute", "io", "comm"} <= explicit
     input_path = parsed['path']
     thresholds = (parsed['compute'], parsed['io'], parsed['comm'])
     clean_mode = parsed['clean']
@@ -312,12 +319,13 @@ def main():
             logger.warning(f"[WARN] {name} threshold must be > 0. Please verify.")
     if os.path.isfile(input_path):
         config.set_output_path("")
-        return _process_single_job(input_path, thresholds, clean_mode)
+        return _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
     colocate_worlds = _find_colocate_worlds(input_path)
     if colocate_worlds:
         logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
                     f"{[w['role'] for w in colocate_worlds]}")
-        return _process_colocate_root(input_path, colocate_worlds, thresholds, clean_mode, False)
+        return _process_colocate_root(input_path, colocate_worlds, thresholds, clean_mode,
+                                      False, skip_confirm=skip_confirm)
     sub_jobs = _find_job_subdirs(input_path)
     parent_has_db = _dir_has_db_directly(input_path)
     if sub_jobs and not parent_has_db:
@@ -327,10 +335,11 @@ def main():
         for job in sub_jobs:
             logger.info(f"===== 处理 job：{job} =====")
             job_output = os.path.join(output_root, os.path.basename(job))
-            results[job] = _process_single_job(job, thresholds, clean_mode, output_path=job_output)
+            results[job] = _process_single_job(job, thresholds, clean_mode,
+                                               output_path=job_output, skip_confirm=skip_confirm)
         return results
     config.set_output_path("")
-    return _process_single_job(input_path, thresholds, clean_mode)
+    return _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
 
 def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: float = 1.3,
                   skip_parsing: bool = False, clean: str = 'ask',
