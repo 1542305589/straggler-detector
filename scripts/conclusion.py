@@ -654,7 +654,7 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     elif level == "level1":
         unevaluated.append("PP点对点通信")
     elif level == "levelnone":
-        unevaluated.append("计算类、内存搬运类、Host侧")
+        unevaluated.append("计算类、内存搬运类")
     if unevaluated:
         lines.append("未评估：" + "；".join(unevaluated) + "。")
 
