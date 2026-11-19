@@ -479,11 +479,13 @@ def _threshold_text(level: str, thresholds) -> str:
     compute, io, comm = thresholds[0], thresholds[1], thresholds[2]
     parts = []
     if level == "cluster":
-        return (f"计算类（KERNEL_AICORE / KERNEL_AIVEC / computing）{compute} 倍、"
-                f"IO/CPU（MEMCPY_ASYNC / Host）{io} 倍、集合通信（comm）{comm} 倍")
+        return (f"计算类（computing）{compute} 倍、"
+                f"Host（free）{io} 倍、集合通信（comm）{comm} 倍")
     if level in ("level0", "level1"):
         parts.append(f"计算（针对KERNEL_AICORE和KERNEL_AIVEC）{compute} 倍")
-    parts.append(f"IO/CPU（针对MEMCPY_ASYNC和Host）{io} 倍")
+        parts.append(f"IO/CPU（针对MEMCPY_ASYNC和Host）{io} 倍")
+    else:
+        parts.append(f"IO/CPU（针对Host）{io} 倍")
     parts.append(f"集合通信（comm）{comm} 倍")
     if level in ("level0", "levelnone"):
         parts.append(f"PP 点对点通信等待占比（pp_comm）{_pp_percent()}%")
@@ -577,6 +579,10 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
            data_dir: str = "") -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
     lines: List[str] = [f"检测结果（数据级别：{level or '未知'}）："]
+    pct_note = "括号内百分数 =（劣化指数 − 1）× 100%，表示相对基线的劣化比例，数值越大表示偏离基线越多"
+    if level in ("level0", "levelnone"):
+        pct_note += "；PP 点对点通信的括号内数值为等待时间占会话时长的比例"
+    lines.append("说明：" + pct_note + "。")
 
     # 1、计算类
     compute_lines: List[str] = []
@@ -589,7 +595,12 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         "computing（cluster数据独有）", computing, _rank_label,
         _METRIC_NOTES["computing_load"], top=True)
     lines.append("1、计算类故障检测结果：")
-    lines.extend(compute_lines or ["无"])
+    if compute_lines:
+        lines.extend(compute_lines)
+    elif level == "levelnone":
+        lines.append("未评估（levelnone 数据不含计算类算子）")
+    else:
+        lines.append("无")
 
     # 2、通信类
     cards: List[Tuple[str, Dict]] = []
@@ -618,6 +629,9 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         top = _top3_line([label for label, _ in groups])
         if top:
             lines.append(top)
+        if level in ("level1", "cluster"):
+            lines.append("说明：慢通信卡为组内检测，表示该卡带宽相对同组其他 rank 较低；"
+                         "慢通信域为组间检测，表示该组有效带宽相比其他组更低。")
         if pp_items:
             pp_text = "、".join(f"{label}({_ratio_pct(item.get('metric_value'))})"
                                for label, item in pp_items)
@@ -639,7 +653,14 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     memcpy_items = _abnormal_items(detection, "memcpy_async")
     memcpy_lines = _metric_line("MEMCPY_ASYNC", memcpy_items, _rank_label, top=True)
     lines.append("4、内存搬运类故障检测结果：")
-    lines.extend(memcpy_lines or ["无"])
+    if memcpy_items:
+        lines.extend(memcpy_lines)
+    elif level == "cluster":
+        lines.append("未评估（cluster 数据不含 MEMCPY_ASYNC）")
+    elif level == "levelnone":
+        lines.append("未评估（levelnone 数据不含搬运算子）")
+    else:
+        lines.append("无")
     if memcpy_items:
         ranks = sorted({r for i in memcpy_items for r in _ranks_from_key(i.get("display_key"))})
         lines.append("")

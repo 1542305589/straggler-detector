@@ -29,6 +29,9 @@ Slow Node Detection 算法，用于检测 AI 训练/推理集群中的慢节点�
 - 检测结束后**直接在控制台输出**结论文本（不落盘）：按 `1、计算类 / 2、通信类 / 3、Host侧 / 4、内存搬运类`
   输出，括号内为 `劣化程度 - 1` 的百分数（`pp_comm` 例外，直接是等待占比百分数）；计算类每个指标超过 3 张卡时也取 TOP3；通信类分“慢通信卡 / 慢通信域 / PP点对点通信等待”，慢通信卡带通信域名（如 `tp Rank6`），各取 TOP3 故障点；
   若异常来自 JSON 中带 `note` 的指标，同时打印该 `note`。
+- 结论开头会打印一行 `说明：`，解释括号内百分数的含义（相对基线的劣化比例，即 `劣化程度 − 1`；`pp_comm` 为等待时间占会话时长的比例）。
+- `level1` / `cluster` 的通信类有异常时会附带一行 `说明：`：慢通信卡为**组内检测**，表示该卡带宽相对同组其他 rank 较低；慢通信域为**组间检测**，表示该组有效带宽相比其他组更低。
+- 该数据级别未参与检测的类别，在对应小节输出 `未评估（原因）`，**不得写成 `无`**（`无` 只表示已检测且未发现异常）。
 - **最终回答里必须原样引用控制台输出的结论**，逐字照抄（含括号里的基线 rank 列表），
   **禁止改写、精简、换说法，禁止补充结论里没有的解释或推断**。
 - **禁止**提 `verdict`、`rule_id`、置信度、检测组判定逻辑等内部概念。
@@ -210,7 +213,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 3. `straggler_detection_result.json` — 检测结果（schema_version 2.0，按 `faults.compute/comm/host/memcpy` 分组）
    - 只用 `note` 承载说明文字，没有 `display_name`；
    - 数值键统一叫 `degradation`（`pp_comm` 的是等待占会话的比例，其 `note` 会说明）；
-   - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 只有 `comm`；`level1` 无 `pp_comm`；
+   - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/整个 `memcpy`；`level1` 无 `pp_comm`；
    - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
 4. `detection_report.log` — 可视化详情报告
 5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。

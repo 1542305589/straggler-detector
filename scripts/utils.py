@@ -132,6 +132,7 @@ _LEVEL_METRICS = {
     },
     "levelnone": {
         "comm": ("collective", "pp_comm"),
+        "host": ("ZP_Host",),
     },
     "cluster": {
         "compute": ("computing",),
