@@ -160,7 +160,8 @@ def _item_label(category: str, key, parallels: dict = None) -> str:
     return f"rank {key}"
 
 
-def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None) -> str:
+def build_summary_table(result: dict, parallels: dict = None, step_data: dict = None,
+                        unavailable: dict = None) -> str:
     headers = ["类别", "异常点位", "劣化指数", "劣化阈值"]
     ordered_categories = [
         "KERNEL_AICORE", "kernel_aivec", "memcpy_async", "computing_load",
@@ -193,5 +194,11 @@ def build_summary_table(result: dict, parallels: dict = None, step_data: dict = 
             deg_str = f"{val * 100:g}%" if category == "pp_comm" else f"{val:g}"
             rows.append([category_str, label, deg_str, th_str])
     if not rows:
+        if unavailable:
+            return _render_box_table(
+                headers, [["未评估", "；".join(unavailable.values()), "-", "-"]])
         return _render_box_table(headers, [["无异常", "-", "-", "-"]])
-    return _render_box_table(headers, rows)
+    table = _render_box_table(headers, rows)
+    if unavailable:
+        table += "\n未评估（" + "；".join(unavailable.values()) + "）"
+    return table

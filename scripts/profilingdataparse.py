@@ -9,6 +9,7 @@ import logging
 from typing import List, Dict, Any, Optional, Tuple
 from dataclasses import dataclass, field
 import config
+import db_utils
 logger = logging.getLogger("[DATA PROCESS]")
 
 @dataclass
@@ -114,7 +115,7 @@ def load_host_info_only(folder_path: str, db_files: List[str] = None) -> None:
             continue
         conn = None
         try:
-            conn = sqlite3.connect(db_path)
+            conn = db_utils.open_readonly_db(db_path)
             get_host_info(conn, global_rank)
             if first:
                 # clean=no 复用 op_metric 时也要拿到 Job 类型（training / rollout）
@@ -169,15 +170,12 @@ def detect_job_type(conn: sqlite3.Connection) -> str:
 
 def process_database(db_file_path: str, output_dir: str) -> bool:
     try:
-        conn = sqlite3.connect(db_file_path)
-        conn.row_factory = sqlite3.Row
+        # 只读打开用户原始 db：不切换 journal_mode、不建索引、不写任何内容
+        conn = db_utils.open_readonly_db(db_file_path)
     except Exception as e:
         logger.error(f"无法打开数据库文件 {db_file_path}: {e}")
         return False
     try:
-        conn.execute("PRAGMA journal_mode=WAL;")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_string_ids_value ON STRING_IDS(value);")
-        conn.execute("CREATE INDEX IF NOT EXISTS idx_task_time_type ON TASK(startNs, endNs, taskType);")
         config.set_job_type(detect_job_type(conn))
         global_rank = extract_global_rank_from_filename(db_file_path)
         if global_rank is None:
@@ -989,7 +987,7 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
         except ValueError:
             continue
         try:
-            conn = sqlite3.connect(db_path)
+            conn = db_utils.open_readonly_db(db_path)
         except Exception:
             continue
         try:
@@ -1040,7 +1038,7 @@ def backfill_slow_domain_bandwidth(input_path: str, db_files: Optional[List[str]
         for r in ranks:
             ri = rank_to_info[r]
             try:
-                conn = sqlite3.connect(ri["path"])
+                conn = db_utils.open_readonly_db(ri["path"])
             except Exception:
                 valid = False
                 break
@@ -1168,7 +1166,7 @@ def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None):
         except ValueError:
             continue
         try:
-            conn = sqlite3.connect(db_path)
+            conn = db_utils.open_readonly_db(db_path)
         except Exception:
             continue
         try:
@@ -1194,7 +1192,7 @@ def backfill_pp_wait(input_path: str, db_files: Optional[List[str]] = None):
             info = rank_to_info.get(rank)
             if info is not None:
                 try:
-                    conn = sqlite3.connect(info["path"])
+                    conn = db_utils.open_readonly_db(info["path"])
                     step = _merged_step(conn)
                     ops_cache[rank] = _load_all_comm_ops(conn, step)
                     conn.close()

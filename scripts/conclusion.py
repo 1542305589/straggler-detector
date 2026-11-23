@@ -576,8 +576,9 @@ def _metric_line(name: str, items: List[Dict], label_fn, note: str = "",
 
 
 def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
-           data_dir: str = "") -> str:
+           data_dir: str = "", unavailable: Dict[str, str] = None) -> str:
     """把检测结果表翻成自然语言。只描述检测层给的结果，不做任何额外判断。"""
+    unavailable = unavailable or {}
     lines: List[str] = [f"检测结果（数据级别：{level or '未知'}）："]
     pct_note = "括号内百分数 =（劣化指数 − 1）× 100%，表示相对基线的劣化比例，数值越大表示偏离基线越多"
     if level in ("level0", "levelnone"):
@@ -599,6 +600,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         lines.extend(compute_lines)
     elif level == "levelnone":
         lines.append("未评估（levelnone 数据不含计算类算子）")
+    elif "compute" in unavailable:
+        lines.append(f"未评估（{unavailable['compute']}）")
     else:
         lines.append("无")
 
@@ -615,7 +618,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
 
     lines.append("2、通信类故障检测结果：")
     if not cards and not groups and not pp_items:
-        lines.append("无")
+        missing = [unavailable[k] for k in ("comm", "pp_comm") if k in unavailable]
+        lines.append("未评估（" + "；".join(missing) + "）" if missing else "无")
     else:
         card_text = "、".join(f"{label}({_pct(item.get('metric_value'))})"
                              for label, item in cards)
@@ -640,6 +644,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
             if top:
                 lines.append(top)
             lines.append(f"说明：{_METRIC_NOTES['pp_comm']}")
+        elif "pp_comm" in unavailable:
+            lines.append(f"PP点对点通信等待：未评估（{unavailable['pp_comm']}）")
 
     # 3、Host 侧
     host_items = _abnormal_items(detection, "cpu")
@@ -647,7 +653,12 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
     host_note = _METRIC_NOTES["free"] if level == "cluster" else _METRIC_NOTES["ZP_Host"]
     host_lines = _metric_line(host_name, host_items, lambda i: str(i.get("display_key")), host_note)
     lines.append("3、Host侧故障检测结果：")
-    lines.extend(host_lines or ["无"])
+    if host_lines:
+        lines.extend(host_lines)
+    elif "host" in unavailable:
+        lines.append(f"未评估（{unavailable['host']}）")
+    else:
+        lines.append("无")
 
     # 4、内存搬运类
     memcpy_items = _abnormal_items(detection, "memcpy_async")
@@ -659,6 +670,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         lines.append("未评估（cluster 数据不含 MEMCPY_ASYNC）")
     elif level == "levelnone":
         lines.append("未评估（levelnone 数据不含搬运算子）")
+    elif "memcpy" in unavailable:
+        lines.append(f"未评估（{unavailable['memcpy']}）")
     else:
         lines.append("无")
     if memcpy_items:
@@ -746,7 +759,8 @@ def _detection_from_report(data: Dict) -> Dict[str, List[Dict]]:
     return det
 
 
-def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "") -> str:
+def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "",
+                    unavailable: Dict[str, str] = None) -> str:
     """读检测结果 JSON，返回结论文本（只在控制台输出，不落盘）。"""
     det: Dict[str, List[Dict]] = {}
     report_path = os.path.join(out_dir, "straggler_detection_result.json")
@@ -762,4 +776,5 @@ def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "")
         det = {}
     return render(det, level, thresholds,
                   metric_dir=os.path.join(out_dir, "op_metric"),
-                  data_dir=source_path or out_dir)
+                  data_dir=source_path or out_dir,
+                  unavailable=unavailable)

@@ -9,6 +9,7 @@ from collections import defaultdict
 import sys
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 import config
+import db_utils
 logger = logging.getLogger("[SLOWNODE ALGO]")
 data_file_field_group_name = "group_name"
 data_file_field_global_ranks = "global_ranks"
@@ -53,18 +54,45 @@ def store_valid_data(container: Dict[str, List[float]], data: List[List[str]], h
             container[header[index]].append(num)
     return True
 
-def get_cur_job_last_step_data(ranks: List[int]) -> Dict[str, Dict[int, float]]:
+def get_cur_job_last_step_data(ranks: List[int]) -> Tuple[Dict[str, Dict[int, float]], Dict[str, Any]]:
+    """读取各 rank 的 op_metric CSV，返回 (last_step_data, load_status)。
+
+    load_status 用于区分"没有数据"和"没有异常"：
+      - ranks_total：参与检测的 rank 数
+      - ranks_with_data：成功读到指标的 rank
+      - ranks_missing_csv：CSV 文件不存在
+      - ranks_empty_csv：CSV 存在但为空 / 无可解析指标
+    """
     all_data: Dict[str, Dict[int, List[float]]] = defaultdict(lambda: defaultdict(list))
+    status: Dict[str, Any] = {
+        "ranks_total": len(ranks),
+        "ranks_with_data": [],
+        "ranks_missing_csv": [],
+        "ranks_empty_csv": [],
+    }
     for npu_id in ranks:
         file_path = os.path.join(config.get_output_path(), "op_metric", f"global_rank_{npu_id}.csv")
-        data = read_csv_detection_data_all(file_path)
-        if data is None:
-            logger.warning(f"[SLOWNODE ALGO] unexpected npu{npu_id} csv data!")
+        if not os.path.exists(file_path):
+            status["ranks_missing_csv"].append(npu_id)
+            logger.warning(f"[SLOWNODE ALGO] npu{npu_id} 的指标 CSV 不存在：{file_path}")
             continue
+        data = read_csv_detection_data_all(file_path)
+        if not data:
+            status["ranks_empty_csv"].append(npu_id)
+            logger.warning(f"[SLOWNODE ALGO] npu{npu_id} 的指标 CSV 为空或无法解析")
+            continue
+        contributed = False
         for key, val in data.items():
             if key == "StepIndex":
                 continue
+            if not val:
+                continue
             all_data[key][npu_id].extend(val)
+            contributed = True
+        if contributed:
+            status["ranks_with_data"].append(npu_id)
+        else:
+            status["ranks_empty_csv"].append(npu_id)
     result: Dict[str, Dict[int, float]] = {}
     for metric, rank_map in all_data.items():
         for rank, values in rank_map.items():
@@ -78,7 +106,7 @@ def get_cur_job_last_step_data(ranks: List[int]) -> Dict[str, Dict[int, float]]:
             if metric not in result:
                 result[metric] = {}
             result[metric][rank] = value
-    return result
+    return result, status
 
 def get_cur_detection_info(job_path: str) -> Tuple[Dict[str, List[List[int]]], List[int]]:
     cur_job_ranks_parallel, valid_ranks = get_cur_job_all_ranks_topo(job_path)
@@ -375,7 +403,7 @@ def _db_has_kernel_tasks(db_path: str) -> bool:
     if not os.path.isfile(db_path):
         return False
     try:
-        con = sqlite3.connect(db_path)
+        con = db_utils.open_readonly_db(db_path)
         cur = con.cursor()
         row = cur.execute(
             "SELECT 1 FROM TASK t JOIN STRING_IDS s ON t.taskType = s.id "
@@ -391,7 +419,7 @@ def _sqlite_has_tables(db_path: str, tables: Tuple[str, ...]) -> bool:
     if not os.path.isfile(db_path):
         return False
     try:
-        con = sqlite3.connect(db_path)
+        con = db_utils.open_readonly_db(db_path)
         cur = con.cursor()
         for t in tables:
             row = cur.execute(
@@ -416,7 +444,7 @@ def _analysis_db_has_bandwidth(analysis_db: str) -> bool:
     if not os.path.exists(analysis_db):
         return False
     try:
-        con = sqlite3.connect(analysis_db)
+        con = db_utils.open_readonly_db(analysis_db)
         cur = con.cursor()
         row = cur.execute(
             "SELECT name FROM sqlite_master WHERE type='table' AND name='CommAnalyzerBandwidth'"
@@ -449,7 +477,7 @@ def _rank_from_profiler_filename(db_file: str) -> Optional[int]:
 
 def _read_bandwidth_rows(analysis_db: str):
     out = []
-    con = sqlite3.connect(analysis_db)
+    con = db_utils.open_readonly_db(analysis_db)
     cur = con.cursor()
     band = _primary_band_type(con, "CommAnalyzerBandwidth", "transport_type")
     row = cur.execute("SELECT MAX(step) FROM CommAnalyzerBandwidth").fetchone()
@@ -578,7 +606,7 @@ def cluster_group_map(cur, db_path: Optional[str] = None):
 
 def load_cluster_parallels(db_path: str):
     """只读 CommunicationGroupMapping，返回 {并行域: [组 rank 列表]}。"""
-    con = sqlite3.connect("file:%s?mode=ro" % db_path, uri=True)
+    con = db_utils.open_readonly_db(db_path)
     try:
         _g2pg, parallels = cluster_group_map(con.cursor(), db_path)
         return parallels
@@ -612,7 +640,7 @@ def load_cluster_step_data(db_path: str) -> Dict[str, Any]:
     }
     if not os.path.isfile(db_path):
         return out
-    con = sqlite3.connect(db_path)
+    con = db_utils.open_readonly_db(db_path)
     try:
         cur = con.cursor()
         if not _cursor_has_table(cur, "ClusterStepTraceTime"):
@@ -688,7 +716,7 @@ def load_cluster_step_data(db_path: str) -> Dict[str, Any]:
     return out
 
 def load_cluster_comm(db_path: str):
-    con = sqlite3.connect(db_path)
+    con = db_utils.open_readonly_db(db_path)
     cur = con.cursor()
     g2pg, parallels = cluster_group_map(cur, db_path)
     comm: List[Tuple[str, str, int, int, float, float]] = []

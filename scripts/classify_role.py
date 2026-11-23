@@ -5,6 +5,7 @@ import os
 import re
 import sqlite3
 import sys
+import db_utils
 BACKWARD_PATTERNS = [
     "Backward", "backward",
     "AccumulateGrad", "RmsNormGrad",
@@ -35,7 +36,7 @@ def q(con, sql, args=()):
         return []
 
 def gather_signals(db_path):
-    con = sqlite3.connect(db_path)
+    con = db_utils.open_readonly_db(db_path)
     sig = {"db": db_path}
     api = {v[0] for v in q(con, """select distinct s.value from PYTORCH_API p
                                    join STRING_IDS s on p.name=s.id""")}

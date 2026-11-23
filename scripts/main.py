@@ -106,7 +106,7 @@ def _safe_print(text: str):
         except Exception:
             sys.stdout.write(text.encode("ascii", errors="replace").decode("ascii"))
 
-def _print_conclusion(job_path: str, detection: dict, thresholds: tuple):
+def _print_conclusion(job_path: str, detection: dict, thresholds: tuple, unavailable: dict = None):
     try:
         import config
         import conclusion
@@ -118,7 +118,8 @@ def _print_conclusion(job_path: str, detection: dict, thresholds: tuple):
             level = nodelevel_data_handler.detect_profiling_level(job_path)
         except Exception:
             pass
-        text = conclusion.render_from_dir(out, level, thresholds, source_path=job_path)
+        text = conclusion.render_from_dir(out, level, thresholds, source_path=job_path,
+                                          unavailable=unavailable)
         _safe_print("")
         _safe_print("```text")
         _safe_print(text.rstrip())
@@ -200,6 +201,56 @@ def _threshold_ask_keys(level: str) -> tuple:
         return ("io", "comm")
     return ("compute", "io", "comm")
 
+
+def _expected_categories(level: str) -> tuple:
+    """该数据级别本应参与检测的类别。"""
+    return {
+        "level0": ("compute", "comm", "pp_comm", "host", "memcpy"),
+        "level1": ("compute", "comm", "host", "memcpy"),
+        "levelnone": ("comm", "pp_comm", "host"),
+        "cluster": ("compute", "comm", "host"),
+    }.get(level, ())
+
+
+def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
+                         cluster_step_info: dict = None) -> dict:
+    """返回「该级别应检测、但本次无法评估」的类别 -> 原因。
+
+    用于区分"没有异常"和"没有数据"：只有可评估且未检出异常才是"无"。
+    """
+    unavailable = {}
+
+    def _present(col: str) -> bool:
+        return any(v is not None and v > 0 for v in (step_data.get(col) or {}).values())
+
+    if level in ("level0", "level1"):
+        if not (_present("KERNEL_AICORE") or _present("KERNEL_AIVEC")):
+            unavailable["compute"] = "缺少 KERNEL_AICORE / KERNEL_AIVEC 指标"
+        if not _present("MEMCPY_ASYNC"):
+            unavailable["memcpy"] = "缺少 MEMCPY_ASYNC 指标"
+        if not _present(nodelevel.zpHostDataColumn):
+            unavailable["host"] = f"缺少 {nodelevel.zpHostDataColumn} 指标"
+    elif level == "levelnone":
+        if not _present(nodelevel.zpHostDataColumn):
+            unavailable["host"] = f"缺少 {nodelevel.zpHostDataColumn} 指标"
+    elif level == "cluster":
+        if not (cluster_step_info or {}).get("rows"):
+            unavailable["compute"] = "缺少 ClusterStepTraceTime.computing"
+            unavailable["host"] = "缺少 ClusterStepTraceTime.free"
+
+    if level in ("level0", "levelnone") and not _present(config.PP_WAIT_GAP_COLUMN):
+        unavailable["pp_comm"] = f"缺少 {config.PP_WAIT_GAP_COLUMN} 指标"
+
+    if level in ("level1", "cluster"):
+        if not comm:
+            unavailable["comm"] = "缺少通信带宽数据"
+    elif level in ("level0", "levelnone"):
+        if not config.get_has_named_domain():
+            unavailable["comm"] = "无通信域名，未检测通信"
+        elif not any(utils.domain_bandwidth_cols(step_data, d) for d in (parallels or {}) if d):
+            unavailable["comm"] = "缺少通信带宽列"
+    return unavailable
+
 def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
                         db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     config.set_file_path(job_path)
@@ -230,6 +281,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             valid_ranks = sorted({int(r) for _s, r, _m in step_info.get("rows", [])})
         result = nodelevel.delimit_detection(
             {}, parallels, valid_ranks, comm=comm, cluster_step_info=step_info)
+        unavailable = _metric_availability("cluster", {}, comm, parallels, step_info)
         utils.write_result(result, parallels)
         try:
             visualizer.run_visualization(
@@ -238,11 +290,12 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         except Exception as e:
             logger.warning(f"生成报告失败：{e}")
         try:
-            summary = summary_table.build_summary_table(result, parallels, {})
+            summary = summary_table.build_summary_table(
+                result, parallels, {}, unavailable=unavailable)
             _safe_print(summary)
         except Exception as e:
             logger.warning(f"生成汇总表失败：{e}")
-        _print_conclusion(job_path, result, thresholds)
+        _print_conclusion(job_path, result, thresholds, unavailable=unavailable)
         return result
     if clean_decision is None:
         if clean_mode == 'yes':
@@ -266,13 +319,26 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     parallels, valid_ranks = nodelevel_data_handler.get_cur_detection_info(job_path)
     if not parallels or not valid_ranks:
         logger.error("获取并行域/卡数失败")
-        return {}
+        _safe_print("未评估：无法获取并行域 / 有效 rank，未执行检测（不输出“无异常”）。")
+        return None
     logger.info(f"并行域：{list(parallels.keys())}")
     logger.info(f"有效 Ranks: {valid_ranks}")
-    last_step_data = nodelevel_data_handler.get_cur_job_last_step_data(valid_ranks)
+    last_step_data, load_status = nodelevel_data_handler.get_cur_job_last_step_data(valid_ranks)
     comm = None
     if level == "level1":
         comm = nodelevel_data_handler.load_level1_comm(job_path, parallels)
+    unavailable = _metric_availability(level, last_step_data, comm, parallels)
+    expected = _expected_categories(level)
+    if expected and all(cat in unavailable for cat in expected):
+        _safe_print("未评估：未找到可用的指标数据，本次未执行检测（不输出“无异常”）。")
+        _safe_print(f"  参与检测的 rank 数：{load_status.get('ranks_total', 0)}，"
+                    f"成功读取指标的 rank 数：{len(load_status.get('ranks_with_data', []))}")
+        if load_status.get("ranks_missing_csv"):
+            _safe_print(f"  指标 CSV 缺失的 rank：{load_status['ranks_missing_csv']}")
+        if load_status.get("ranks_empty_csv"):
+            _safe_print(f"  指标 CSV 为空/无法解析的 rank：{load_status['ranks_empty_csv']}")
+        logger.error("未找到可用的指标数据，跳过检测")
+        return None
     result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
     utils.write_result(result, parallels)
     if last_step_data:
@@ -285,11 +351,16 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         logger.info("未检测到异常节点")
     try:
         summary = summary_table.build_summary_table(
-            result, parallels, last_step_data)
+            result, parallels, last_step_data, unavailable=unavailable)
         _safe_print(summary)
     except Exception as e:
         logger.warning(f"生成汇总表失败：{e}")
-    _print_conclusion(job_path, result, thresholds)
+    partial = sorted(set(load_status.get("ranks_missing_csv", []))
+                     | set(load_status.get("ranks_empty_csv", [])))
+    if partial:
+        _safe_print(f"注意：{len(partial)}/{load_status.get('ranks_total', 0)} 张卡缺少指标数据"
+                    f"（rank {partial}），检测结果仅基于其余 rank。")
+    _print_conclusion(job_path, result, thresholds, unavailable=unavailable)
     return result
 
 def main():
@@ -319,13 +390,19 @@ def main():
             logger.warning(f"[WARN] {name} threshold must be > 0. Please verify.")
     if os.path.isfile(input_path):
         config.set_output_path("")
-        return _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
+        result = _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
+        if result is None:
+            sys.exit(1)
+        return result
     colocate_worlds = _find_colocate_worlds(input_path)
     if colocate_worlds:
         logger.info(f"[SLOWNODE ALGO] 检测到 verl colocate：训练/rollout 分开检测 "
                     f"{[w['role'] for w in colocate_worlds]}")
-        return _process_colocate_root(input_path, colocate_worlds, thresholds, clean_mode,
-                                      False, skip_confirm=skip_confirm)
+        results = _process_colocate_root(input_path, colocate_worlds, thresholds, clean_mode,
+                                         False, skip_confirm=skip_confirm)
+        if results and all(v is None for v in results.values()):
+            sys.exit(1)
+        return results
     sub_jobs = _find_job_subdirs(input_path)
     parent_has_db = _dir_has_db_directly(input_path)
     if sub_jobs and not parent_has_db:
@@ -337,9 +414,14 @@ def main():
             job_output = os.path.join(output_root, os.path.basename(job))
             results[job] = _process_single_job(job, thresholds, clean_mode,
                                                output_path=job_output, skip_confirm=skip_confirm)
+        if results and all(v is None for v in results.values()):
+            sys.exit(1)
         return results
     config.set_output_path("")
-    return _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
+    result = _process_single_job(input_path, thresholds, clean_mode, skip_confirm=skip_confirm)
+    if result is None:
+        sys.exit(1)
+    return result
 
 def run_detection(input_path: str, compute: float = 1.3, io: float = 2.5, comm: float = 1.3,
                   skip_parsing: bool = False, clean: str = 'ask',
