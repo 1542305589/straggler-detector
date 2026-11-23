@@ -145,6 +145,7 @@ def delimit_detection(
     comm: Optional[List[Tuple[str, str, int, int, float, float]]] = None,
     comm_threshold: Optional[float] = None,
     cluster_step_info: Optional[Dict[str, Any]] = None,
+    comm_metric: Optional[Dict[str, Any]] = None,
 ) -> Dict[str, Dict[str, float]]:
     local_result = config.DegradationData()
     if cluster_step_info:
@@ -153,7 +154,9 @@ def delimit_detection(
             cluster_step_info, parallels, valid_ranks, local_result)
     if not step_data:
         logger.info("[INFO] 无单卡快照数据（cluster 单文件）：仅检测通信域与 cluster step trace")
-        if comm:
+        if comm_metric is not None:
+            apply_comm_metric(parallels, comm_metric, local_result, comm_threshold)
+        elif comm:
             logger.info("\n慢通信域检测（新两级带宽口径，cluster）:")
             detect_slow_comm_two_level(parallels, comm, local_result, comm_threshold)
         return dict(local_result)
@@ -172,7 +175,10 @@ def delimit_detection(
                 continue
             get_slow_metric_ranks(cal_detection_group, step_data, column, category, local_result)
             logger.info(f"  - {column} -> {category}")
-    if comm:
+    if comm_metric is not None:
+        logger.info("\n慢通信域检测（新两级带宽口径，使用缓存指标）:")
+        apply_comm_metric(parallels, comm_metric, local_result, comm_threshold)
+    elif comm:
         logger.info("\n慢通信域检测（新两级带宽口径，level1/cluster）:")
         detect_slow_comm_two_level(parallels, comm, local_result, comm_threshold)
     elif config.get_has_named_domain():
@@ -429,81 +435,36 @@ def detect_slow_domain_by_bandwidth(
             max_deg = max(op_degs.values())
             local_result.add_group("comm", groups[gi], max_deg)
 
-def detect_slow_comm_two_level(
+def apply_comm_metric(
     parallels: Dict[str, List[List[int]]],
-    comm: List[Tuple[str, str, int, int, float, float]],
+    metric: Dict[str, Any],
     local_result: config.DegradationData,
     threshold: Optional[float] = None,
 ):
+    """用预计算的通信指标做异常判定（Level-1 组内逐卡 / Level-2 组间逐组）。"""
     config.set_comm_two_level_detail(None)
     if threshold is None:
         threshold = config.get_comm_threshold()
     if threshold <= 0:
         threshold = 1.3
-    if not comm:
+    card = (metric or {}).get("card") or {}
+    group_metric = (metric or {}).get("group") or {}
+    if not card:
         return
-    base_vals: Dict[Any, List[float]] = {}
-    base_time_vals: Dict[Any, List[float]] = {}
-    key_ranks: Dict[Any, set] = {}
-    for domain, op_name, count, rank, bw, time in comm:
-        key = (domain, op_name, count)
-        base_vals.setdefault(key, []).append(bw)
-        base_time_vals.setdefault(key, []).append(time)
-        key_ranks.setdefault(key, set()).add(rank)
-    base = {k: statistics.median(v) for k, v in base_vals.items() if v}
-    base_time = {k: statistics.median(v) for k, v in base_time_vals.items() if v}
-    # 单样本 key：中位数=自身，比值=1，不参与异常判定；单独记录便于溯源
-    singleton_keys = [
-        {"domain": k[0], "op_name": k[1], "count": k[2],
-         "rank": sorted(key_ranks[k])[0]}
-        for k in base_vals if len(base_vals[k]) == 1
-    ]
-    if singleton_keys:
-        logger.info(
-            f"[SLOWNODE ALGO] 单样本算子 key：{len(singleton_keys)} 个"
-            f"（中位数=自身，比值=1，不参与异常判定）")
-    acc: Dict[Any, List[float]] = {}
-    for domain, op_name, count, rank, bw, time in comm:
-        key = (domain, op_name, count)
-        b = base.get(key)
-        w = base_time.get(key, 0.0)
-        if not b or b <= 0 or w <= 0:
-            continue
-        wr, wsum = acc.get((domain, rank), [0.0, 0.0])
-        acc[(domain, rank)] = [wr + w / (bw / b), wsum + w]
-    metric = {k: wsum / wr for k, (wr, wsum) in acc.items() if wr > 0}
-    if not metric:
-        return
-    # Level-2 用跨组可比 key (域, op_type, 消息大小, count) + 域内全体 rank 中位数。
-    # op_name 是组专属的，不能用于组间比较。
-    l2_by_rank: Dict[Any, Dict[Any, List[float]]] = {}
-    for domain, op_name, count, rank, bw, time in comm:
-        if time <= 0 or count <= 0:
-            continue
-        op_type = _op_type_name(op_name)
-        package_size = round(bw * time / count, 6)
-        key = (op_type, package_size, int(count))
-        x = l2_by_rank.setdefault((domain, int(rank)), {}).setdefault(key, [0.0, 0.0])
-        x[0] += bw * time
-        x[1] += time
-    l2_key_vals: Dict[Any, List[Tuple[float, float]]] = {}
-    for (domain, _rank), keys in l2_by_rank.items():
-        for key, (size, time) in keys.items():
-            if time > 0:
-                l2_key_vals.setdefault((domain,) + key, []).append((size / time, time))
-    l2_base = {k: statistics.median([bw for bw, _t in v])
-               for k, v in l2_key_vals.items() if v}
-    l2_weight = {k: statistics.median([t for _bw, t in v])
-                 for k, v in l2_key_vals.items() if v}
-    detail: Dict[str, Any] = {"level1": [], "level2": {}, "singleton": singleton_keys}
+    detail: Dict[str, Any] = {
+        "level1": [],
+        "level2": {},
+        "singleton": (metric or {}).get("singleton") or [],
+    }
     for domain, groups in parallels.items():
         if domain == ppParallelDomainName or domain == "embd":
             continue
+        card_domain = card.get(domain) or {}
         for group in groups:
-            ranks = [int(r) for r in group if (domain, int(r)) in metric]
+            ranks = [int(r) for r in group if str(int(r)) in card_domain]
             if len(ranks) < minRanksInGroup:
                 continue
-            vals = [metric[(domain, r)] for r in ranks]
+            vals = [card_domain[str(r)] for r in ranks]
             abnormal, degs = kmeans_detector.general_anomaly_detection(
                 ranks, vals, threshold, high_is_anomaly=False
             )
@@ -511,37 +472,20 @@ def detect_slow_comm_two_level(
             ranks_out = []
             for r in ranks:
                 d = deg_of.get(r)
-                ranks_out.append({"rank": r, "metric": metric[(domain, r)], "deg": d})
+                ranks_out.append({"rank": r, "metric": card_domain[str(r)], "deg": d})
                 if d is not None:
                     local_result.add_single("comm", r, d, domain)
             detail["level1"].append(
                 {"domain": domain, "group": list(group), "ranks": ranks_out})
         if len(groups) < 2:
             continue
+        group_domain = group_metric.get(domain) or {}
         group_metrics = []
         for group in groups:
-            ranks = [int(r) for r in group if (domain, int(r)) in metric]
-            if not ranks:
+            value = group_domain.get(nodelevel_data_handler._comm_group_key(group))
+            if value is None:
                 continue
-            g_agg: Dict[Any, List[float]] = {}
-            for r in ranks:
-                for key, (size, time) in l2_by_rank.get((domain, r), {}).items():
-                    x = g_agg.setdefault(key, [0.0, 0.0])
-                    x[0] += size
-                    x[1] += time
-            g_wr = 0.0
-            g_wsum = 0.0
-            for key, (size, time) in g_agg.items():
-                b = l2_base.get((domain,) + key)
-                w = l2_weight.get((domain,) + key, 0.0)
-                if not b or b <= 0 or time <= 0 or w <= 0:
-                    continue
-                ratio = (size / time) / b
-                g_wr += w / ratio
-                g_wsum += w
-            if g_wr <= 0 or g_wsum <= 0:
-                continue
-            group_metrics.append((group, g_wsum / g_wr))
+            group_metrics.append((group, value))
         if len(group_metrics) < 2:
             continue
         ids = list(range(len(group_metrics)))
@@ -557,6 +501,18 @@ def detect_slow_comm_two_level(
             if d is not None:
                 local_result.add_group("comm", group, d)
     config.set_comm_two_level_detail(detail)
+
+
+def detect_slow_comm_two_level(
+    parallels: Dict[str, List[List[int]]],
+    comm: List[Tuple[str, str, int, int, float, float]],
+    local_result: config.DegradationData,
+    threshold: Optional[float] = None,
+):
+    """兼容入口：现算指标后立即判定（未命中缓存时使用）。"""
+    metric = nodelevel_data_handler.build_comm_metric(parallels, comm)
+    apply_comm_metric(parallels, metric, local_result, threshold)
+
 
 def _bw_set_for_group(
     domain: str, group: List[int], step_data: Dict[str, Dict[int, float]]

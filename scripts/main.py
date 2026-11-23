@@ -213,7 +213,8 @@ def _expected_categories(level: str) -> tuple:
 
 
 def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
-                         cluster_step_info: dict = None) -> dict:
+                         cluster_step_info: dict = None,
+                         comm_metric: dict = None) -> dict:
     """返回「该级别应检测、但本次无法评估」的类别 -> 原因。
 
     用于区分"没有异常"和"没有数据"：只有可评估且未检出异常才是"无"。
@@ -254,7 +255,7 @@ def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
         unavailable["pp_comm"] = f"缺少 {config.PP_WAIT_GAP_COLUMN} 指标"
 
     if level in ("level1", "cluster"):
-        if not comm:
+        if not (comm_metric or {}).get("card"):
             unavailable["comm"] = "缺少通信带宽数据"
     elif level in ("level0", "levelnone"):
         if not config.get_has_named_domain():
@@ -271,6 +272,54 @@ def _partial_data_hint(level: str, missing_ranks, total: int) -> str:
                 f"计算 / Host / 内存搬运仅基于其余 rank；通信带宽来自 analysis.db，不受影响。")
     return (f"注意：{len(ranks)}/{total} 张卡缺少指标数据（rank {ranks}），"
             f"检测结果仅基于其余 rank。")
+
+
+def _profiler_rank_dirs(job_path: str, db_files=None) -> Dict[int, str]:
+    dirs: Dict[int, str] = {}
+    if db_files:
+        for path in db_files:
+            rank = nodelevel_data_handler._rank_from_profiler_filename(path)
+            if rank is not None:
+                dirs[rank] = os.path.dirname(os.path.abspath(path))
+        return dirs
+    for root, _dirs, files in os.walk(job_path):
+        for fn in files:
+            if fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db"):
+                rank = nodelevel_data_handler._rank_from_profiler_filename(os.path.join(root, fn))
+                if rank is not None:
+                    dirs[rank] = root
+    return dirs
+
+
+def _incomplete_cache_reasons(job_path: str, level: str, db_files=None) -> list:
+    """检查 op_metric / 通信指标缓存是否完整；返回不完整原因（空列表表示完整）。"""
+    rank_dirs = _profiler_rank_dirs(job_path, db_files)
+    if not rank_dirs:
+        return []
+    metric_dir = os.path.join(config.get_output_path() or job_path, "op_metric")
+    reasons = []
+    for rank in sorted(rank_dirs):
+        csv_path = os.path.join(metric_dir, f"global_rank_{rank}.csv")
+        if not os.path.exists(csv_path):
+            reasons.append(f"rank {rank} 缺少指标 CSV")
+        else:
+            try:
+                with open(csv_path, "r", encoding="utf-8", errors="ignore") as f:
+                    f.readline()
+                    second = f.readline()
+                if not second:
+                    reasons.append(f"rank {rank} 的指标 CSV 为空")
+            except OSError:
+                reasons.append(f"rank {rank} 的指标 CSV 读取失败")
+        if not os.path.exists(os.path.join(metric_dir, f"group_info_{rank}.json")):
+            reasons.append(f"rank {rank} 缺少拓扑 JSON")
+    if level == "level1":
+        for rank, rank_dir in sorted(rank_dirs.items()):
+            if not os.path.exists(os.path.join(rank_dir, "analysis.db")):
+                reasons.append(f"rank {rank} 缺少 analysis.db")
+        if not os.path.exists(os.path.join(metric_dir, "comm_metric.json")):
+            reasons.append("缺少通信指标缓存")
+    return reasons
 
 
 def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
@@ -292,9 +341,11 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     logger.info(f"检测结果输出目录：{config.get_output_path()}")
     out_path = config.get_output_path()
     if is_cluster_input:
-        parallels, comm = nodelevel_data_handler.load_cluster_comm(job_path)
+        parallels = nodelevel_data_handler.load_cluster_parallels(job_path)
         step_info = nodelevel_data_handler.load_cluster_step_data(job_path)
-        unavailable = _metric_availability("cluster", {}, comm, parallels, step_info)
+        comm_metric = nodelevel_data_handler.load_cluster_comm_metric(job_path, parallels)
+        unavailable = _metric_availability("cluster", {}, None, parallels, step_info,
+                                           comm_metric=comm_metric)
         expected = _expected_categories(level)
         if not parallels or (expected and all(cat in unavailable for cat in expected)):
             _safe_print("未评估：cluster 数据为空或缺少可用指标，本次未执行检测（不输出“无异常”）。")
@@ -305,7 +356,8 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         if not valid_ranks:
             valid_ranks = sorted({int(r) for _s, r, _m in step_info.get("rows", [])})
         result = nodelevel.delimit_detection(
-            {}, parallels, valid_ranks, comm=comm, cluster_step_info=step_info)
+            {}, parallels, valid_ranks, cluster_step_info=step_info,
+            comm_metric=comm_metric)
         utils.write_result(result, parallels, unavailable=unavailable)
         try:
             visualizer.run_visualization(
@@ -328,6 +380,15 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             clean_decision = False
         else:
             clean_decision = utils.confirm_clean(out_path)
+    if not clean_decision:
+        reasons = _incomplete_cache_reasons(job_path, level, db_files)
+        if reasons:
+            shown = "；".join(reasons[:3])
+            if len(reasons) > 3:
+                shown += f" 等共 {len(reasons)} 项"
+            _safe_print(f"注意：检测缓存不完整（{shown}），将自动重新解析。")
+            logger.warning(f"检测缓存不完整，自动重新解析：{shown}")
+            clean_decision = True
     if clean_decision:
         logger.info("开始 Profiling 数据解析（清理旧 op_metric 后重新解析）...")
         utils.clean_detection_outputs(out_path)
@@ -348,10 +409,11 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     logger.info(f"并行域：{list(parallels.keys())}")
     logger.info(f"有效 Ranks: {valid_ranks}")
     last_step_data, load_status = nodelevel_data_handler.get_cur_job_last_step_data(valid_ranks)
-    comm = None
+    comm_metric = None
     if level == "level1":
-        comm = nodelevel_data_handler.load_level1_comm(job_path, parallels)
-    unavailable = _metric_availability(level, last_step_data, comm, parallels)
+        comm_metric = nodelevel_data_handler.load_level1_comm_metric(job_path, parallels)
+    unavailable = _metric_availability(level, last_step_data, None, parallels,
+                                       comm_metric=comm_metric)
     expected = _expected_categories(level)
     if expected and all(cat in unavailable for cat in expected):
         _safe_print("未评估：未找到可用的指标数据，本次未执行检测（不输出“无异常”）。")
@@ -363,7 +425,8 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             _safe_print(f"  指标 CSV 为空/无法解析的 rank：{load_status['ranks_empty_csv']}")
         logger.error("未找到可用的指标数据，跳过检测")
         return None
-    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
+    result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks,
+                                        comm_metric=comm_metric)
     utils.write_result(result, parallels, unavailable=unavailable)
     # 指标 CSV 全缺但通信仍有数据（如 level1 从 analysis.db 读取）时，
     # 仍然生成检测报告，避免结论里给出的报告路径实际不存在。

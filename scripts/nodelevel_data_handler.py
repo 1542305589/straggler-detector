@@ -4,6 +4,7 @@ import os
 import logging
 import re
 import sqlite3
+import statistics
 import time
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
@@ -476,11 +477,7 @@ def _rank_from_profiler_filename(db_file: str) -> Optional[int]:
     except ValueError:
         return None
 
-def _read_bandwidth_rows(analysis_db: str, cache_path: str = ""):
-    cached = db_utils.load_cache(cache_path, analysis_db)
-    if cached is not None:
-        logger.info(f"[SLOWNODE ALGO] level1 带宽数据（缓存命中）：{analysis_db}")
-        return [tuple(r) for r in (cached.get("rows") or [])]
+def _read_bandwidth_rows(analysis_db: str):
     start = time.monotonic()
     out = []
     con = db_utils.open_readonly_db(analysis_db)
@@ -499,14 +496,11 @@ def _read_bandwidth_rows(analysis_db: str, cache_path: str = ""):
         if s > 0 and t > 0:
             out.append((op, int(cnt or 0), s, t))
     con.close()
-    logger.info(f"[SLOWNODE ALGO] level1 带宽读取耗时 {time.monotonic() - start:.3f}s，"
+    logger.info(f"[SLOWNODE ALGO] level1 单 rank 带宽读取耗时 {time.monotonic() - start:.3f}s，"
                 f"{len(out)} 条")
-    db_utils.save_cache(cache_path, analysis_db, "level1_comm",
-                        {"meta": {"step": step, "band_type": band},
-                         "rows": [list(r) for r in out]})
     return out
 
-def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float, float]]:
+def _load_level1_comm_rows(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float, float]]:
     rank_domains: Dict[int, set] = {}
     for domain, groups in (parallels or {}).items():
         for g in groups:
@@ -523,16 +517,173 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
             analysis_db = os.path.join(root, "analysis.db")
             if not os.path.exists(analysis_db):
                 continue
-            cache_path = ""
-            if config.get_output_path():
-                cache_path = os.path.join(config.get_output_path(), "op_metric",
-                                          f"level1_comm_rank_{rank}.json")
             domains = rank_domains.get(rank) or {"default_group"}
-            for op_name, count, size, trans_time in _read_bandwidth_rows(analysis_db, cache_path):
+            for op_name, count, size, trans_time in _read_bandwidth_rows(analysis_db):
                 for domain in domains:
                     comm.append((domain, op_name, count, rank, size / trans_time, trans_time))
     logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
+
+
+_COMM_ALGO = "two_level_v1"
+
+
+def _comm_metric_fingerprint(files, rank_set, parallels) -> Dict[str, Any]:
+    entries = []
+    for path in sorted(set(files)):
+        try:
+            st = os.stat(path)
+        except OSError:
+            continue
+        entries.append({
+            "path": os.path.abspath(path),
+            "mtime_ns": st.st_mtime_ns,
+            "size": st.st_size,
+        })
+    return {
+        "algo": _COMM_ALGO,
+        "files": entries,
+        "rank_set": sorted(int(r) for r in (rank_set or [])),
+        "parallels": parallels or {},
+    }
+
+
+def load_level1_comm_metric(input_path: str,
+                            parallels: Dict[str, List[List[int]]]) -> Dict[str, Any]:
+    """读取或计算 level1 的通信指标（组内逐卡 + 组间逐组），并按源 analysis.db 缓存。"""
+    cache_path = ""
+    if config.get_output_path():
+        cache_path = os.path.join(config.get_output_path(), "op_metric", "comm_metric.json")
+    analysis_dbs = []
+    for root, _dirs, files in os.walk(input_path):
+        if any(fn.startswith("ascend_pytorch_profiler_") and fn.endswith(".db") for fn in files):
+            analysis_db = os.path.join(root, "analysis.db")
+            if os.path.exists(analysis_db):
+                analysis_dbs.append(analysis_db)
+    rank_set = sorted({int(r) for gs in (parallels or {}).values() for g in gs for r in g})
+    fingerprint = _comm_metric_fingerprint(analysis_dbs, rank_set, parallels)
+    cached = db_utils.load_cache(cache_path, fingerprint, kind="comm_metric")
+    if cached is not None:
+        logger.info("[SLOWNODE ALGO] 通信指标缓存命中（level1）")
+        return cached.get("metric") or {"card": {}, "group": {}, "singleton": []}
+    start = time.monotonic()
+    rows = _load_level1_comm_rows(input_path, parallels)
+    metric = build_comm_metric(parallels, rows)
+    logger.info(f"[SLOWNODE ALGO] level1 通信指标计算耗时 {time.monotonic() - start:.3f}s")
+    db_utils.save_cache(cache_path, fingerprint, "comm_metric", _COMM_ALGO, {"metric": metric})
+    return metric
+
+
+def build_comm_metric(
+    parallels: Dict[str, List[List[int]]],
+    comm: List[Tuple[str, str, int, int, float, float]],
+) -> Dict[str, Any]:
+    """把 per-op 通信数据聚合成阈值无关的指标。
+
+    返回 {"card": {domain: {rank: metric}}, "group": {domain: {group_key: metric}},
+          "singleton": [...]}：
+      card  —— 组内逐卡（Level-1），metric = Σ期望耗时 / Σ实际耗时；
+      group —— 组间逐组（Level-2），用跨组可比 key 的组内聚合再算同样比值。
+    """
+    card: Dict[str, Dict[str, float]] = {}
+    group: Dict[str, Dict[str, float]] = {}
+    singleton: List[Dict[str, Any]] = []
+    if not comm:
+        return {"card": card, "group": group, "singleton": singleton}
+
+    base_vals: Dict[Any, List[float]] = {}
+    base_time_vals: Dict[Any, List[float]] = {}
+    key_ranks: Dict[Any, set] = {}
+    for domain, op_name, count, rank, bw, item_time in comm:
+        key = (domain, op_name, count)
+        base_vals.setdefault(key, []).append(bw)
+        base_time_vals.setdefault(key, []).append(item_time)
+        key_ranks.setdefault(key, set()).add(rank)
+    base = {k: statistics.median(v) for k, v in base_vals.items() if v}
+    base_time = {k: statistics.median(v) for k, v in base_time_vals.items() if v}
+    singleton = [
+        {"domain": k[0], "op_name": k[1], "count": k[2],
+         "rank": sorted(key_ranks[k])[0]}
+        for k in base_vals if len(base_vals[k]) == 1
+    ]
+    if singleton:
+        logger.info(
+            f"[SLOWNODE ALGO] 单样本算子 key：{len(singleton)} 个"
+            f"（中位数=自身，比值=1，不参与异常判定）")
+    acc: Dict[Any, List[float]] = {}
+    for domain, op_name, count, rank, bw, item_time in comm:
+        key = (domain, op_name, count)
+        b = base.get(key)
+        w = base_time.get(key, 0.0)
+        if not b or b <= 0 or w <= 0:
+            continue
+        wr, wsum = acc.get((domain, rank), [0.0, 0.0])
+        acc[(domain, rank)] = [wr + w / (bw / b), wsum + w]
+    metric = {k: wsum / wr for k, (wr, wsum) in acc.items() if wr > 0}
+    for (domain, rank), value in metric.items():
+        card.setdefault(domain, {})[str(int(rank))] = value
+    if not metric:
+        return {"card": card, "group": group, "singleton": singleton}
+
+    # Level-2：跨组可比 key（算子类型、包大小、count）+ 域内全体 rank 中位数
+    l2_by_rank: Dict[Any, Dict[Any, List[float]]] = {}
+    for domain, op_name, count, rank, bw, item_time in comm:
+        if item_time <= 0 or count <= 0:
+            continue
+        op_type = _comm_op_type_name(op_name)
+        package_size = round(bw * item_time / count, 6)
+        key = (op_type, package_size, int(count))
+        x = l2_by_rank.setdefault((domain, int(rank)), {}).setdefault(key, [0.0, 0.0])
+        x[0] += bw * item_time
+        x[1] += item_time
+    l2_key_vals: Dict[Any, List[Tuple[float, float]]] = {}
+    for (domain, _rank), keys in l2_by_rank.items():
+        for key, (size, item_time) in keys.items():
+            if item_time > 0:
+                l2_key_vals.setdefault((domain,) + key, []).append((size / item_time, item_time))
+    l2_base = {k: statistics.median([bw for bw, _t in v])
+               for k, v in l2_key_vals.items() if v}
+    l2_weight = {k: statistics.median([t for _bw, t in v])
+                 for k, v in l2_key_vals.items() if v}
+    for domain, groups in (parallels or {}).items():
+        if domain in ("pp", "embd"):
+            continue
+        if len(groups) < 2:
+            continue
+        for gp in groups:
+            ranks = [int(r) for r in gp if (domain, int(r)) in metric]
+            if not ranks:
+                continue
+            g_agg: Dict[Any, List[float]] = {}
+            for r in ranks:
+                for key, (size, item_time) in l2_by_rank.get((domain, r), {}).items():
+                    x = g_agg.setdefault(key, [0.0, 0.0])
+                    x[0] += size
+                    x[1] += item_time
+            g_wr = 0.0
+            g_wsum = 0.0
+            for key, (size, item_time) in g_agg.items():
+                b = l2_base.get((domain,) + key)
+                w = l2_weight.get((domain,) + key, 0.0)
+                if not b or b <= 0 or item_time <= 0 or w <= 0:
+                    continue
+                ratio = (size / item_time) / b
+                g_wr += w / ratio
+                g_wsum += w
+            if g_wr <= 0 or g_wsum <= 0:
+                continue
+            group.setdefault(domain, {})[_comm_group_key(gp)] = g_wsum / g_wr
+    return {"card": card, "group": group, "singleton": singleton}
+
+
+def _comm_group_key(group) -> str:
+    return ",".join(str(int(r)) for r in sorted(group))
+
+
+def _comm_op_type_name(op_name: str) -> str:
+    """与 nodelevel._op_type_name 保持一致：取 hccl_op_name 的第二段并小写。"""
+    s = (op_name or "").strip()
+    return s.split("_")[1].lower() if "_" in s else ""
 
 def cluster_group_map(cur, db_path: Optional[str] = None):
     """CommunicationGroupMapping -> (group_name->pg_name, pg_name->[ranks])。
@@ -730,20 +881,13 @@ def load_cluster_step_data(db_path: str) -> Dict[str, Any]:
         f"{len(out['steps'])} 个 step，{len(out['host_ranks'])} 个 host")
     return out
 
-def load_cluster_comm(db_path: str):
-    cache_path = ""
-    if config.get_output_path():
-        cache_path = os.path.join(config.get_output_path(), "op_metric", "cluster_comm.json")
-    cached = db_utils.load_cache(cache_path, db_path)
-    if cached is not None:
-        parallels = cached.get("parallels") or {}
-        comm = [tuple(r) for r in (cached.get("comm") or [])]
-        logger.info(f"[SLOWNODE ALGO] cluster 带宽数据（缓存命中）：{len(comm)} 条")
-        return parallels, comm
+def _load_cluster_comm_rows(db_path: str,
+                            parallels: Dict[str, List[List[int]]]):
+    """读取 cluster db 的 per-op 通信记录（不做聚合，供 metric 计算/兼容旧调用）。"""
     start = time.monotonic()
     con = db_utils.open_readonly_db(db_path)
     cur = con.cursor()
-    g2pg, parallels = cluster_group_map(cur, db_path)
+    g2pg, _parallels = cluster_group_map(cur, db_path)
     comm: List[Tuple[str, str, int, int, float, float]] = []
 
     if _cursor_has_table(cur, "ClusterCommunicationBandwidth"):
@@ -761,7 +905,6 @@ def load_cluster_comm(db_path: str):
             if s <= 0 or t <= 0:
                 continue
             comm.append((pg, op, int(cnt or 0), int(rank), s / t, t))
-        logger.info(f"[SLOWNODE ALGO] cluster 带宽数据：{len(parallels)} 域，{len(comm)} 条 per-op 记录")
     elif _cursor_has_table(cur, "communication_bandwidth_info"):
         band = _primary_band_type(con, "communication_bandwidth_info", "transport_type")
         q = (
@@ -780,16 +923,39 @@ def load_cluster_comm(db_path: str):
                 continue
             count = _count_from_size_distribution(dist)
             comm.append((pg, op, int(count), int(rank), s / t, t))
-        logger.info(
-            f"[SLOWNODE ALGO] 新版 cluster 带宽数据（{band}）："
-            f"{len(parallels)} 域，{len(comm)} 条 per-op 记录")
     else:
         logger.warning("[SLOWNODE ALGO] 未找到 cluster 带宽表")
 
     con.close()
-    logger.info(f"[SLOWNODE ALGO] cluster 带宽读取耗时 {time.monotonic() - start:.3f}s")
-    if parallels and comm:
+    logger.info(f"[SLOWNODE ALGO] cluster 带宽读取耗时 {time.monotonic() - start:.3f}s，"
+                f"{len(comm)} 条")
+    return comm
+
+
+def load_cluster_comm_metric(db_path: str,
+                             parallels: Dict[str, List[List[int]]]) -> Dict[str, Any]:
+    """读取或计算 cluster 的通信指标（组内逐卡 + 组间逐组），并按 cluster db 缓存。"""
+    cache_path = ""
+    if config.get_output_path():
+        cache_path = os.path.join(config.get_output_path(), "comm_metric.json")
+    rank_set = sorted({int(r) for gs in (parallels or {}).values() for g in gs for r in g})
+    fingerprint = _comm_metric_fingerprint([db_path], rank_set, parallels)
+    cached = db_utils.load_cache(cache_path, fingerprint, kind="comm_metric")
+    if cached is not None:
+        logger.info("[SLOWNODE ALGO] 通信指标缓存命中（cluster）")
+        return cached.get("metric") or {"card": {}, "group": {}, "singleton": []}
+    start = time.monotonic()
+    rows = _load_cluster_comm_rows(db_path, parallels)
+    metric = build_comm_metric(parallels, rows)
+    logger.info(f"[SLOWNODE ALGO] cluster 通信指标计算耗时 {time.monotonic() - start:.3f}s")
+    if metric.get("card"):
         # 没有任何通信数据时不落缓存，避免上层判定"无法检测"时创建空的 detection_output/
-        db_utils.save_cache(cache_path, db_path, "cluster_comm",
-                            {"parallels": parallels, "comm": [list(c) for c in comm]})
-    return parallels, comm
+        db_utils.save_cache(cache_path, fingerprint, "comm_metric", _COMM_ALGO,
+                            {"metric": metric})
+    return metric
+
+
+def load_cluster_comm(db_path: str):
+    """兼容旧调用：返回 (parallels, per-op rows)。"""
+    parallels = load_cluster_parallels(db_path)
+    return parallels, _load_cluster_comm_rows(db_path, parallels)

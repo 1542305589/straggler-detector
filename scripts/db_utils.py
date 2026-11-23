@@ -30,14 +30,9 @@ def open_readonly_db(path: str) -> sqlite3.Connection:
     return conn
 
 
-def _fingerprint(path: str) -> dict:
-    st = os.stat(path)
-    return {"path": os.path.abspath(path), "mtime_ns": st.st_mtime_ns, "size": st.st_size}
-
-
-def load_cache(cache_path: str, source_path: str):
-    """读取解析缓存；source 的 mtime/size 不匹配、schema 不匹配或文件损坏时返回 None。"""
-    if not cache_path or not source_path:
+def load_cache(cache_path: str, fingerprint: dict, kind: str = ""):
+    """读取解析缓存；schema/kind/指纹任一不匹配或文件损坏时返回 None。"""
+    if not cache_path:
         return None
     try:
         with open(cache_path, "r", encoding="utf-8") as f:
@@ -46,25 +41,18 @@ def load_cache(cache_path: str, source_path: str):
         return None
     if not isinstance(data, dict) or data.get("schema") != CACHE_SCHEMA:
         return None
-    try:
-        fp = _fingerprint(source_path)
-    except OSError:
+    if kind and data.get("kind") != kind:
         return None
-    src = data.get("source") or {}
-    if src.get("mtime_ns") != fp["mtime_ns"] or src.get("size") != fp["size"]:
+    if data.get("source") != fingerprint:
         return None
     return data
 
 
-def save_cache(cache_path: str, source_path: str, kind: str, payload: dict) -> None:
+def save_cache(cache_path: str, fingerprint: dict, kind: str, algo: str, payload: dict) -> None:
     """原子写解析缓存；失败时静默忽略（缓存是尽力而为，不影响正确性）。"""
     if not cache_path:
         return
-    try:
-        fp = _fingerprint(source_path)
-    except OSError:
-        return
-    data = {"schema": CACHE_SCHEMA, "kind": kind, "source": fp}
+    data = {"schema": CACHE_SCHEMA, "kind": kind, "algo": algo, "source": fingerprint}
     data.update(payload or {})
     try:
         os.makedirs(os.path.dirname(cache_path), exist_ok=True)

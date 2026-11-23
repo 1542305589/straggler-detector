@@ -94,6 +94,68 @@ class LoadStatusTest(unittest.TestCase):
         self.assertEqual(status["ranks_missing_csv"], [1])
 
 
+class CacheCompletenessTest(unittest.TestCase):
+    """缓存完整性检查：缺任何一块都应触发全量重建。"""
+
+    def setUp(self):
+        import config
+        self._config = config
+        self.tmpdir = tempfile.mkdtemp(prefix="straggler_complete_")
+        self.data_dir = os.path.join(self.tmpdir, "data")
+        self.out_dir = os.path.join(self.tmpdir, "out")
+        self.metric_dir = os.path.join(self.out_dir, "op_metric")
+        os.makedirs(self.metric_dir)
+        for rank in (0, 1):
+            rank_dir = os.path.join(self.data_dir, "worker%d" % rank)
+            os.makedirs(rank_dir)
+            open(os.path.join(rank_dir, "ascend_pytorch_profiler_%d.db" % rank), "w").close()
+            self._write_csv(rank, data=True)
+            with open(os.path.join(self.metric_dir, "group_info_%d.json" % rank), "w",
+                      encoding="utf-8") as f:
+                f.write("{}")
+        self._old_output = config.get_output_path()
+        config.set_output_path(self.out_dir)
+
+    def tearDown(self):
+        self._config.set_output_path(self._old_output)
+        shutil.rmtree(self.tmpdir, ignore_errors=True)
+
+    def _write_csv(self, rank, data=True):
+        path = os.path.join(self.metric_dir, "global_rank_%d.csv" % rank)
+        with open(path, "w", encoding="utf-8") as f:
+            f.write("StepIndex,KERNEL_AICORE\n")
+            if data:
+                f.write("0,1.0\n")
+
+    def test_complete_cache(self):
+        import main
+        self.assertEqual(main._incomplete_cache_reasons(self.data_dir, "level0"), [])
+
+    def test_missing_csv(self):
+        import main
+        os.remove(os.path.join(self.metric_dir, "global_rank_0.csv"))
+        reasons = main._incomplete_cache_reasons(self.data_dir, "level0")
+        self.assertTrue(any("rank 0" in r and "CSV" in r for r in reasons))
+
+    def test_empty_csv(self):
+        import main
+        self._write_csv(0, data=False)
+        reasons = main._incomplete_cache_reasons(self.data_dir, "level0")
+        self.assertTrue(any("rank 0" in r and "为空" in r for r in reasons))
+
+    def test_missing_group_info(self):
+        import main
+        os.remove(os.path.join(self.metric_dir, "group_info_1.json"))
+        reasons = main._incomplete_cache_reasons(self.data_dir, "level0")
+        self.assertTrue(any("rank 1" in r and "拓扑" in r for r in reasons))
+
+    def test_level1_requires_analysis_db_and_comm_metric(self):
+        import main
+        reasons = main._incomplete_cache_reasons(self.data_dir, "level1")
+        self.assertTrue(any("analysis.db" in r for r in reasons))
+        self.assertTrue(any("通信指标缓存" in r for r in reasons))
+
+
 class NoDataVsNoAnomalyTest(unittest.TestCase):
     def test_availability_marks_missing_metrics(self):
         # 空数据：level0 的五类指标都不可评估
