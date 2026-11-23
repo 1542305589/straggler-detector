@@ -604,6 +604,10 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
         lines.append(f"未评估（{unavailable['compute']}）")
     else:
         lines.append("无")
+    partial_compute = [unavailable[k] for k in ("KERNEL_AICORE", "KERNEL_AIVEC")
+                       if k in unavailable]
+    if partial_compute:
+        lines.append("未评估（" + "；".join(partial_compute) + "）")
 
     # 2、通信类
     cards: List[Tuple[str, Dict]] = []
@@ -646,6 +650,8 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
             lines.append(f"说明：{_METRIC_NOTES['pp_comm']}")
         elif "pp_comm" in unavailable:
             lines.append(f"PP点对点通信等待：未评估（{unavailable['pp_comm']}）")
+        if "comm" in unavailable:
+            lines.append(f"未评估（{unavailable['comm']}）")
 
     # 3、Host 侧
     host_items = _abnormal_items(detection, "cpu")
@@ -765,10 +771,13 @@ def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "",
     det: Dict[str, List[Dict]] = {}
     report_path = os.path.join(out_dir, "straggler_detection_result.json")
     flat_path = os.path.join(out_dir, "straggler_detection_result_flat.json")
+    persisted: Dict[str, str] = {}
     try:
         if os.path.exists(report_path):
             with open(report_path, "r", encoding="utf-8") as f:
-                det = _detection_from_report(json.load(f) or {})
+                data = json.load(f) or {}
+            det = _detection_from_report(data)
+            persisted = ((data.get("evaluation") or {}).get("unavailable") or {})
         elif os.path.exists(flat_path):  # 兼容早期版本留下的扁平结果
             with open(flat_path, "r", encoding="utf-8") as f:
                 det = json.load(f) or {}
@@ -777,4 +786,4 @@ def render_from_dir(out_dir: str, level: str, thresholds, source_path: str = "",
     return render(det, level, thresholds,
                   metric_dir=os.path.join(out_dir, "op_metric"),
                   data_dir=source_path or out_dir,
-                  unavailable=unavailable)
+                  unavailable=unavailable if unavailable is not None else persisted)

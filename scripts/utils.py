@@ -154,7 +154,8 @@ def _metric_entry(name: str, body: Dict[str, Any]) -> Dict[str, Any]:
 def build_report_payload(final_result: Dict[str, Dict[str, float]],
                          parallels: Dict[str, List[List[int]]] = None,
                          level: str = "",
-                         thresholds: Dict[str, float] = None) -> Dict[str, Any]:
+                         thresholds: Dict[str, float] = None,
+                         unavailable: Dict[str, str] = None) -> Dict[str, Any]:
     fr = final_result or {}
     spec = _LEVEL_METRICS.get(level)
     th = dict(thresholds or {})
@@ -214,10 +215,16 @@ def build_report_payload(final_result: Dict[str, Dict[str, float]],
         "data_level": level,
         "thresholds": out_th,
         "faults": faults,
+        # 评估状态：记录本次哪些类别因数据缺失等原因未能评估，
+        # 供结论层回读时区分"无数据"与"无异常"（schema 2.0 的增量字段）。
+        "evaluation": {
+            "unavailable": dict(unavailable or {}),
+        },
     }
 
 
-def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None):
+def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None,
+                 unavailable: Dict[str, str] = None):
     for category, items in final_result.items():
         if not items:
             continue
@@ -260,6 +267,7 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
             "comm": config.get_comm_threshold(),
             "pp_comm": config.PP_WAIT_RATIO_THRESHOLD * 100.0,
         },
+        unavailable=unavailable,
     )
     output_path = os.path.join(config.get_output_path(), "straggler_detection_result.json")
     try:

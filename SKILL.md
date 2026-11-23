@@ -199,8 +199,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 ## 重要注意事项
 
-- **只读原始数据**：解析阶段以 SQLite 只读模式（`mode=ro`）打开 `ascend_pytorch_profiler_*.db`，**不切换 journal_mode、不建索引、不写任何内容**；只读文件/只读挂载也能正常解析。
-- **回归测试**：`python scripts/test_readonly_db.py`（校验解析不改原始 db；数据缺失时输出「未评估」而非「无异常」）。
+- **只读原始数据**：解析阶段以 SQLite 只读模式（`mode=ro`）打开 `ascend_pytorch_profiler_*.db`，**不切换 journal_mode、不建索引、不写任何内容**；`DELETE` 模式的只读文件/只读挂载可正常解析，`WAL` 模式则仍受 `-shm` 可写性限制（SQLite 自身约束）。
+- **回归测试**（仓库内）：`tests/skills/straggler-detector/scripts/` 下两个文件——`test_readonly_db.py`（3 个只读用例）与 `test_data_availability.py`（11 个可用性/未评估用例），已纳入 `scripts/run_ut.sh`。
 - **禁止创建 `_db` / 软链接中转目录**：不要为了分类或去重创建任何中转目录；直接以原始数据目录作为输入。
 - **输入与输出目录分离**：纯结果目录只放检测产物，绝不混入 db 原始数据。
 - **空 / master db 处理**：部分 `master_*` 目录下有空的 master db（无 `STEP_TIME`/`PYTORCH_API`/`TASK` 表），应跳过，仅用含核心表的 rank db。
@@ -218,6 +218,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
    - 数值键统一叫 `degradation`（`pp_comm` 的是等待占会话的比例，其 `note` 会说明）；
    - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/整个 `memcpy`；`level1` 无 `pp_comm`；
    - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
+   - `evaluation.unavailable`：本次因数据缺失等原因未能评估的类别 -> 原因（schema 2.0 增量字段）；结论层回读该字段区分「无数据」与「无异常」。
 4. `detection_report.log` — 可视化详情报告
 5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。
 

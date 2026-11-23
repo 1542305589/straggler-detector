@@ -224,8 +224,16 @@ def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
         return any(v is not None and v > 0 for v in (step_data.get(col) or {}).values())
 
     if level in ("level0", "level1"):
-        if not (_present("KERNEL_AICORE") or _present("KERNEL_AIVEC")):
+        has_aicore = _present("KERNEL_AICORE")
+        has_aivec = _present("KERNEL_AIVEC")
+        if not (has_aicore or has_aivec):
             unavailable["compute"] = "缺少 KERNEL_AICORE / KERNEL_AIVEC 指标"
+        else:
+            # 部分缺失时逐项说明（缺哪个标哪个）
+            if not has_aicore:
+                unavailable["KERNEL_AICORE"] = "缺少 KERNEL_AICORE 指标"
+            if not has_aivec:
+                unavailable["KERNEL_AIVEC"] = "缺少 KERNEL_AIVEC 指标"
         if not _present("MEMCPY_ASYNC"):
             unavailable["memcpy"] = "缺少 MEMCPY_ASYNC 指标"
         if not _present(nodelevel.zpHostDataColumn):
@@ -234,8 +242,12 @@ def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
         if not _present(nodelevel.zpHostDataColumn):
             unavailable["host"] = f"缺少 {nodelevel.zpHostDataColumn} 指标"
     elif level == "cluster":
-        if not (cluster_step_info or {}).get("rows"):
+        rows = (cluster_step_info or {}).get("rows") or []
+        has_computing = any((metrics.get("computing") or 0) > 0 for _s, _r, metrics in rows)
+        has_free = any((metrics.get("free") or 0) > 0 for _s, _r, metrics in rows)
+        if not has_computing:
             unavailable["compute"] = "缺少 ClusterStepTraceTime.computing"
+        if not has_free:
             unavailable["host"] = "缺少 ClusterStepTraceTime.free"
 
     if level in ("level0", "levelnone") and not _present(config.PP_WAIT_GAP_COLUMN):
@@ -264,7 +276,6 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     is_cluster_input = (level == "cluster")
     if is_cluster_input:
         out_dir = os.path.join(os.path.dirname(os.path.abspath(job_path)), "detection_output")
-        os.makedirs(out_dir, exist_ok=True)
         config.set_output_path(out_dir)
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
     logger.info(f"数据级别：{level}")
@@ -273,16 +284,19 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     if is_cluster_input:
         parallels, comm = nodelevel_data_handler.load_cluster_comm(job_path)
         step_info = nodelevel_data_handler.load_cluster_step_data(job_path)
-        if not parallels or (not comm and not step_info.get("rows")):
-            logger.error("cluster 数据为空，无法检测")
-            return {}
+        unavailable = _metric_availability("cluster", {}, comm, parallels, step_info)
+        expected = _expected_categories(level)
+        if not parallels or (expected and all(cat in unavailable for cat in expected)):
+            _safe_print("未评估：cluster 数据为空或缺少可用指标，本次未执行检测（不输出“无异常”）。")
+            logger.error("cluster 数据为空或缺少可用指标，跳过检测")
+            return None
+        os.makedirs(out_dir, exist_ok=True)
         valid_ranks = sorted({int(r) for gs in parallels.values() for g in gs for r in g})
         if not valid_ranks:
             valid_ranks = sorted({int(r) for _s, r, _m in step_info.get("rows", [])})
         result = nodelevel.delimit_detection(
             {}, parallels, valid_ranks, comm=comm, cluster_step_info=step_info)
-        unavailable = _metric_availability("cluster", {}, comm, parallels, step_info)
-        utils.write_result(result, parallels)
+        utils.write_result(result, parallels, unavailable=unavailable)
         try:
             visualizer.run_visualization(
                 {}, parallels, valid_ranks, out_dir,
@@ -340,7 +354,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         logger.error("未找到可用的指标数据，跳过检测")
         return None
     result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
-    utils.write_result(result, parallels)
+    utils.write_result(result, parallels, unavailable=unavailable)
     if last_step_data:
         visualizer.run_visualization(
             last_step_data, parallels, valid_ranks, config.get_output_path(),
