@@ -162,6 +162,29 @@ class NoDataVsNoAnomalyTest(unittest.TestCase):
         self.assertIn("PP点对点通信等待", text)
         self.assertIn("缺少通信带宽数据", text)
 
+    def test_comm_evaluated_but_pp_missing_is_split(self):
+        """仅 PP_WaitGap 缺失时，集合通信应正常写「无」，PP 单独标未评估。"""
+        text = conclusion.render(
+            {}, "levelnone", (1.3, 2.5, 1.3),
+            unavailable={"pp_comm": "缺少 PP_WaitGap 指标"})
+        self.assertIn("慢通信卡：无", text)
+        self.assertIn("慢通信域：无", text)
+        self.assertIn("PP点对点通信等待：未评估（缺少 PP_WaitGap 指标）", text)
+        self.assertNotIn("2、通信类故障检测结果：\n未评估", text)
+
+    def test_comm_and_pp_both_missing(self):
+        text = conclusion.render(
+            {}, "level0", (1.3, 2.5, 1.3),
+            unavailable={"comm": "缺少通信带宽数据", "pp_comm": "缺少 PP_WaitGap 指标"})
+        self.assertIn("未评估（缺少通信带宽数据；缺少 PP_WaitGap 指标）", text)
+
+    def test_comm_missing_but_pp_evaluated(self):
+        text = conclusion.render(
+            {}, "level0", (1.3, 2.5, 1.3),
+            unavailable={"comm": "缺少通信带宽数据"})
+        self.assertIn("未评估（缺少通信带宽数据）", text)
+        self.assertIn("PP点对点通信等待：无", text)
+
     def test_cluster_availability_uses_computing_free_values(self):
         """cluster 有 step rows 但缺 computing/free 时，仍应标记未评估。"""
         import main

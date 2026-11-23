@@ -622,8 +622,21 @@ def render(detection: Dict, level: str, thresholds, metric_dir: str = "",
 
     lines.append("2、通信类故障检测结果：")
     if not cards and not groups and not pp_items:
-        missing = [unavailable[k] for k in ("comm", "pp_comm") if k in unavailable]
-        lines.append("未评估（" + "；".join(missing) + "）" if missing else "无")
+        comm_missing = "comm" in unavailable
+        pp_missing = "pp_comm" in unavailable
+        if comm_missing and pp_missing:
+            lines.append(f"未评估（{unavailable['comm']}；{unavailable['pp_comm']}）")
+        elif comm_missing:
+            # comm 无数据：集合通信未评估，PP 仍可能已评估
+            lines.append(f"未评估（{unavailable['comm']}）")
+            lines.append("PP点对点通信等待：无")
+        elif pp_missing:
+            # 仅 PP 缺数据：集合通信已评估（无异常），PP 单独标未评估
+            lines.append("慢通信卡：无")
+            lines.append("慢通信域：无")
+            lines.append(f"PP点对点通信等待：未评估（{unavailable['pp_comm']}）")
+        else:
+            lines.append("无")
     else:
         card_text = "、".join(f"{label}({_pct(item.get('metric_value'))})"
                              for label, item in cards)
