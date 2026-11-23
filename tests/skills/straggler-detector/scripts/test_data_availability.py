@@ -185,6 +185,27 @@ class NoDataVsNoAnomalyTest(unittest.TestCase):
         self.assertIn("未评估（缺少通信带宽数据）", text)
         self.assertIn("PP点对点通信等待：无", text)
 
+    def test_partial_data_hint_is_level_aware(self):
+        import main
+        hint_l1 = main._partial_data_hint("level1", [0, 1], 8)
+        self.assertIn("op_metric 指标缺失", hint_l1)
+        self.assertIn("analysis.db", hint_l1)
+        self.assertNotIn("检测结果仅基于其余 rank", hint_l1)
+
+        hint_l0 = main._partial_data_hint("level0", [0, 1], 8)
+        self.assertIn("检测结果仅基于其余 rank", hint_l0)
+        self.assertNotIn("analysis.db", hint_l0)
+
+    def test_report_generated_when_step_data_empty(self):
+        """指标 CSV 全缺但通信有数据时，仍应生成 detection_report.log。"""
+        import visualizer
+        tmpdir = tempfile.mkdtemp(prefix="straggler_report_")
+        try:
+            visualizer.run_visualization({}, {}, [0, 1], tmpdir)
+            self.assertTrue(os.path.exists(os.path.join(tmpdir, "detection_report.log")))
+        finally:
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def test_cluster_availability_uses_computing_free_values(self):
         """cluster 有 step rows 但缺 computing/free 时，仍应标记未评估。"""
         import main

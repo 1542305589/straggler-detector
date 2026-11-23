@@ -4,6 +4,7 @@ import os
 import logging
 import re
 import sqlite3
+import time
 from typing import Dict, List, Any, Optional, Tuple
 from collections import defaultdict
 import sys
@@ -475,7 +476,12 @@ def _rank_from_profiler_filename(db_file: str) -> Optional[int]:
     except ValueError:
         return None
 
-def _read_bandwidth_rows(analysis_db: str):
+def _read_bandwidth_rows(analysis_db: str, cache_path: str = ""):
+    cached = db_utils.load_cache(cache_path, analysis_db)
+    if cached is not None:
+        logger.info(f"[SLOWNODE ALGO] level1 带宽数据（缓存命中）：{analysis_db}")
+        return [tuple(r) for r in (cached.get("rows") or [])]
+    start = time.monotonic()
     out = []
     con = db_utils.open_readonly_db(analysis_db)
     cur = con.cursor()
@@ -487,12 +493,17 @@ def _read_bandwidth_rows(analysis_db: str):
         "FROM CommAnalyzerBandwidth WHERE transport_type=? AND hccl_op_name<>? "
         "AND step=?"
     )
-    for op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME, step)):
+    for op, cnt, size, trans_time in cur.execute(q, (band, _AGG_OP_NAME, step)):
         s = float(size or 0.0)
-        t = float(time or 0.0)
+        t = float(trans_time or 0.0)
         if s > 0 and t > 0:
             out.append((op, int(cnt or 0), s, t))
     con.close()
+    logger.info(f"[SLOWNODE ALGO] level1 带宽读取耗时 {time.monotonic() - start:.3f}s，"
+                f"{len(out)} 条")
+    db_utils.save_cache(cache_path, analysis_db, "level1_comm",
+                        {"meta": {"step": step, "band_type": band},
+                         "rows": [list(r) for r in out]})
     return out
 
 def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> List[Tuple[str, str, int, int, float, float]]:
@@ -512,10 +523,14 @@ def load_level1_comm(input_path: str, parallels: Dict[str, List[List[int]]]) -> 
             analysis_db = os.path.join(root, "analysis.db")
             if not os.path.exists(analysis_db):
                 continue
+            cache_path = ""
+            if config.get_output_path():
+                cache_path = os.path.join(config.get_output_path(), "op_metric",
+                                          f"level1_comm_rank_{rank}.json")
             domains = rank_domains.get(rank) or {"default_group"}
-            for op_name, count, size, time in _read_bandwidth_rows(analysis_db):
+            for op_name, count, size, trans_time in _read_bandwidth_rows(analysis_db, cache_path):
                 for domain in domains:
-                    comm.append((domain, op_name, count, rank, size / time, time))
+                    comm.append((domain, op_name, count, rank, size / trans_time, trans_time))
     logger.info(f"[SLOWNODE ALGO] level1 带宽数据：{len(comm)} 条 per-op 记录")
     return comm
 
@@ -716,6 +731,16 @@ def load_cluster_step_data(db_path: str) -> Dict[str, Any]:
     return out
 
 def load_cluster_comm(db_path: str):
+    cache_path = ""
+    if config.get_output_path():
+        cache_path = os.path.join(config.get_output_path(), "op_metric", "cluster_comm.json")
+    cached = db_utils.load_cache(cache_path, db_path)
+    if cached is not None:
+        parallels = cached.get("parallels") or {}
+        comm = [tuple(r) for r in (cached.get("comm") or [])]
+        logger.info(f"[SLOWNODE ALGO] cluster 带宽数据（缓存命中）：{len(comm)} 条")
+        return parallels, comm
+    start = time.monotonic()
     con = db_utils.open_readonly_db(db_path)
     cur = con.cursor()
     g2pg, parallels = cluster_group_map(cur, db_path)
@@ -727,12 +752,12 @@ def load_cluster_comm(db_path: str):
             "SELECT group_name, rank_id, hccl_op_name, count, transit_size, transit_time "
             "FROM ClusterCommunicationBandwidth WHERE band_type=? AND hccl_op_name<>?"
         )
-        for gname, rank, op, cnt, size, time in cur.execute(q, (band, _AGG_OP_NAME)):
+        for gname, rank, op, cnt, size, trans_time in cur.execute(q, (band, _AGG_OP_NAME)):
             pg = g2pg.get(gname)
             if not pg:
                 continue
             s = float(size or 0.0)
-            t = float(time or 0.0)
+            t = float(trans_time or 0.0)
             if s <= 0 or t <= 0:
                 continue
             comm.append((pg, op, int(cnt or 0), int(rank), s / t, t))
@@ -744,13 +769,13 @@ def load_cluster_comm(db_path: str):
             "transit_size, transit_time, size_distribution "
             "FROM communication_bandwidth_info WHERE transport_type=? AND op_name<>?"
         )
-        for _it, rank, op, suffix, _typ, size, time, dist in cur.execute(
+        for _it, rank, op, suffix, _typ, size, trans_time, dist in cur.execute(
                 q, (band, _AGG_OP_NAME)):
             pg = g2pg.get(suffix)
             if not pg:
                 continue
             s = float(size or 0.0)
-            t = float(time or 0.0)
+            t = float(trans_time or 0.0)
             if s <= 0 or t <= 0:
                 continue
             count = _count_from_size_distribution(dist)
@@ -762,4 +787,9 @@ def load_cluster_comm(db_path: str):
         logger.warning("[SLOWNODE ALGO] 未找到 cluster 带宽表")
 
     con.close()
+    logger.info(f"[SLOWNODE ALGO] cluster 带宽读取耗时 {time.monotonic() - start:.3f}s")
+    if parallels and comm:
+        # 没有任何通信数据时不落缓存，避免上层判定"无法检测"时创建空的 detection_output/
+        db_utils.save_cache(cache_path, db_path, "cluster_comm",
+                            {"parallels": parallels, "comm": [list(c) for c in comm]})
     return parallels, comm

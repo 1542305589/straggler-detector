@@ -200,7 +200,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 ## 重要注意事项
 
 - **只读原始数据**：解析阶段以 SQLite 只读模式（`mode=ro`）打开 `ascend_pytorch_profiler_*.db`，**不切换 journal_mode、不建索引、不写任何内容**；`DELETE` 模式的只读文件/只读挂载可正常解析，`WAL` 模式则仍受 `-shm` 可写性限制（SQLite 自身约束）。
-- **回归测试**（仓库内）：`tests/skills/straggler-detector/scripts/` 下两个文件——`test_readonly_db.py`（3 个只读用例）与 `test_data_availability.py`（11 个可用性/未评估用例），已纳入 `scripts/run_ut.sh`。
+- **回归测试**（仓库内）：`tests/skills/straggler-detector/scripts/` 下三个文件——`test_readonly_db.py`（3 个只读用例）、`test_data_availability.py`（16 个可用性/未评估用例）、`test_comm_cache.py`（3 个通信缓存用例），已纳入 `scripts/run_ut.sh`。
 - **禁止创建 `_db` / 软链接中转目录**：不要为了分类或去重创建任何中转目录；直接以原始数据目录作为输入。
 - **输入与输出目录分离**：纯结果目录只放检测产物，绝不混入 db 原始数据。
 - **空 / master db 处理**：部分 `master_*` 目录下有空的 master db（无 `STEP_TIME`/`PYTORCH_API`/`TASK` 表），应跳过，仅用含核心表的 rank db。
@@ -213,6 +213,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 1. `op_metric/global_rank_*.csv` — 解析后的性能指标
 2. `op_metric/group_info_*.json` — 并行域信息
+3. `op_metric/` 下另有通信带宽解析缓存：`level1_comm_rank_*.json`（level1）与 `detection_output/op_metric/cluster_comm.json`（cluster）；按源 db 的 `mtime/size` 自动失效，`clean=yes` 时随 `op_metric/` 一起清理。
 3. `straggler_detection_result.json` — 检测结果（schema_version 2.0，按 `faults.compute/comm/host/memcpy` 分组）
    - 只用 `note` 承载说明文字，没有 `display_name`；
    - 数值键统一叫 `degradation`（`pp_comm` 的是等待占会话的比例，其 `note` 会说明）；

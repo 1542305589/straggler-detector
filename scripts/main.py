@@ -263,6 +263,16 @@ def _metric_availability(level: str, step_data: dict, comm, parallels: dict,
             unavailable["comm"] = "缺少通信带宽列"
     return unavailable
 
+def _partial_data_hint(level: str, missing_ranks, total: int) -> str:
+    """部分 rank 缺数据时的提示。level1 的 comm 来自 analysis.db，不受 CSV 缺失影响。"""
+    ranks = sorted(missing_ranks)
+    if level == "level1":
+        return (f"注意：{len(ranks)}/{total} 张卡的 op_metric 指标缺失（rank {ranks}），"
+                f"计算 / Host / 内存搬运仅基于其余 rank；通信带宽来自 analysis.db，不受影响。")
+    return (f"注意：{len(ranks)}/{total} 张卡缺少指标数据（rank {ranks}），"
+            f"检测结果仅基于其余 rank。")
+
+
 def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
                         db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     config.set_file_path(job_path)
@@ -355,12 +365,13 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         return None
     result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks, comm=comm)
     utils.write_result(result, parallels, unavailable=unavailable)
-    if last_step_data:
-        visualizer.run_visualization(
-            last_step_data, parallels, valid_ranks, config.get_output_path(),
-            detection_result=result,
-            data_path=job_path,
-        )
+    # 指标 CSV 全缺但通信仍有数据（如 level1 从 analysis.db 读取）时，
+    # 仍然生成检测报告，避免结论里给出的报告路径实际不存在。
+    visualizer.run_visualization(
+        last_step_data, parallels, valid_ranks, config.get_output_path(),
+        detection_result=result,
+        data_path=job_path,
+    )
     if not result:
         logger.info("未检测到异常节点")
     try:
@@ -372,8 +383,7 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
     partial = sorted(set(load_status.get("ranks_missing_csv", []))
                      | set(load_status.get("ranks_empty_csv", [])))
     if partial:
-        _safe_print(f"注意：{len(partial)}/{load_status.get('ranks_total', 0)} 张卡缺少指标数据"
-                    f"（rank {partial}），检测结果仅基于其余 rank。")
+        _safe_print(_partial_data_hint(level, partial, load_status.get("ranks_total", 0)))
     _print_conclusion(job_path, result, thresholds, unavailable=unavailable)
     return result
 
