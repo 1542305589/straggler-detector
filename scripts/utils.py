@@ -155,7 +155,8 @@ def build_report_payload(final_result: Dict[str, Dict[str, float]],
                          parallels: Dict[str, List[List[int]]] = None,
                          level: str = "",
                          thresholds: Dict[str, float] = None,
-                         unavailable: Dict[str, str] = None) -> Dict[str, Any]:
+                         unavailable: Dict[str, str] = None,
+                         partial_ranks: List[int] = None) -> Dict[str, Any]:
     fr = final_result or {}
     spec = _LEVEL_METRICS.get(level)
     th = dict(thresholds or {})
@@ -210,21 +211,22 @@ def build_report_payload(final_result: Dict[str, Dict[str, float]],
     if "pp_comm" in (faults.get("comm", {}).get("metrics") or {}) and "pp_comm" in th:
         out_th["pp_comm"] = th["pp_comm"]
 
+    evaluation: Dict[str, Any] = {"unavailable": dict(unavailable or {})}
+    if partial_ranks:
+        evaluation["partial_ranks"] = sorted(int(r) for r in partial_ranks)
     return {
         "schema_version": "2.0",
         "data_level": level,
         "thresholds": out_th,
         "faults": faults,
-        # 评估状态：记录本次哪些类别因数据缺失等原因未能评估，
-        # 供结论层回读时区分"无数据"与"无异常"（schema 2.0 的增量字段）。
-        "evaluation": {
-            "unavailable": dict(unavailable or {}),
-        },
+        # 评估状态：记录哪些类别未评估、哪些 rank 缺数据，
+        # 供结论层/结果分析回读时区分"无数据"与"无异常"（schema 2.0 增量字段）。
+        "evaluation": evaluation,
     }
 
 
 def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str, List[List[int]]] = None,
-                 unavailable: Dict[str, str] = None):
+                 unavailable: Dict[str, str] = None, partial_ranks: List[int] = None):
     for category, items in final_result.items():
         if not items:
             continue
@@ -268,6 +270,7 @@ def write_result(final_result: Dict[str, Dict[str, float]], parallels: Dict[str,
             "pp_comm": config.PP_WAIT_RATIO_THRESHOLD * 100.0,
         },
         unavailable=unavailable,
+        partial_ranks=partial_ranks,
     )
     output_path = os.path.join(config.get_output_path(), "straggler_detection_result.json")
     try:

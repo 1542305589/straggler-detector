@@ -201,7 +201,8 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
 
 - **只读原始数据**：解析阶段以 SQLite 只读模式（`mode=ro`）打开 `ascend_pytorch_profiler_*.db`，**不切换 journal_mode、不建索引、不写任何内容**；`DELETE` 模式的只读文件/只读挂载可正常解析，`WAL` 模式则仍受 `-shm` 可写性限制（SQLite 自身约束）。
 - **缓存不完整会自动重建**：`clean=no` 时先检查 `op_metric`（每个 rank 的 CSV / 拓扑 JSON、level1 的 `analysis.db` 与通信指标缓存）；缺任意一块就提示「检测缓存不完整」并按 `clean=yes` 全量重新解析。只有源 db 也不可用时，才输出「未评估」并以非零码退出。
-- **回归测试**（仓库内）：`tests/skills/straggler-detector/scripts/` 下三个文件——`test_readonly_db.py`（3 例）、`test_data_availability.py`（21 例）、`test_comm_cache.py`（4 例），已纳入 `scripts/run_ut.sh`。
+- **level1 降级提示**：若存在历史通信指标缓存（疑似 level1）但 `analysis.db` 缺失、已按 level0 检测，会输出一行提示，避免被误认为数据本来就是 level0。
+- **回归测试**（仓库内）：`tests/skills/straggler-detector/scripts/` 下三个文件——`test_readonly_db.py`（3 例）、`test_data_availability.py`（23 例）、`test_comm_cache.py`（4 例），已纳入 `scripts/run_ut.sh`。
 - **禁止创建 `_db` / 软链接中转目录**：不要为了分类或去重创建任何中转目录；直接以原始数据目录作为输入。
 - **输入与输出目录分离**：纯结果目录只放检测产物，绝不混入 db 原始数据。
 - **空 / master db 处理**：部分 `master_*` 目录下有空的 master db（无 `STEP_TIME`/`PYTORCH_API`/`TASK` 表），应跳过，仅用含核心表的 rank db。
@@ -221,6 +222,7 @@ verl 混合部署时，一次采集会在同一节点产出**多组 worker*_asce
    - **该等级不参与检测的键直接不出现**：`cluster` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/`pp_comm`/`ZP_Host`/整个 `memcpy`；`levelnone` 无 `KERNEL_AICORE`/`KERNEL_AIVEC`/整个 `memcpy`；`level1` 无 `pp_comm`；
    - `thresholds` 键名：`compute` / `io/host` / `comm`，有 PP 检测的等级另有 `pp_comm`（百分数）。
    - `evaluation.unavailable`：本次因数据缺失等原因未能评估的类别 -> 原因（schema 2.0 增量字段）；结论层回读该字段区分「无数据」与「无异常」。
+   - `evaluation.partial_ranks`：仅部分 rank 缺数据时出现，记录缺失的 rank 列表（与 stdout 的「注意：N/M 张卡缺少指标数据」一致）。
 4. `detection_report.log` — 可视化详情报告
 5. **最终输出逐类别汇总表**（渲染到调用方 agent 的 stdout，不进任何 log 文件）——检测结束时在 stdout 打印一张 ASCII 框线表格，**一行一个异常点位**，列：`类别 | 异常点位 | 劣化指数 | 劣化阈值`（类别用 op_metric 指标列名，如 `KERNEL_AIVEC`/`MEMCPY_ASYNC`；异常点位为 `ep[5]`、`tp[0,1]`、`pp[0,2,4,6]`、`worker1`、`rank 3` 等；劣化指数为数值，PP 等待占比为百分数）；无异常时打印含"无异常"提示的单行表。
 

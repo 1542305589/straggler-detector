@@ -268,6 +268,37 @@ class NoDataVsNoAnomalyTest(unittest.TestCase):
         finally:
             shutil.rmtree(tmpdir, ignore_errors=True)
 
+    def test_report_payload_persists_partial_ranks(self):
+        import utils
+        payload = utils.build_report_payload(
+            {}, None, "level0", {"compute": 1.3}, partial_ranks=[1, 2])
+        self.assertEqual(payload["evaluation"]["partial_ranks"], [1, 2])
+        payload_all = utils.build_report_payload({}, None, "level0", {"compute": 1.3})
+        self.assertNotIn("partial_ranks", payload_all["evaluation"])
+
+    def test_level_downgrade_hint(self):
+        import config
+        import main
+        tmpdir = tempfile.mkdtemp(prefix="straggler_downgrade_")
+        old_output = config.get_output_path()
+        try:
+            data_dir = os.path.join(tmpdir, "data")
+            os.makedirs(os.path.join(data_dir, "worker0"))
+            open(os.path.join(data_dir, "worker0", "ascend_pytorch_profiler_0.db"), "w").close()
+            out_dir = os.path.join(tmpdir, "out")
+            os.makedirs(os.path.join(out_dir, "op_metric"))
+            open(os.path.join(out_dir, "op_metric", "comm_metric.json"), "w").close()
+            config.set_output_path(out_dir)
+
+            hint = main._level_downgrade_hint("level0", data_dir)
+            self.assertIn("analysis.db 缺失", hint)
+
+            open(os.path.join(data_dir, "worker0", "analysis.db"), "w").close()
+            self.assertEqual(main._level_downgrade_hint("level0", data_dir), "")
+        finally:
+            config.set_output_path(old_output)
+            shutil.rmtree(tmpdir, ignore_errors=True)
+
     def test_cluster_availability_uses_computing_free_values(self):
         """cluster 有 step rows 但缺 computing/free 时，仍应标记未评估。"""
         import main

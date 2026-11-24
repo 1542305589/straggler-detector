@@ -322,6 +322,22 @@ def _incomplete_cache_reasons(job_path: str, level: str, db_files=None) -> list:
     return reasons
 
 
+def _level_downgrade_hint(level: str, job_path: str) -> str:
+    """level1 数据缺 analysis.db 时会降级为 level0，给出显式提示。"""
+    if level != "level0":
+        return ""
+    out_dir = config.get_output_path() or job_path
+    if not os.path.exists(os.path.join(out_dir, "op_metric", "comm_metric.json")):
+        return ""
+    rank_dirs = _profiler_rank_dirs(job_path)
+    if not rank_dirs:
+        return ""
+    if all(os.path.exists(os.path.join(d, "analysis.db")) for d in rank_dirs.values()):
+        return ""
+    return ("注意：检测到历史通信指标缓存（疑似 level1 数据），但 analysis.db 缺失，"
+            "已按 level0 检测（通信 / PP 未评估）。")
+
+
 def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, output_path: str = None,
                         db_files: list = None, skip_confirm: bool = False, clean_decision: bool = None):
     config.set_file_path(job_path)
@@ -338,6 +354,9 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
         config.set_output_path(out_dir)
     logger.info(f"开始慢节点检测 - 路径：{job_path}, 阈值(计算/IO/通信)：{thresholds}")
     logger.info(f"数据级别：{level}")
+    downgrade_hint = _level_downgrade_hint(level, job_path)
+    if downgrade_hint:
+        _safe_print(downgrade_hint)
     logger.info(f"检测结果输出目录：{config.get_output_path()}")
     out_path = config.get_output_path()
     if is_cluster_input:
@@ -425,9 +444,12 @@ def _process_single_job(job_path: str, thresholds: tuple, clean_mode: str, outpu
             _safe_print(f"  指标 CSV 为空/无法解析的 rank：{load_status['ranks_empty_csv']}")
         logger.error("未找到可用的指标数据，跳过检测")
         return None
+    partial = sorted(set(load_status.get("ranks_missing_csv", []))
+                     | set(load_status.get("ranks_empty_csv", [])))
     result = nodelevel.delimit_detection(last_step_data, parallels, valid_ranks,
                                         comm_metric=comm_metric)
-    utils.write_result(result, parallels, unavailable=unavailable)
+    utils.write_result(result, parallels, unavailable=unavailable,
+                       partial_ranks=partial)
     # 指标 CSV 全缺但通信仍有数据（如 level1 从 analysis.db 读取）时，
     # 仍然生成检测报告，避免结论里给出的报告路径实际不存在。
     visualizer.run_visualization(
